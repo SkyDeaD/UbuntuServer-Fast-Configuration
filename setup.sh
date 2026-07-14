@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  vps-setup v4.0.0
+#  vps-setup — команда: vsu
 #  Menu-driven: CLI tools + Docker + zram/swap + fastfetch + starship
 #  + hardening (fail2ban, unattended-upgrades, docker log rotation,
 #    tmux, SSH key-only hardening (self-testing), UFW)
@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="4.2.0"
+VERSION="1.3"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -407,9 +407,9 @@ alias la='eza -a --icons --group-directories-first'
 alias lt='eza --tree --icons --level=2 --group-directories-first'
 alias cat='batcat --paging=never'
 alias catp='batcat'
-alias scat='sudo batcat -paging=never'
+alias scat='sudo batcat --paging=never'
 alias fd='fdfind'
-alias vps-setup='sudo vps-setup'
+alias vsu='sudo vsu'
 
 if [ -x "\$(command -v fastfetch)" ]; then
     fastfetch
@@ -422,6 +422,12 @@ EOF
         chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
         log_success ".bashrc обновлён"
     fi
+    # Скрипт работает в собственном подпроцессе — "source ~/.bashrc" отсюда
+    # никак не повлияет на твою текущую интерактивную сессию (дочерний процесс
+    # не может менять окружение родительского). Поэтому не пытаемся, а прямо говорим:
+    log_warn "Новые алиасы появятся только в НОВОЙ сессии — либо выполни сам:"
+    log_warn "  source ~/.bashrc"
+    log_warn "либо просто переподключись по SSH"
 }
 
 apply_tmux() {
@@ -796,27 +802,41 @@ item_supports_disable() {
     return 1
 }
 
+pad_title() {
+    local s="$1" width="$2" len pad
+    len="$(python3 -c "import sys; print(len(sys.argv[1]))" "$s" 2>/dev/null || echo "${#s}")"
+    pad=$((width - len))
+    [ "$pad" -lt 1 ] && pad=1
+    printf '%s%*s' "$s" "$pad" ""
+}
+
 show_menu() {
     show_header
     echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
     echo ""
+    local header_title
+    header_title="$(pad_title "Пункт" 48)"
+    printf "  ${BOLD}%3s  %sСтатус${NC}\n" "#" "$header_title"
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..80})${NC}"
     local i=1 id
     for id in "${ITEM_IDS[@]}"; do
         case "$i" in
-            1) echo -e "  ${DIM}── база ──────────────────────────────────────────${NC}" ;;
-            4) echo -e "  ${DIM}── сервисы ───────────────────────────────────────${NC}" ;;
-            10) echo -e "  ${DIM}── защита и обслуживание ────────────────────────${NC}" ;;
+            1) echo -e "  ${DIM}── база ──${NC}" ;;
+            4) echo -e "  ${DIM}── сервисы ──${NC}" ;;
+            10) echo -e "  ${DIM}── защита и обслуживание ──${NC}" ;;
         esac
-        local status_line
+        local status_line padded_title
         status_line="$(status_"$id")"
-        echo -e "  ${CYAN}$(printf '%2d' "$i")${NC}  ${ITEM_TITLES[$((i-1))]}  ${status_line}"
+        padded_title="$(pad_title "${ITEM_TITLES[$((i-1))]}" 48)"
+        printf "  ${CYAN}%3d${NC}  %s%b\n" "$i" "$padded_title" "$status_line"
         i=$((i+1))
     done
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..80})${NC}"
     echo ""
-    echo -e "  ${DIM}─────────────────────────────────────────────────────${NC}"
     echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}   применить один пункт или сразу несколько"
     echo -e "  ${DIM}уже применённый пункт из группы «защита и обслуживание» — предложит отключить${NC}"
     echo -e "  ${CYAN}${BOLD}A${NC}        применить всё ещё не применённое"
+    echo -e "  ${CYAN}${BOLD}H${NC}        справка по алиасам (ls/ll/la/lt/cat/catp/scat/fd)"
     echo -e "  ${CYAN}${BOLD}R${NC}        показать команды отката (справочно, ничего не выполняет)"
     echo -e "  ${CYAN}${BOLD}U${NC}        удалить сам vps-setup из системы"
     echo -e "  ${CYAN}${BOLD}Q${NC}        выход"
@@ -852,6 +872,29 @@ apply_all_pending() {
         fi
         i=$((i+1))
     done
+}
+
+show_aliases_help() {
+    show_header
+    echo -e "  ${BOLD}Алиасы, которые ставит пункт 8 (fastfetch config + .bashrc)${NC}"
+    echo ""
+    printf "  ${BOLD}%-8s %-42s %s${NC}\n" "Алиас" "Реальная команда" "Что делает"
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "ls"   "eza --icons --group-directories-first"                  "список файлов с иконками (замена ls)"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "ll"   "eza -lah --icons --group-directories-first"              "подробный список, аналог ls -la"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "la"   "eza -a --icons --group-directories-first"                "список вместе со скрытыми файлами"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "lt"   "eza --tree --icons --level=2 ..."                        "дерево каталогов, 2 уровня вглубь"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "cat"  "batcat --paging=never"                                   "вывод файла с подсветкой, без пейджера"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "catp" "batcat"                                                  "то же, но с пейджером (для длинных файлов, поиск / внутри)"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "scat" "sudo batcat --paging=never"                              "cat для файлов, читаемых только под root"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "fd"   "fdfind"                                                  "быстрый поиск файлов, замена find"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "vsu"  "sudo vsu"                                                "запуск этого меню сразу с sudo"
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
+    echo ""
+    log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
+    log_info "Почему у cat/ls вообще другое поведение под sudo — см. README, раздел FAQ"
+    echo ""
+    pause
 }
 
 show_rollback_reference() {
@@ -905,11 +948,11 @@ EOF
 
 uninstall_self() {
     echo ""
-    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду vps-setup"
+    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду vsu"
     log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
     log_info "этим не трогается. Для этого есть пункт R (справка по откату)"
     if ask_yn "Точно удалить vps-setup из системы?" N; then
-        rm -f /usr/local/bin/vps-setup
+        rm -f /usr/local/bin/vsu
         rm -rf /opt/vps-setup
         echo ""
         log_success "vps-setup удалён. Пока."
@@ -934,7 +977,7 @@ main() {
         local choice
         read -r choice </dev/tty
         case "$choice" in
-            [Qq]) echo ""; log_info "Пока. Повторный запуск: sudo vps-setup"; break ;;
+            [Qq]) echo ""; log_info "Пока. Повторный запуск: sudo vsu"; break ;;
             [Rr]) show_rollback_reference ;;
             [Uu]) uninstall_self; pause ;;
             [Aa])
@@ -964,23 +1007,38 @@ main() {
                 ;;
             *)
                 # один номер или несколько через пробел/запятую: "5", "1 3 5", "1,3,5"
-                local -a nums
+                local -a nums valid=()
                 IFS=', ' read -ra nums <<< "$choice"
-                local processed=false num
+                local num
                 for num in "${nums[@]}"; do
                     [ -z "$num" ] && continue
                     if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#ITEM_IDS[@]}" ]; then
-                        process_item "$num"
-                        processed=true
+                        valid+=("$num")
                     else
                         log_error "Нет пункта «${num}»"
                     fi
                 done
-                if [ "$processed" = true ]; then
-                    pause
-                else
+
+                if [ "${#valid[@]}" -eq 0 ]; then
                     log_error "Не понял ввод — номер пункта (можно несколько через пробел/запятую), A или Q"
                     sleep 1
+                elif [ "${#valid[@]}" -eq 1 ]; then
+                    # один пункт — как обычно, интерактивно, со всеми вопросами внутри
+                    process_item "${valid[0]}"
+                    pause
+                else
+                    # несколько пунктов разом — одно общее подтверждение, дальше без остановок
+                    echo ""
+                    log_info "Выбрано: ${valid[*]} (${#valid[@]} шт.)"
+                    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
+                    if ask_yn "Применить все выбранные пункты сразу?"; then
+                        BULK_MODE=true
+                        for num in "${valid[@]}"; do
+                            process_item "$num"
+                        done
+                        BULK_MODE=false
+                    fi
+                    pause
                 fi
                 ;;
         esac

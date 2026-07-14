@@ -16,14 +16,15 @@
 
 ---
 
-One script that takes a fresh Ubuntu VPS to a working state: modern CLI tools, Docker, zram/swap on a battle-tested scheme, a nice `fastfetch` + `starship` setup, and optionally — SSH hardening with a built-in self-test (it never disables password login until it has actually verified key-based login works).
+One script that takes a fresh Ubuntu VPS to a working state: modern CLI tools, Docker, nginx, zram/swap on a battle-tested scheme, a nice `fastfetch` + `starship` setup, and optionally — SSH hardening with a built-in self-test (it never disables password login until it has actually verified key-based login works).
 
-Every item is its own yes/no question. Nothing is installed or overwritten silently. If something is already configured — including by hand, outside this script — the script detects that and won't touch it without explicit confirmation.
+The menu shows the status of all 15 items at once — what's already applied, what isn't, what's configured differently than the guide recommends. Nothing is installed or overwritten silently.
 
 ## Contents
 
 - [Quick start](#quick-start)
 - [What the script does](#what-the-script-does)
+- [Using the menu](#using-the-menu)
 - [How it works](#how-it-works)
   - [Idempotency](#idempotency)
   - [Self-testing SSH hardening](#self-testing-ssh-hardening)
@@ -45,39 +46,70 @@ Every item is its own yes/no question. Nothing is installed or overwritten silen
 curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash
 ```
 
-The script installs itself as the `vps-setup` command (symlinked into `/usr/local/bin`), checks for updates, and opens a menu. Run it again any time:
+The script installs itself as the **`vsu`** command (symlinked into `/usr/local/bin`), checks for updates, and opens a menu. Run it again any time:
 
 ```bash
-vps-setup
+sudo vsu
 ```
 
-On every run, `vps-setup` first compares its own version against [`VERSION`](VERSION) in the repo — if there's a newer one, it offers to update and restarts itself as the new version. The menu shows the status of all 15 items at once (✓ applied / ○ not applied / ! differs from the recommended values), picking an item by number applies it, `A` applies everything not yet applied, and `d<number>` disables whatever is safe to disable (see [below](#idempotency)).
-
-> **Before running on a production box** — test on a disposable/snapshot-able VPS first, especially if you plan to say yes to SSH hardening and UFW. The script is written defensively (see [below](#self-testing-ssh-hardening)), but it's still root access and network rules.
+> **Before running on a production box** — test on a disposable/snapshot-able VPS first, especially if you plan to say yes to SSH hardening and UFW.
 
 ---
 
 ## What the script does
 
-| # | Step | Installs / configures | Auto-skipped when |
+| # | Group | Item | Installs / configures |
 |---|---|---|---|
-| 1 | System update | `apt update && apt upgrade` | — (always asks) |
-| 2 | CLI tools | `eza`, `bat`, `fd-find`, `ripgrep`, `zoxide`, `ncdu` | — |
-| 3 | Base packages | `micro`, `curl`, `wget`, `git`, `nano`, `certbot`, `python3-certbot-nginx`, `unzip`, `htop`, `dnsutils`, `jq`, `software-properties-common`, `ca-certificates`, `gnupg`, `rsync` | — |
-| 4 | Docker | Docker CE + Compose plugin from the official repo, auto-fallback to `noble` if packages for the current codename aren't published yet | already installed |
-| 5 | nginx-full | installs and enables on boot | already installed and running |
-| 6 | fastfetch | from PPA `zhangsongcui3371/fastfetch`, version ≥ 2.64.0 | version already suitable |
-| 7 | starship | prompt | already installed |
-| 8 | Configs | `fastfetch/config.jsonc` + aliases/hooks in `.bashrc` | `.bashrc` block already present (marker) |
-| 9 | tmux | + minimal `.tmux.conf` (mouse, history, status bar) | `.tmux.conf` already exists |
-| 10 | Docker log rotation | `max-size=10m`, `max-file=3` in `daemon.json` | already configured |
-| 11 | fail2ban | jail on the actual SSH port | already running |
-| 12 | unattended-upgrades | automatic security patches | already enabled |
-| 13 | zram + swap + sysctl + earlyoom | per the [guide](#zram--swap) | already matches recommended values |
-| 14 | SSH hardening | keys instead of passwords, no root login, passwordless sudo | target user couldn't be determined (see below) |
-| 15 | UFW | firewall allowing actually-used ports | already enabled |
+| 1 | base | System update | `apt update && apt upgrade` |
+| 2 | base | CLI tools | `eza`, `bat`, `fd-find`, `ripgrep`, `zoxide`, `ncdu` |
+| 3 | base | Base packages | `micro`, `curl`, `wget`, `git`, `nano`, `certbot`, `python3-certbot-nginx`, `unzip`, `htop`, `bind9-dnsutils`, `jq`, `software-properties-common`, `ca-certificates`, `gnupg`, `rsync` |
+| 4 | services | Docker + Compose | official Docker repo, auto-fallback to `noble` if packages for the codename aren't published yet |
+| 5 | services | nginx-full | installs and enables on boot |
+| 6 | services | fastfetch | PPA `zhangsongcui3371/fastfetch`, version ≥ 2.64.0 |
+| 7 | services | starship | prompt |
+| 8 | services | fastfetch config + .bashrc | `fastfetch/config.jsonc` + aliases/hooks |
+| 9 | services | tmux | + minimal `.tmux.conf` |
+| 10 | hardening | Docker log rotation | `max-size=10m`, `max-file=3` in `daemon.json` |
+| 11 | hardening | fail2ban | jail on the actual SSH port |
+| 12 | hardening | unattended-upgrades | automatic security patches |
+| 13 | hardening | ZRAM + swap + sysctl + earlyoom | per the [guide](#zram--swap) |
+| 14 | hardening | SSH hardening | keys instead of passwords, no root login, passwordless sudo |
+| 15 | hardening | UFW | firewall allowing actually-used ports |
 
-`python3-certbot-nginx` in base packages wasn't literally requested, but added deliberately: without that plugin `certbot --nginx` can't wire SSL into nginx configs automatically — you'd have to issue the cert separately and hook it up by hand. Since `nginx-full` is now part of the script too, the plugin earns its place.
+`bind9-dnsutils` instead of `dnsutils` isn't a typo: on Ubuntu 26.04 `dnsutils` became a virtual alias package — `apt install` resolves it fine, but `dpkg -s dnsutils` finds nothing because `bind9-dnsutils` is what's actually installed.
+
+---
+
+## Using the menu
+
+```
+    #  Item                                             Status
+  ──────────────────────────────────────────────────────────────
+  ── base ──
+    1  System update                                    (action)
+    2  CLI tools (eza/bat/fd/ripgrep/zoxide/ncdu)        ○ missing: eza, bat
+    3  Base packages (micro/curl/git/certbot/...)        ✓ installed
+  ── services ──
+    4  Docker + Compose                                  ✓ installed (29.6.1)
+    ...
+  ── hardening ──
+   14  SSH hardening                                     ✓ applied (password off)
+   15  UFW firewall                                      ✓ enabled
+  ──────────────────────────────────────────────────────────────
+
+  5 / 1 3 5 / 1,3,5   apply one item or several at once
+  A                   apply everything not yet applied
+  R                   show rollback commands (reference only, executes nothing)
+  U                   remove vsu itself from the system
+  Q                   quit
+```
+
+- **A single number** (`5`) applies exactly that item, interactively, with its own questions as usual.
+- **Multiple numbers** (`1 3 5` or `1,3,5`) — one upfront confirmation ("apply all selected at once?"), then each item applies with its own default answers, no per-item interruption.
+- **Re-selecting an already-applied item** from the "hardening" group (Docker log rotation, fail2ban, unattended-upgrades, ZRAM, UFW) — the menu offers to disable it, no separate syntax needed.
+- **`A`** — same "one confirmation → no interruptions" flow, for everything not yet applied.
+- **`R`** — prints ready-to-run rollback commands for whatever doesn't auto-revert (packages, Docker, nginx, fastfetch, starship, configs, SSH hardening). Never executes anything itself — just shows, with explicit warnings where a command is destructive.
+- **`U`** — removes `vsu` itself (`/opt/vps-setup` + the command) from the system. Doesn't touch anything it installed on the system.
 
 ---
 
@@ -85,36 +117,32 @@ On every run, `vps-setup` first compares its own version against [`VERSION`](VER
 
 ### Idempotency
 
-Each of the 14 menu items is actually a pair of functions: `status_*` (read-only, just checks current state) and `apply_*` (the action). The menu re-queries every `status_*` before each redraw, so:
+Each menu item is a pair of functions: `status_*` (read-only) and `apply_*`/`disable_*` (the action). The menu re-queries every `status_*` before each redraw:
 
-- package already installed → shown as `✓` right in the menu, re-selecting it won't re-ask about what's already there;
-- `.bashrc` block already present (detected via the `# >>> vps-setup >>>` / `# <<< vps-setup <<<` marker) → not duplicated;
-- `zram`/`swapfile`/`sysctl` already match the guide's recommended values → `✓`;
-- configured **differently** from the guide (meaning someone — most likely you — already tuned it by hand) → `!`, and selecting the item shows the difference and asks explicitly, defaulting to **not** overwriting.
+- package already installed → `✓`, re-selecting won't re-ask about what's already there;
+- `.bashrc` block already present (via the `# >>> vps-setup >>>` / `# <<< vps-setup <<<` marker) → not duplicated;
+- `zram`/`swapfile`/`sysctl` match the guide → `✓`;
+- configured **differently** (someone — most likely you — already tuned it by hand) → `!`, shows the difference and asks explicitly, defaulting to **not** overwriting.
 
-**Disabling (`d<number>`)** is only supported for what's safe to turn off in one action: Docker log rotation, fail2ban, unattended-upgrades, zram, UFW. Everything else (package installs, Docker, SSH hardening) deliberately has no scripted rollback — it's either harmless to leave as-is, or too risky to auto-revert behind a single keypress; the menu will point you to the manual steps instead.
+Swap is detected as "any non-zram swap entry", not by a specific filename — `/swapfile`, `/swap.img`, and other names are all recognized correctly.
 
 ### Self-testing SSH hardening
 
-The riskiest step in the whole script is disabling password and root login over SSH. A mistake here means losing access to the server if there's no console access from the provider. So step 13 doesn't just "apply and hope" — it actually verifies on a live connection:
+The riskiest item is disabling password and root login over SSH. A mistake here means losing access if there's no console from the provider. Item 14 doesn't just "apply and hope":
 
-1. Asks for a public key to paste (or uses whatever is already in `authorized_keys`).
-2. Generates a **one-time test keypair on the server itself**, temporarily adds it, and actually logs in via `ssh user@127.0.0.1` — **before** touching `sshd_config` at all. This catches permission issues on `~/.ssh` before anything becomes irreversible.
-3. Only if that baseline login succeeds does it write a separate `/etc/ssh/sshd_config.d/10-hardening.conf` (the filename is chosen specifically to sort lexically before `50-cloud-init.conf`, which cloud-init can recreate on image rebuilds and which ships with `PasswordAuthentication yes` — a real gotcha found during testing on live VPS instances), checks syntax with `sshd -t`, and restarts `sshd`.
-4. **Tests key login again, after the restart.** If it fails — automatic rollback: `10-hardening.conf` is removed, `sshd` is restarted with the old config, password login stays enabled.
-5. The one-time test key is always removed from `authorized_keys` at the end — only your real key remains.
+1. Asks for a public key (or uses whatever is already in `authorized_keys`).
+2. Generates a **one-time test keypair on the server itself**, temporarily adds it, and actually logs in via `ssh user@127.0.0.1` — **before** touching `sshd_config` at all.
+3. Only if that succeeds does it write `/etc/ssh/sshd_config.d/10-hardening.conf` (sorted before `50-cloud-init.conf`, which cloud-init can recreate), check `sshd -t`, and restart `sshd`.
+4. **Tests key login again after the restart.** Fails → automatic rollback.
+5. The test key is always removed at the end — only your real key remains.
 
-Your current SSH session is never dropped at any point: restarting `sshd` doesn't kill already-open connections, it only stops accepting new ones — which is exactly what allows the script to test safely in the background without losing access if something goes wrong.
-
-If the script is run directly as root (without a regular user via `sudo`), it will refuse to run this step: locking down root login when root is the only user left to log in as would just lock you out.
+Your current SSH session is never dropped: restarting `sshd` doesn't kill open connections, only stops accepting new ones.
 
 ### UFW without surprises
 
-If the server already runs a VPN/proxy on a non-standard port (a common case), enabling a firewall that only allows port 22 will silently kill those services. So step 14 first prints the list of actually-listening TCP ports (`ss -tln`), and only then asks — defaulting to **no**. If confirmed, it allows the SSH port plus every detected port, not just 22.
+If the server already runs a VPN/proxy on a non-standard port, enabling a firewall that only allows port 22 will silently kill it. Item 15 first shows the list of actually-listening TCP ports, then asks — defaulting to **no**.
 
 ### ZRAM + swap
-
-Two-tier scheme: `zram` (compressed swap in RAM, fast) as the primary layer, plus a disk `swapfile` as a fallback cushion in case `zram` fills up.
 
 ```
 RAM
@@ -123,14 +151,14 @@ RAM
 zram (~75% of RAM, lz4, priority 100)   ← used first
  │
  ▼
-disk swapfile (1 GB, priority 10)       ← only if zram is already full
+disk swap (1 GB, priority 10)           ← only if zram is already full
  │
  ▼
-earlyoom (optional)                     ← kills the most memory-hungry process
+earlyoom (optional)                     ← kills the hungriest process
                                             before the kernel OOM killer does it blindly
 ```
 
-Plus `sysctl`: `vm.swappiness=80` (the system leans into zram more eagerly — it's cheap, it's RAM) and `vm.vfs_cache_pressure=50` (balance against file cache on a small VPS).
+Plus `sysctl`: `vm.swappiness=80` and `vm.vfs_cache_pressure=50`.
 
 ---
 
@@ -138,10 +166,9 @@ Plus `sysctl`: `vm.swappiness=80` (the system leans into zram more eagerly — i
 
 > Placeholder — add images to `assets/` and wire them up here:
 
-- [ ] `assets/fastfetch.png` — final `fastfetch` output (border, icons, colors)
-- [ ] `assets/eza.png` — `eza --icons -la` in action
-- [ ] `assets/setup-run.png` — `vps-setup` mid-run (colored `[i]`/`[✓]`/`[!]` steps)
-- [ ] `assets/ssh-hardening.png` — output of the self-testing SSH hardening step
+- [ ] `assets/fastfetch.png` — final `fastfetch` output
+- [ ] `assets/menu.png` — `vsu` main menu, table-formatted status view
+- [ ] `assets/ssh-hardening.png` — self-testing SSH hardening output
 
 ```markdown
 ![fastfetch](assets/fastfetch.png)
@@ -153,10 +180,10 @@ Plus `sysctl`: `vm.swappiness=80` (the system leans into zram more eagerly — i
 
 ```
 UbuntuServer-Fast-Configuration/
-├── install.sh       # thin bootstrapper — downloads setup.sh, installs it as the vps-setup command
+├── install.sh       # thin bootstrapper — downloads setup.sh, installs it as the vsu command
 ├── setup.sh         # main script: menu, self-update, everything described above
 ├── config.jsonc     # fastfetch config (border, icons, colors)
-├── VERSION          # current setup.sh version, checked on every run
+├── VERSION          # current version, checked on every run
 ├── README.md         # Russian version
 ├── README.en.md      # this file
 └── LICENSE
@@ -164,44 +191,45 @@ UbuntuServer-Fast-Configuration/
 
 ## Customization
 
-Your own `fastfetch` config — just edit `config.jsonc` in the repo and commit; `setup.sh` fetches it directly from the raw URL on every run.
+Your own `fastfetch` config — edit `config.jsonc` and commit; `setup.sh` fetches it from the raw URL on every run.
 
-Your own fork — change `REPO_RAW_BASE` at the top of both `install.sh` and `setup.sh`:
+Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.sh`:
 
 ```bash
 REPO_RAW_BASE="https://raw.githubusercontent.com/<your-user>/<your-fork>/<branch-or-tag>"
 ```
 
-A specific tag is recommended over `main` — that way you can update the config in the repo without risking an unexpected change on servers that already ran the script.
-
-**Important:** whenever you edit `setup.sh` in the repo, bump the number in the `VERSION` file — that's what `vps-setup` checks to know an update exists. If `VERSION` isn't bumped, already-installed copies won't see the change.
+**Important:** whenever you edit `setup.sh`, bump the number in `VERSION` — that's what `vsu` checks to know an update exists. Forget it, and already-installed copies won't see the change.
 
 ## Requirements
 
-- Ubuntu 24.04 or 26.04 (untested on other versions)
+- Ubuntu 24.04 or 26.04 (untested elsewhere)
 - root access (`sudo`)
 - outbound internet access (apt, PPA, GitHub raw, download.docker.com, starship.rs)
 
 ## Deliberately not automated
 
-- Changing the SSH port from 22 to something non-standard
-- Locking the root password (`passwd -l root`) — redundant once `PermitRootLogin` is disabled
+- Changing the SSH port from 22
+- Locking the root password (`passwd -l root`) — redundant once `PermitRootLogin` is off
 - Finer-grained UFW rules (rate-limiting, specific IPs)
-- Setting up the actual VPN/proxy stack (Xray, MTProto, etc.) — that's a separate, server-specific task, not a generic bootstrap
+- Setting up the actual VPN/proxy stack — that's a separate, server-specific task
 
 ## FAQ / known gotchas
 
+**New aliases didn't show up after installing the configs.**
+The script runs in its own subprocess — `source ~/.bashrc` executed FROM the script can't affect your current interactive session (a child process can't change its parent's environment). Run `source ~/.bashrc` yourself in your own terminal, or just reconnect via SSH.
+
 **Docker install fails with an error about the distro codename.**
-The official Docker repository sometimes lags a few weeks behind fresh Ubuntu releases. The script detects the missing packages for the current codename and falls back to `noble` (24.04) — the packages are compatible. If that still doesn't help, check manually: `apt-cache policy docker-ce-cli`.
+The official Docker repo sometimes lags behind fresh Ubuntu releases. The script detects this and falls back to `noble` — the packages are compatible.
 
-**After the `zram` step, `swapon --show` doesn't show what I expected.**
-Check `journalctl -u zramswap` — often the old device just didn't release cleanly. `sudo swapoff -a && sudo systemctl restart zramswap` usually fixes it.
+**After the zram item, `swapon --show` doesn't show what I expected.**
+Check `journalctl -u zramswap` — often the old device didn't release cleanly. `sudo swapoff -a && sudo systemctl restart zramswap` usually fixes it.
 
-**I want to reconsider the SSH hardening/UFW decision without rebuilding the server.**
-Just run `sudo vps-setup` again — for already-configured items the script shows the current state and asks whether to change it.
+**I want to reconsider SSH hardening/UFW without rebuilding the server.**
+Run `sudo vsu` again — for already-configured items the menu shows the current state and asks whether to change it.
 
 **`/etc/sysctl.conf` doesn't exist on the server.**
-Normal for many cloud images (Oracle Cloud, etc.). The script uses `/etc/sysctl.d/99-zram.conf` instead — that's the officially recommended approach on modern Ubuntu/Debian, no need to create `/etc/sysctl.conf`.
+Normal for many cloud images. The script uses `/etc/sysctl.d/99-zram.conf` — the officially recommended approach on modern Ubuntu/Debian.
 
 ## License
 
