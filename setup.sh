@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="4.1.0"
+VERSION="4.2.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -24,13 +24,13 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
-log_info()    { echo -e "  ${CYAN}[i]${NC} $1"; }
-log_success() { echo -e "  ${GREEN}[✓]${NC} $1"; }
-log_warn()    { echo -e "  ${YELLOW}[!]${NC} $1" >&2; }
-log_error()   { echo -e "  ${RED}[✗]${NC} $1" >&2; }
+log_info()    { echo -e "  ${CYAN}[i]${NC} ${1:-}"; }
+log_success() { echo -e "  ${GREEN}[✓]${NC} ${1:-}"; }
+log_warn()    { echo -e "  ${YELLOW}[!]${NC} ${1:-}" >&2; }
+log_error()   { echo -e "  ${RED}[✗]${NC} ${1:-}" >&2; }
 
 ask_yn() {
-    local question="$1" default="${2:-Y}" reply prompt
+    local question="${1:-}" default="${2:-Y}" reply prompt
     if [ "$default" = "Y" ]; then prompt="[Y/n]"; else prompt="[y/N]"; fi
     echo -en "  ${BOLD}${question}${NC} ${DIM}${prompt}:${NC} "
     read -r reply </dev/tty
@@ -41,9 +41,14 @@ ask_yn() {
 show_header() {
     clear 2>/dev/null || printf '\033[2J\033[H'
     echo ""
-    echo -e "  ${CYAN}${BOLD}vps-setup${NC} ${DIM}v${VERSION}${NC}"
-    echo -e "  ${DIM}CLI tools + Docker + zram/swap + fastfetch + starship + hardening${NC}"
-    echo -e "  ${DIM}────────────────────────────────────────${NC}"
+    echo -e "  ${CYAN}██╗   ██╗██████╗ ███████╗      ███████╗███████╗████████╗██╗   ██╗██████╗ ${NC}"
+    echo -e "  ${CYAN}██║   ██║██╔══██╗██╔════╝      ██╔════╝██╔════╝╚══██╔══╝██║   ██║██╔══██╗${NC}"
+    echo -e "  ${CYAN}██║   ██║██████╔╝███████╗█████╗███████╗█████╗     ██║   ██║   ██║██████╔╝${NC}"
+    echo -e "  ${CYAN}╚██╗ ██╔╝██╔═══╝ ╚════██║╚════╝╚════██║██╔══╝     ██║   ██║   ██║██╔═══╝ ${NC}"
+    echo -e "  ${CYAN} ╚████╔╝ ██║     ███████║      ███████║███████╗   ██║   ╚██████╔╝██║     ${NC}"
+    echo -e "  ${CYAN}  ╚═══╝  ╚═╝     ╚══════╝      ╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝     ${NC}"
+    echo -e "  ${BOLD}vps-setup${NC} ${DIM}v${VERSION} by SkyDeaD${NC}    ${DIM}CLI · Docker · zram/swap · fastfetch · starship · hardening${NC}"
+    echo -e "  ${CYAN}────────────────────────────────────────────────────────────────────${NC}"
 }
 
 pause() {
@@ -740,7 +745,7 @@ ITEM_IDS=(update cli basepkgs docker nginx fastfetch starship dotfiles tmux dock
 ITEM_TITLES=(
     "Обновление системы"
     "CLI-утилиты (eza/bat/fd/ripgrep/zoxide/ncdu)"
-    "Базовые пакеты (micro/curl/wget/git/nano/certbot/...)"
+    "Базовые пакеты (micro/curl/git/certbot/...)"
     "Docker + Compose"
     "nginx-full"
     "fastfetch"
@@ -757,31 +762,43 @@ ITEM_TITLES=(
 DISABLE_SUPPORTED=(dockerlog fail2ban unattended zram ufw)
 
 item_supports_disable() {
-    local id="$1" d
+    local id="${1:-}" d
     for d in "${DISABLE_SUPPORTED[@]}"; do [ "$d" = "$id" ] && return 0; done
     return 1
 }
 
 show_menu() {
     show_header
-    echo -e "  ${DIM}Пользователь: ${TARGET_USER}  ·  SSH-порт: ${SSH_PORT}${NC}"
+    echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
     echo ""
     local i=1 id
     for id in "${ITEM_IDS[@]}"; do
+        case "$i" in
+            1) echo -e "  ${DIM}── база ──────────────────────────────────────────${NC}" ;;
+            4) echo -e "  ${DIM}── сервисы ───────────────────────────────────────${NC}" ;;
+            10) echo -e "  ${DIM}── защита и обслуживание ────────────────────────${NC}" ;;
+        esac
         local status_line
         status_line="$(status_"$id")"
-        printf "  ${BOLD}%2d${NC}  %-46s %b\n" "$i" "${ITEM_TITLES[$((i-1))]}" "$status_line"
+        echo -e "  ${CYAN}$(printf '%2d' "$i")${NC}  ${ITEM_TITLES[$((i-1))]}  ${status_line}"
         i=$((i+1))
     done
     echo ""
-    echo -e "  ${CYAN}A${NC}        применить всё ещё не применённое"
-    echo -e "  ${CYAN}d<номер>${NC} отключить (только: dockerlog/fail2ban/unattended/zram/ufw — 10,11,12,13,15)"
-    echo -e "  ${CYAN}Q${NC}        выход"
+    echo -e "  ${DIM}─────────────────────────────────────────────────────${NC}"
+    echo -e "  ${CYAN}${BOLD}A${NC}        применить всё ещё не применённое"
+    echo -e "  ${CYAN}${BOLD}d<номер>${NC} отключить (только: dockerlog/fail2ban/unattended/zram/ufw — 10,11,12,13,15)"
+    echo -e "  ${CYAN}${BOLD}Q${NC}        выход"
     echo ""
 }
 
 run_item() {
-    local idx="$1" id="${ITEM_IDS[$((idx-1))]}"
+    local idx="${1:-}"
+    if [[ -z "$idx" || ! "$idx" =~ ^[0-9]+$ ]]; then
+        log_error "Внутренняя ошибка: run_item вызван без корректного номера пункта"
+        pause
+        return 1
+    fi
+    local id="${ITEM_IDS[$((idx-1))]}"
     echo ""
     echo -e "${CYAN}${BOLD}→ ${ITEM_TITLES[$((idx-1))]}${NC}"
     echo -e "${DIM}────────────────────────────────────────${NC}"
@@ -790,7 +807,13 @@ run_item() {
 }
 
 disable_item() {
-    local idx="$1" id="${ITEM_IDS[$((idx-1))]}"
+    local idx="${1:-}"
+    if [[ -z "$idx" || ! "$idx" =~ ^[0-9]+$ ]]; then
+        log_error "Внутренняя ошибка: disable_item вызван без корректного номера пункта"
+        pause
+        return 1
+    fi
+    local id="${ITEM_IDS[$((idx-1))]}"
     if ! item_supports_disable "$id"; then
         echo ""
         log_warn "Автоматическая отмена для «${ITEM_TITLES[$((idx-1))]}» не поддерживается скриптом"
