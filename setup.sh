@@ -29,8 +29,13 @@ log_success() { echo -e "  ${GREEN}[✓]${NC} ${1:-}"; }
 log_warn()    { echo -e "  ${YELLOW}[!]${NC} ${1:-}" >&2; }
 log_error()   { echo -e "  ${RED}[✗]${NC} ${1:-}" >&2; }
 
+BULK_MODE=false
+
 ask_yn() {
     local question="${1:-}" default="${2:-Y}" reply prompt
+    if [ "$BULK_MODE" = true ]; then
+        [ "$default" = "Y" ] && return 0 || return 1
+    fi
     if [ "$default" = "Y" ]; then prompt="[Y/n]"; else prompt="[y/N]"; fi
     echo -en "  ${BOLD}${question}${NC} ${DIM}${prompt}:${NC} "
     read -r reply </dev/tty
@@ -83,17 +88,27 @@ SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 # Самообновление — сверяется при каждом запуске
 # ═══════════════════════════════════════════════════════════════
 check_for_update() {
-    log_info "Проверяю обновления vps-setup..."
     local remote_version
     remote_version="$(curl -fsSL --max-time 5 "${REPO_RAW_BASE}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+
     if [ -z "$remote_version" ]; then
-        log_warn "Не удалось проверить обновления (нет сети или файла VERSION в репо) — продолжаю с текущей версией"
-        return
+        log_warn "Не удалось проверить обновления (нет сети или файла VERSION в репо)"
+        return 0
     fi
+
     if [ "$remote_version" = "$VERSION" ]; then
-        log_success "Установлена последняя версия (${VERSION})"
-        return
+        return 1
     fi
+
+    # sort -V — версии сравниваются по-настоящему (4.2.0 > 4.1.1), а не строковым "!="
+    local newest
+    newest="$(printf '%s\n%s\n' "$VERSION" "$remote_version" | sort -V | tail -n1)"
+    if [ "$newest" = "$VERSION" ]; then
+        # локальная версия уже новее (или равна) той, что в репозитории — предлагать
+        # "обновиться" на более старую значило бы откатывать себя назад молча
+        return 1
+    fi
+
     log_info "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}"
     if ask_yn "Обновить vps-setup до ${remote_version} сейчас?"; then
         local tmp
@@ -114,6 +129,7 @@ check_for_update() {
             rm -f "$tmp"
         fi
     fi
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -122,20 +138,28 @@ check_for_update() {
 status_update()   { echo -e "${DIM}(действие, не отслеживается)${NC}"; return 1; }
 
 status_cli() {
-    local c
+    local c missing=""
     for c in eza bat fd-find ripgrep zoxide ncdu; do
-        dpkg -s "$c" &>/dev/null || { echo -e "${YELLOW}○ не всё установлено${NC}"; return 1; }
+        dpkg -s "$c" &>/dev/null || missing="${missing}${missing:+, }${c}"
     done
+    if [ -n "$missing" ]; then
+        echo -e "${YELLOW}○ не хватает: ${missing}${NC}"; return 1
+    fi
     echo -e "${GREEN}✓ установлено${NC}"; return 0
 }
 
-BASE_PKGS="micro curl wget git nano certbot python3-certbot-nginx unzip htop dnsutils jq software-properties-common ca-certificates gnupg rsync"
+# dnsutils в Ubuntu 26.04 — виртуальный пакет (алиас), apt install его резолвит,
+# но dpkg -s dnsutils ничего не находит; реальное имя пакета — bind9-dnsutils
+BASE_PKGS="micro curl wget git nano certbot python3-certbot-nginx unzip htop bind9-dnsutils jq software-properties-common ca-certificates gnupg rsync"
 
 status_basepkgs() {
-    local p
+    local p missing=""
     for p in $BASE_PKGS; do
-        dpkg -s "$p" &>/dev/null || { echo -e "${YELLOW}○ не всё установлено${NC}"; return 1; }
+        dpkg -s "$p" &>/dev/null || missing="${missing}${missing:+, }${p}"
     done
+    if [ -n "$missing" ]; then
+        echo -e "${YELLOW}○ не хватает: ${missing}${NC}"; return 1
+    fi
     echo -e "${GREEN}✓ установлено${NC}"; return 0
 }
 
@@ -240,7 +264,7 @@ status_zram() {
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) [ "$p" = "100" ] && zram_ok=true ;;
-            /swapfile)  [ "$p" = "10" ] && swap_ok=true ;;
+            *)          [ "$p" = "10" ] && swap_ok=true ;;
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
     if [ "$zram_ok" = true ] && [ "$swap_ok" = true ]; then
@@ -291,7 +315,7 @@ apply_update() {
 
 apply_cli() {
     if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu?"; then
-        apt-get install -y -qq eza bat fd-find ripgrep zoxide ncdu >/dev/null \
+        apt-get install -y eza bat fd-find ripgrep zoxide ncdu \
             && log_success "Установлено" || log_error "Установка не удалась"
     fi
 }
@@ -299,7 +323,7 @@ apply_cli() {
 apply_basepkgs() {
     if ask_yn "Установить базовый набор пакетов (${BASE_PKGS})?"; then
         # shellcheck disable=SC2086
-        apt-get install -y -qq $BASE_PKGS >/dev/null \
+        apt-get install -y $BASE_PKGS \
             && log_success "Базовый набор установлен" || log_error "Установка не удалась"
     fi
 }
@@ -309,7 +333,7 @@ apply_nginx() {
         log_info "nginx уже установлен"
     else
         if ! ask_yn "Установить nginx-full?"; then return; fi
-        apt-get install -y -qq nginx-full >/dev/null || { log_error "Установка не удалась"; return 1; }
+        apt-get install -y nginx-full || { log_error "Установка не удалась"; return 1; }
         log_success "nginx-full установлен"
     fi
     if ! systemctl is-active nginx &>/dev/null; then
@@ -324,7 +348,7 @@ apply_nginx() {
 
 apply_docker() {
     if ! ask_yn "Установить Docker + Docker Compose (официальный репозиторий)?"; then return; fi
-    apt-get install -y -qq ca-certificates curl >/dev/null || { log_error "Не удалось поставить зависимости"; return 1; }
+    apt-get install -y ca-certificates curl || { log_error "Не удалось поставить зависимости"; return 1; }
     install -m 0755 -d /etc/apt/keyrings
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || { log_error "Не удалось скачать GPG-ключ Docker"; return 1; }
     chmod a+r /etc/apt/keyrings/docker.asc
@@ -339,7 +363,7 @@ apply_docker() {
             > /etc/apt/sources.list.d/docker.list
         apt-get update -qq
     fi
-    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null \
+    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
         || { log_error "Установка Docker не удалась"; return 1; }
     systemctl enable --now docker >/dev/null
     usermod -aG docker "$TARGET_USER"
@@ -349,14 +373,14 @@ apply_docker() {
 
 apply_fastfetch() {
     if ! ask_yn "Установить/обновить fastfetch (через PPA)?"; then return; fi
-    add-apt-repository -y ppa:zhangsongcui3371/fastfetch >/dev/null 2>&1
+    add-apt-repository -y ppa:zhangsongcui3371/fastfetch
     apt-get update -qq
-    apt-get install -y -qq fastfetch >/dev/null && log_success "fastfetch: $(fastfetch --version)" || log_error "Установка не удалась"
+    apt-get install -y fastfetch && log_success "fastfetch: $(fastfetch --version)" || log_error "Установка не удалась"
 }
 
 apply_starship() {
     if ask_yn "Установить starship?"; then
-        curl -sS https://starship.rs/install.sh | sh -s -- -y >/dev/null && log_success "starship установлен" || log_error "Установка не удалась"
+        curl -sS https://starship.rs/install.sh | sh -s -- -y && log_success "starship установлен" || log_error "Установка не удалась"
     fi
 }
 
@@ -382,7 +406,10 @@ alias ll='eza -lah --icons --group-directories-first'
 alias la='eza -a --icons --group-directories-first'
 alias lt='eza --tree --icons --level=2 --group-directories-first'
 alias cat='batcat --paging=never'
+alias catp='batcat'
+alias scat='sudo batcat -paging=never'
 alias fd='fdfind'
+alias vps-setup='sudo vps-setup'
 
 if [ -x "\$(command -v fastfetch)" ]; then
     fastfetch
@@ -400,7 +427,7 @@ EOF
 apply_tmux() {
     if ! command -v tmux &>/dev/null; then
         if ask_yn "Установить tmux?"; then
-            apt-get install -y -qq tmux >/dev/null && log_success "tmux установлен" || { log_error "Установка не удалась"; return 1; }
+            apt-get install -y tmux && log_success "tmux установлен" || { log_error "Установка не удалась"; return 1; }
         else
             return
         fi
@@ -456,7 +483,7 @@ PYEOF
 
 apply_fail2ban() {
     if ! ask_yn "Установить fail2ban?"; then return; fi
-    apt-get install -y -qq fail2ban >/dev/null || { log_error "Установка не удалась"; return 1; }
+    apt-get install -y fail2ban || { log_error "Установка не удалась"; return 1; }
     cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
@@ -471,7 +498,7 @@ EOF
 
 apply_unattended() {
     if ! ask_yn "Включить автообновление security-патчей?"; then return; fi
-    apt-get install -y -qq unattended-upgrades >/dev/null || { log_error "Установка не удалась"; return 1; }
+    apt-get install -y unattended-upgrades || { log_error "Установка не удалась"; return 1; }
     cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -481,11 +508,11 @@ EOF
 }
 
 apply_zram() {
-    local zram_active=false zram_prio="" swap_active=false swap_prio=""
+    local zram_active=false zram_prio="" swap_active=false swap_prio="" swap_path=""
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) zram_active=true; zram_prio="$p" ;;
-            /swapfile)  swap_active=true; swap_prio="$p" ;;
+            *)          swap_active=true; swap_prio="$p"; swap_path="$n" ;;
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
 
@@ -495,14 +522,14 @@ apply_zram() {
         else
             log_warn "zram активен, но приоритет ${zram_prio} (в гайде — 100), похоже настраивали вручную"
             if ask_yn "Перенастроить под рекомендованные значения?" N; then
-                apt-get install -y -qq zram-tools >/dev/null
+                apt-get install -y zram-tools
                 printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
                 systemctl restart zramswap
                 log_success "zram перенастроен"
             fi
         fi
     elif ask_yn "Установить и настроить zram-tools (lz4, 75% RAM, приоритет 100)?"; then
-        apt-get install -y -qq zram-tools >/dev/null
+        apt-get install -y zram-tools
         printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
         systemctl restart zramswap
         log_success "zram-tools установлен и настроен"
@@ -510,12 +537,14 @@ apply_zram() {
 
     if [ "$swap_active" = true ]; then
         if [ "$swap_prio" = "10" ]; then
-            log_success "swapfile уже настроен (приоритет 10) — пропускаю"
+            log_success "Резервный своп на диске (${swap_path}) уже настроен (приоритет 10) — пропускаю"
         else
-            log_warn "swapfile активен, но приоритет ${swap_prio} (в гайде — 10)"
-            if ask_yn "Исправить приоритет swapfile в /etc/fstab на 10?" N; then
-                sed -i -E 's#^(/swapfile\s+none\s+swap\s+)sw([^,].*)?$#\1sw,pri=10\2#' /etc/fstab
-                swapoff /swapfile 2>/dev/null || true
+            log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (в гайде — 10)"
+            if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?" N; then
+                local esc_path
+                esc_path="$(printf '%s' "$swap_path" | sed 's/[.[\*^$/]/\\&/g')"
+                sed -i -E "s#^(${esc_path}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
+                swapoff "$swap_path" 2>/dev/null || true
                 swapon -a
                 log_success "Приоритет исправлен"
             fi
@@ -552,7 +581,7 @@ apply_zram() {
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
         log_success "earlyoom уже включён"
     elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
-        apt-get install -y -qq earlyoom >/dev/null
+        apt-get install -y earlyoom
         systemctl enable --now earlyoom >/dev/null
         log_success "earlyoom установлен"
     fi
@@ -686,7 +715,7 @@ apply_ufw() {
     echo ""
     log_warn "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его"
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
-    apt-get install -y -qq ufw >/dev/null
+    apt-get install -y ufw
     ufw allow "${SSH_PORT}"/tcp >/dev/null
     while read -r p; do
         [ -n "$p" ] && ufw allow "${p}"/tcp >/dev/null
@@ -785,48 +814,31 @@ show_menu() {
     done
     echo ""
     echo -e "  ${DIM}─────────────────────────────────────────────────────${NC}"
+    echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}   применить один пункт или сразу несколько"
+    echo -e "  ${DIM}уже применённый пункт из группы «защита и обслуживание» — предложит отключить${NC}"
     echo -e "  ${CYAN}${BOLD}A${NC}        применить всё ещё не применённое"
-    echo -e "  ${CYAN}${BOLD}d<номер>${NC} отключить (только: dockerlog/fail2ban/unattended/zram/ufw — 10,11,12,13,15)"
+    echo -e "  ${CYAN}${BOLD}R${NC}        показать команды отката (справочно, ничего не выполняет)"
+    echo -e "  ${CYAN}${BOLD}U${NC}        удалить сам vps-setup из системы"
     echo -e "  ${CYAN}${BOLD}Q${NC}        выход"
     echo ""
 }
 
-run_item() {
-    local idx="${1:-}"
-    if [[ -z "$idx" || ! "$idx" =~ ^[0-9]+$ ]]; then
-        log_error "Внутренняя ошибка: run_item вызван без корректного номера пункта"
-        pause
-        return 1
-    fi
+process_item() {
+    local idx="$1"
     local id="${ITEM_IDS[$((idx-1))]}"
     echo ""
+    if item_supports_disable "$id"; then
+        status_"$id" >/dev/null
+        if [ $? -eq 0 ]; then
+            echo -e "${CYAN}${BOLD}→ Отключить: ${ITEM_TITLES[$((idx-1))]}${NC}"
+            echo -e "${DIM}────────────────────────────────────────${NC}"
+            "disable_${id}"
+            return
+        fi
+    fi
     echo -e "${CYAN}${BOLD}→ ${ITEM_TITLES[$((idx-1))]}${NC}"
     echo -e "${DIM}────────────────────────────────────────${NC}"
     "apply_${id}"
-    pause
-}
-
-disable_item() {
-    local idx="${1:-}"
-    if [[ -z "$idx" || ! "$idx" =~ ^[0-9]+$ ]]; then
-        log_error "Внутренняя ошибка: disable_item вызван без корректного номера пункта"
-        pause
-        return 1
-    fi
-    local id="${ITEM_IDS[$((idx-1))]}"
-    if ! item_supports_disable "$id"; then
-        echo ""
-        log_warn "Автоматическая отмена для «${ITEM_TITLES[$((idx-1))]}» не поддерживается скриптом"
-        log_info "Это либо установка пакета (просто не мешает системе), либо шаг с реальным риском"
-        log_info "при неосторожном автоматическом откате (Docker, SSH hardening) — делай вручную"
-        pause
-        return
-    fi
-    echo ""
-    echo -e "${CYAN}${BOLD}→ Отключить: ${ITEM_TITLES[$((idx-1))]}${NC}"
-    echo -e "${DIM}────────────────────────────────────────${NC}"
-    "disable_${id}"
-    pause
 }
 
 apply_all_pending() {
@@ -835,19 +847,86 @@ apply_all_pending() {
         if [ "$id" != "update" ]; then
             status_"$id" >/dev/null
             if [ $? -ne 0 ]; then
-                run_item "$i"
+                process_item "$i"
             fi
         fi
         i=$((i+1))
     done
 }
 
+show_rollback_reference() {
+    show_header
+    echo -e "  ${BOLD}Откат по пунктам${NC} ${DIM}— только справка, ни одна из этих команд не выполняется скриптом сама${NC}"
+    echo -e "  ${DIM}Пункты 10 fail2ban / 11 unattended / 12 zram (частично) / 13 UFW уже откатываются прямо в меню —${NC}"
+    echo -e "  ${DIM}выбери их номер ещё раз, скрипт сам увидит, что применено, и предложит отключить${NC}"
+    echo ""
+    cat <<EOF
+  2  CLI-утилиты:
+     sudo apt purge eza bat fd-find ripgrep zoxide ncdu
+
+  3  Базовые пакеты (осторожно: curl/git/ca-certificates часто нужны другим программам,
+     не удаляй не глядя, что реально использует их ещё):
+     sudo apt purge micro certbot python3-certbot-nginx unzip htop dnsutils jq rsync
+
+  4  Docker — УДАЛЯЕТ все контейнеры/образы/volume без возврата, сначала забэкапь данные:
+     sudo systemctl stop docker
+     sudo apt purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+     sudo rm -rf /var/lib/docker /var/lib/containerd
+
+  5  nginx — УДАЛЯЕТ конфиги сайтов в /etc/nginx, если уже что-то настраивал поверх — забэкапь:
+     sudo systemctl stop nginx
+     sudo apt purge nginx-full
+     sudo rm -rf /etc/nginx
+
+  6  fastfetch:
+     sudo apt purge fastfetch
+     sudo add-apt-repository --remove ppa:zhangsongcui3371/fastfetch
+
+  7  starship:
+     sudo rm -f "\$(command -v starship)"
+
+  8  fastfetch config + .bashrc-блок:
+     rm -f ~/.config/fastfetch/config.jsonc
+     sed -i '/# >>> vps-setup >>>/,/# <<< vps-setup <<</d' ~/.bashrc
+
+  9  tmux:
+     sudo apt purge tmux
+     rm -f ~/.tmux.conf
+
+  14 SSH hardening — возвращает вход по паролю, убедись, что есть другой способ попасть
+     на сервер (консоль провайдера), прежде чем это делать:
+     sudo rm -f /etc/ssh/sshd_config.d/10-hardening.conf
+     sudo systemctl restart ssh
+     sudo rm -f /etc/sudoers.d/${TARGET_USER}
+EOF
+    echo ""
+    pause
+}
+
+uninstall_self() {
+    echo ""
+    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду vps-setup"
+    log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
+    log_info "этим не трогается. Для этого есть пункт R (справка по откату)"
+    if ask_yn "Точно удалить vps-setup из системы?" N; then
+        rm -f /usr/local/bin/vps-setup
+        rm -rf /opt/vps-setup
+        echo ""
+        log_success "vps-setup удалён. Пока."
+        exit 0
+    fi
+}
+
 main() {
     show_header
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
     log_info "SSH-порт: ${SSH_PORT}"
-    check_for_update
-    pause
+    # check_for_update возвращает 0, если реально что-то показал (есть апдейт / сеть недоступна) —
+    # тогда стоит дать прочитать. Если 1 — всё тихо (последняя версия или локальная новее репозитория),
+    # сразу в меню без лишнего Enter.
+    if check_for_update; then
+        pause
+    fi
 
     while true; do
         show_menu
@@ -856,23 +935,52 @@ main() {
         read -r choice </dev/tty
         case "$choice" in
             [Qq]) echo ""; log_info "Пока. Повторный запуск: sudo vps-setup"; break ;;
-            [Aa]) apply_all_pending ;;
-            d[0-9]|d[0-9][0-9])
-                local n="${choice#d}"
-                if [ "$n" -ge 1 ] && [ "$n" -le "${#ITEM_IDS[@]}" ] 2>/dev/null; then
-                    disable_item "$n"
+            [Rr]) show_rollback_reference ;;
+            [Uu]) uninstall_self; pause ;;
+            [Aa])
+                local -a pending=()
+                local i=1 id
+                for id in "${ITEM_IDS[@]}"; do
+                    if [ "$id" != "update" ]; then
+                        status_"$id" >/dev/null
+                        [ $? -ne 0 ] && pending+=("$i")
+                    fi
+                    i=$((i+1))
+                done
+                echo ""
+                if [ "${#pending[@]}" -eq 0 ]; then
+                    log_info "Уже всё применено, нечего добавлять"
+                    sleep 1
                 else
-                    log_error "Нет такого пункта"; sleep 1
+                    log_info "Не применено: ${pending[*]} (${#pending[@]} шт.)"
+                    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
+                    if ask_yn "Применить всё сразу?"; then
+                        BULK_MODE=true
+                        apply_all_pending
+                        BULK_MODE=false
+                    fi
+                    pause
                 fi
                 ;;
-            ''|*[!0-9]*)
-                log_error "Не понял ввод — номер пункта, A, d<номер> или Q"; sleep 1
-                ;;
             *)
-                if [ "$choice" -ge 1 ] && [ "$choice" -le "${#ITEM_IDS[@]}" ] 2>/dev/null; then
-                    run_item "$choice"
+                # один номер или несколько через пробел/запятую: "5", "1 3 5", "1,3,5"
+                local -a nums
+                IFS=', ' read -ra nums <<< "$choice"
+                local processed=false num
+                for num in "${nums[@]}"; do
+                    [ -z "$num" ] && continue
+                    if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#ITEM_IDS[@]}" ]; then
+                        process_item "$num"
+                        processed=true
+                    else
+                        log_error "Нет пункта «${num}»"
+                    fi
+                done
+                if [ "$processed" = true ]; then
+                    pause
                 else
-                    log_error "Нет такого пункта"; sleep 1
+                    log_error "Не понял ввод — номер пункта (можно несколько через пробел/запятую), A или Q"
+                    sleep 1
                 fi
                 ;;
         esac

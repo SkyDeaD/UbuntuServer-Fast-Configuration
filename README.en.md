@@ -48,7 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configura
 The script installs itself as the `vps-setup` command (symlinked into `/usr/local/bin`), checks for updates, and opens a menu. Run it again any time:
 
 ```bash
-sudo vps-setup
+vps-setup
 ```
 
 On every run, `vps-setup` first compares its own version against [`VERSION`](VERSION) in the repo — if there's a newer one, it offers to update and restarts itself as the new version. The menu shows the status of all 15 items at once (✓ applied / ○ not applied / ! differs from the recommended values), picking an item by number applies it, `A` applies everything not yet applied, and `d<number>` disables whatever is safe to disable (see [below](#idempotency)).
