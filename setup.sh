@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════
-#  vps-setup — команда: vsu
+#  vps-setup — команда: usfc
 #  Menu-driven: CLI tools + Docker + zram/swap + fastfetch + starship
 #  + hardening (fail2ban, unattended-upgrades, docker log rotation,
 #    tmux, SSH key-only hardening (self-testing), UFW)
@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="1.3"
+VERSION="1.3.2"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -409,14 +409,14 @@ alias cat='batcat --paging=never'
 alias catp='batcat'
 alias scat='sudo batcat --paging=never'
 alias fd='fdfind'
-alias vsu='sudo vsu'
+alias usfc='sudo usfc'
 
 if [ -x "\$(command -v fastfetch)" ]; then
     fastfetch
 fi
 
-eval "\$(zoxide init bash)"
-eval "\$(starship init bash)"
+command -v zoxide &>/dev/null && eval "\$(zoxide init bash)"
+command -v starship &>/dev/null && eval "\$(starship init bash)"
 # <<< vps-setup <<<
 EOF
         chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
@@ -835,7 +835,8 @@ show_menu() {
     echo ""
     echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}   применить один пункт или сразу несколько"
     echo -e "  ${DIM}уже применённый пункт из группы «защита и обслуживание» — предложит отключить${NC}"
-    echo -e "  ${CYAN}${BOLD}A${NC}        применить всё ещё не применённое"
+    echo -e "  ${CYAN}${BOLD}B${NC} / ${CYAN}${BOLD}S${NC} / ${CYAN}${BOLD}P${NC}    применить весь раздел разом (база / сервисы / защита)"
+    echo -e "  ${CYAN}${BOLD}A${NC}        применить вообще всё ещё не применённое"
     echo -e "  ${CYAN}${BOLD}H${NC}        справка по алиасам (ls/ll/la/lt/cat/catp/scat/fd)"
     echo -e "  ${CYAN}${BOLD}R${NC}        показать команды отката (справочно, ничего не выполняет)"
     echo -e "  ${CYAN}${BOLD}U${NC}        удалить сам vps-setup из системы"
@@ -861,17 +862,33 @@ process_item() {
     "apply_${id}"
 }
 
-apply_all_pending() {
+apply_group() {
+    local start="$1" end="$2" label="$3"
+    local -a pending=()
     local i=1 id
     for id in "${ITEM_IDS[@]}"; do
-        if [ "$id" != "update" ]; then
+        if [ "$i" -ge "$start" ] && [ "$i" -le "$end" ] && [ "$id" != "update" ]; then
             status_"$id" >/dev/null
-            if [ $? -ne 0 ]; then
-                process_item "$i"
-            fi
+            [ $? -ne 0 ] && pending+=("$i")
         fi
         i=$((i+1))
     done
+    echo ""
+    if [ "${#pending[@]}" -eq 0 ]; then
+        log_info "В разделе «${label}» уже всё применено"
+        sleep 1
+        return
+    fi
+    log_info "Раздел «${label}», не применено: ${pending[*]} (${#pending[@]} шт.)"
+    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
+    if ask_yn "Применить «${label}» сразу?"; then
+        BULK_MODE=true
+        for i in "${pending[@]}"; do
+            process_item "$i"
+        done
+        BULK_MODE=false
+    fi
+    pause
 }
 
 show_aliases_help() {
@@ -888,7 +905,7 @@ show_aliases_help() {
     printf "  ${CYAN}%-8s${NC} %-42s %s\n" "catp" "batcat"                                                  "то же, но с пейджером (для длинных файлов, поиск / внутри)"
     printf "  ${CYAN}%-8s${NC} %-42s %s\n" "scat" "sudo batcat --paging=never"                              "cat для файлов, читаемых только под root"
     printf "  ${CYAN}%-8s${NC} %-42s %s\n" "fd"   "fdfind"                                                  "быстрый поиск файлов, замена find"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "vsu"  "sudo vsu"                                                "запуск этого меню сразу с sudo"
+    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "usfc" "sudo usfc"                                                "запуск этого меню сразу с sudo"
     echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
     echo ""
     log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
@@ -948,11 +965,11 @@ EOF
 
 uninstall_self() {
     echo ""
-    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду vsu"
+    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду usfc"
     log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
     log_info "этим не трогается. Для этого есть пункт R (справка по откату)"
     if ask_yn "Точно удалить vps-setup из системы?" N; then
-        rm -f /usr/local/bin/vsu
+        rm -f /usr/local/bin/usfc
         rm -rf /opt/vps-setup
         echo ""
         log_success "vps-setup удалён. Пока."
@@ -977,34 +994,14 @@ main() {
         local choice
         read -r choice </dev/tty
         case "$choice" in
-            [Qq]) echo ""; log_info "Пока. Повторный запуск: sudo vsu"; break ;;
+            [Qq]) echo ""; log_info "Пока. Повторный запуск: usfc"; break ;;
+            [Hh]) show_aliases_help ;;
             [Rr]) show_rollback_reference ;;
             [Uu]) uninstall_self; pause ;;
-            [Aa])
-                local -a pending=()
-                local i=1 id
-                for id in "${ITEM_IDS[@]}"; do
-                    if [ "$id" != "update" ]; then
-                        status_"$id" >/dev/null
-                        [ $? -ne 0 ] && pending+=("$i")
-                    fi
-                    i=$((i+1))
-                done
-                echo ""
-                if [ "${#pending[@]}" -eq 0 ]; then
-                    log_info "Уже всё применено, нечего добавлять"
-                    sleep 1
-                else
-                    log_info "Не применено: ${pending[*]} (${#pending[@]} шт.)"
-                    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
-                    if ask_yn "Применить всё сразу?"; then
-                        BULK_MODE=true
-                        apply_all_pending
-                        BULK_MODE=false
-                    fi
-                    pause
-                fi
-                ;;
+            [Bb]) apply_group 1 3 "база" ;;
+            [Ss]) apply_group 4 9 "сервисы" ;;
+            [Pp]) apply_group 10 15 "защита и обслуживание" ;;
+            [Aa]) apply_group 1 "${#ITEM_IDS[@]}" "всё" ;;
             *)
                 # один номер или несколько через пробел/запятую: "5", "1 3 5", "1,3,5"
                 local -a nums valid=()
@@ -1020,7 +1017,7 @@ main() {
                 done
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта (можно несколько через пробел/запятую), A или Q"
+                    log_error "Не понял ввод — номер пункта (можно несколько через пробел/запятую), B/S/P/A, H, R, U или Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
@@ -1051,6 +1048,14 @@ main() {
     echo ""
     log_info "Nerd Font ставится в ЛОКАЛЬНОМ терминале — это шрифт клиента, не сервера, скриптом не решается"
     echo ""
+
+    # source ~/.bashrc отсюда не подействует на твою сессию — дочерний процесс не может
+    # менять окружение родительского. Но раз мы всё равно root (через sudo), можно вместо
+    # этого передать управление в свежий login-шелл нужного пользователя: он сам естественно
+    # прочитает .bashrc через .profile, и новые алиасы/промпт будут работать сразу.
+    if [ "$TARGET_USER" != "root" ] && ask_yn "Открыть свежий шелл с уже применёнными алиасами прямо сейчас?"; then
+        exec sudo -u "$TARGET_USER" -i
+    fi
 }
 
 main

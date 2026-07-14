@@ -14,8 +14,8 @@ fi
 mkdir -p "$INSTALL_DIR"
 curl -fsSL "${REPO_RAW_BASE}/setup.sh" -o "${INSTALL_DIR}/setup.sh"
 chmod +x "${INSTALL_DIR}/setup.sh"
-ln -sf "${INSTALL_DIR}/setup.sh" /usr/local/bin/vsu
+ln -sf "${INSTALL_DIR}/setup.sh" /usr/local/bin/usfc
 
-echo "vps-setup установлен как команда: vsu"
+echo "vps-setup установлен как команда: usfc"
 # Запускаем основной скрипт с stdin от терминала (нужно для интерактивных шагов, если появятся)
 exec "${INSTALL_DIR}/setup.sh" </dev/tty
