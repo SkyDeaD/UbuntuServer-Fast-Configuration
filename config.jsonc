@@ -1,0 +1,40 @@
+{
+  "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
+
+  "logo": {
+    "type": "builtin",
+    "source": "ubuntu_small",
+    "padding": { "right": 2 }
+  },
+
+  "display": {
+    "separator": "  "
+  },
+
+  "modules": [
+    {
+      "type": "title",
+      "format": "{#cyan}{user-name}{#}@{#magenta}{host-name}{#}"
+    },
+    { "type": "custom", "format": "{#cyan}╭──────────────────────────────────────────────────────────{#}" },
+
+    { "type": "os",       "key": "│  OS",         "keyColor": "cyan", "keyWidth": 16, "format": "{pretty-name<43}" },
+    { "type": "kernel",   "key": "│  Kernel",     "keyColor": "cyan", "keyWidth": 16, "format": "{release<43}" },
+    { "type": "uptime",   "key": "│ 󰥔 Uptime",   "keyColor": "cyan", "keyWidth": 16, "format": "{formatted<43}" },
+    { "type": "cpu",      "key": "│  CPU",        "keyColor": "cyan", "keyWidth": 16, "format": "{name<43}" },
+    { "type": "memory",   "key": "│  Memory",     "keyColor": "cyan", "keyWidth": 16, "format": "{used} / {total} ({percentage})" },
+    { "type": "swap",     "key": "│ 󰾴 Swap",     "keyColor": "cyan", "keyWidth": 16, "format": "{used} / {total} ({percentage})" },
+    { "type": "disk",     "key": "│ 󰋊 Storage",  "keyColor": "cyan", "keyWidth": 16, "folders": "/", "format": "{size-used} / {size-total} ({size-percentage})" },
+    { "type": "localip",  "key": "│ 󰩠 Local IP", "keyColor": "cyan", "keyWidth": 16, "format": "{ipv4<43}" },
+    {
+      "type": "publicip",
+      "key": "│ 󰩟 Public IP",
+      "keyColor": "cyan",
+      "keyWidth": 16,
+      "timeout": 2000,
+      "format": "{ip<43}"
+    },
+
+    { "type": "custom", "format": "{#cyan}╰──────────────────────────────────────────────────────────{#}" }
+  ]
+}
