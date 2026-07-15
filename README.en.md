@@ -2,8 +2,6 @@
 
 # UbuntuServer Fast Configuration
 
-
-
 ---
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
@@ -14,7 +12,7 @@
 
 <p align="center"><a href="README.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
-Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 15-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
+Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 12-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
 
 ## Contents
 
@@ -34,30 +32,55 @@ Every time you spin up a new VPS it's the same routine: get a decent `ls` going,
 curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash
 ```
 
-Installs itself as the `usfc` command (symlinked into `/usr/local/bin`) and opens the menu right away. After that, just `usfc` — no more `sudo` needed, item 6 adds `alias usfc='sudo usfc'` to `.bashrc` for you.
+Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. `alias usfc='sudo usfc'` is added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed.
 
-Inside the menu: a number (`5`, or several at once separated by spaces/commas: `1 3 5`), or a whole section — `B` for base, `S` for services, `P` for hardening, `A` for everything, and you can combine them (`B,S`, `5,P`). Anything applied as a batch asks once up front, then each item runs through its own default answers without stopping.
+```
+    #  Section    Item                      Status
+  ────────────────────────────────────────────────────────
+  [ 1]  base       Base packages             ○ missing: ...
+  [ 2]  base       CLI tools + starship      ✓ installed
+  [ 3]  base       fastfetch                 ✓ 2.66.0
+  ...
+  B/S/P/A — a whole section at once: base/services/hardening/everything
+```
+
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
 > Worth running on a test VPS at least once before a production box — not because something is guaranteed to break, but because the SSH hardening item could in theory lock you out if something goes sideways on the network during its self-test.
 
 ## What's inside
 
-| Section | Items |
-|---|---|
-| **base** | system update · base package set · modern CLI tools |
-| **services** | fastfetch · starship · configs + `.bashrc` · tmux · Docker + Compose · nginx-full |
-| **hardening** | Docker log rotation · fail2ban · unattended-upgrades · ZRAM + swap + sysctl + earlyoom · SSH hardening · UFW |
+| # | Section | Item |
+|---|---|---|
+| 1 | base | Base packages |
+| 2 | base | CLI tools + starship |
+| 3 | base | fastfetch |
+| 4 | base | tmux |
+| 5 | services | Docker + Compose |
+| 6 | services | nginx-full |
+| 7 | hardening | Docker log rotation |
+| 8 | hardening | fail2ban |
+| 9 | hardening | unattended-upgrades |
+| 10 | hardening | ZRAM + swap + sysctl + earlyoom |
+| 11 | hardening | SSH hardening |
+| 12 | hardening | UFW |
 
 <details>
-<summary>More detail on each section</summary>
+<summary>More detail on each item</summary>
 
-**Base** — `apt update/upgrade`; a base package set (`micro`, `curl`, `wget`, `git`, `nano`, `certbot` + `python3-certbot-nginx`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs); modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd` that learns your frequent directories; `ncdu` for disk usage).
+**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `certbot` + `python3-certbot-nginx`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. Deliberately item 1.
 
-**Services** — fastfetch version 2.64.0 or newer (that version floor matters — older releases don't support the padding syntax in format strings that the bundled `config.jsonc` relies on); starship; the fastfetch config itself plus `.bashrc` aliases — this item sits right after fastfetch/starship/the CLI tools on purpose, since it references them in its `eval` lines and aliases; tmux with a minimal config (mouse support, 10000-line history); Docker CE + Compose plugin from the official Docker repo (not the `docker.io` package from Ubuntu's own repos — that one's stale); nginx-full.
+**CLI tools + starship** — modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd`; `ncdu` for disk usage) plus the starship prompt — bundled together since it's all the same "what the terminal looks and feels like" layer. `.bashrc` aliases (`ls`/`ll`/`la`/`lt`/`cat`/`catp`/`scat`/`fd`) and the zoxide/starship `eval` lines are written by this same item, not a separate step later.
 
-**Hardening** — Docker log rotation (10 MB per file cap); fail2ban on whatever the server's actual SSH port is (not hardcoded to 22); unattended-upgrades; zram (lz4, 75% of RAM, priority 100) paired with a disk swapfile (1 GB, priority 10) plus `vm.swappiness=80` and `vm.vfs_cache_pressure=50` via `/etc/sysctl.d/99-zram.conf`, and optionally earlyoom; SSH hardening; UFW. This section comes last on purpose: UFW scans actually-listening ports when it enables — if Docker/nginx from the services section are already up, the firewall sees their ports immediately instead of only port 22.
+**fastfetch** — version 2.64.0 or newer (older releases don't support the padding syntax in format strings that the bundled `config.jsonc` relies on). The config and login autorun get written to `.bashrc` by this same item — no need to install fastfetch and then separately remember the config.
 
-Details for each item live inside the menu. Press `H` there for a reference on the aliases the script sets up (`ls`/`ll`/`la`/`lt`/`cat`/`catp`/`scat`/`fd`).
+**tmux** — with a minimal config (mouse support, 10000-line history).
+
+**Docker + Compose** — CE + Compose plugin from the official Docker repo (not the `docker.io` package from Ubuntu's own repos — that one's stale).
+
+**nginx-full**, **Docker log rotation** (10 MB per file cap), **fail2ban** (on the server's actual SSH port, not hardcoded to 22), **unattended-upgrades**, **ZRAM + swap** (zram lz4 75% of RAM priority 100 + disk swapfile 1 GB priority 10 + `vm.swappiness=80`/`vm.vfs_cache_pressure=50`, optionally earlyoom), **SSH hardening**, **UFW** — the hardening section comes last on purpose: UFW scans actually-listening ports when it enables, and if Docker/nginx are already up, the firewall sees their ports immediately instead of only port 22.
+
+System upgrade (`apt upgrade`) isn't a separate item — that decision is left to you; the script only runs `apt update` (just refreshing package lists) once on its own at startup.
 
 </details>
 
@@ -68,11 +91,11 @@ Every item is a pair of functions — one just reads the server's current state,
 <details>
 <summary>How the SSH hardening self-test actually works</summary>
 
-The riskiest item, and the only one where the script doesn't just apply a config and hope. Before disabling the password, it generates a one-time keypair right on the server, adds it to a temporary `authorized_keys`, and actually logs in via `ssh user@127.0.0.1` — once before touching `sshd_config`, to confirm the baseline even works, and again after restarting `sshd` with the new config. If either check fails, it rolls back automatically: removes `/etc/ssh/sshd_config.d/10-hardening.conf`, restarts `sshd` with the old settings, password stays on.
+The riskiest item, and the only one where the script doesn't just apply a config and hope. Before disabling the password, it generates a one-time keypair right on the server, adds it to a temporary `authorized_keys`, and actually logs in via `ssh user@127.0.0.1` — once before touching `sshd_config`, and again after restarting `sshd` with the new config. If either check fails, it rolls back automatically: removes `/etc/ssh/sshd_config.d/10-hardening.conf`, restarts `sshd` with the old settings, password stays on.
 
 The filename `10-hardening.conf` isn't arbitrary — configs in `sshd_config.d/` are read alphabetically, and a lot of cloud images already ship a `50-cloud-init.conf` with `PasswordAuthentication yes` that cloud-init can recreate on image rebuilds. `10` sorts before `50`, so ours wins the merge.
 
-Your current SSH session never drops during any of this — restarting `sshd` doesn't kill already-open connections, it just stops accepting new ones, which is exactly what makes it safe to test blind without losing access.
+Your current SSH session never drops during any of this — restarting `sshd` doesn't kill already-open connections, it just stops accepting new ones.
 
 </details>
 
@@ -85,44 +108,44 @@ Before enabling, the script parses `ss -tln` and shows what's actually listening
 
 ## Customization
 
-The fastfetch `config.jsonc` — edit and commit it, `setup.sh` pulls it from the raw URL on every run, nothing to keep in sync locally.
+The fastfetch `config.jsonc` — edit and commit it, `setup.sh` pulls it from the raw URL on every run.
 
-Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.sh`. Version checking runs off a separate `VERSION` file — if you edit `setup.sh`, bump it, or already-installed copies won't notice an update exists.
+Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.sh`. Version checking runs off a separate `VERSION` file — if you edit `setup.sh`, bump it.
 
 ## Deliberately not automated
 
-Changing the SSH port — too specific to a given setup. Locking the root password (`passwd -l root`) — redundant once `PermitRootLogin` is already `no`. Fine-grained UFW rules (rate-limiting, specific IPs) and setting up the actual VPN/proxy stack — separate, server-specific tasks, not a generic bootstrap.
+`apt upgrade` — you decide when. Changing the SSH port — too specific to a given setup. Locking the root password — redundant once `PermitRootLogin` is already `no`. Fine-grained UFW rules and setting up the actual VPN/proxy stack — separate, server-specific tasks.
 
 ## FAQ
 
 <details>
-<summary>New aliases didn't show up right after installing the configs</summary>
+<summary>New aliases didn't show up right after installing</summary>
 
-The script runs in a child process — `source ~/.bashrc` run from inside it can't touch your current SSH session, a child process doesn't change its parent's environment, a Unix limitation that no scripting trick gets around. The menu reminds you of this at the end — run `source ~/.bashrc` yourself, or just reconnect via SSH.
+The script runs in a child process — `source ~/.bashrc` run from inside it can't touch your current SSH session, a Unix limitation. Run `source ~/.bashrc` yourself, or reconnect via SSH.
 
 </details>
 
 <details>
 <summary>Docker install fails with an error about the distro codename</summary>
 
-The official Docker repo sometimes lags a couple weeks behind fresh Ubuntu releases. The script detects the missing packages for the current codename (`apt-cache policy docker-ce-cli`) and falls back to `noble` — fully compatible packages.
+The official Docker repo sometimes lags behind fresh Ubuntu releases — the script detects this and falls back to a compatible `noble`.
 
 </details>
 
 <details>
 <summary>I want to reconsider SSH hardening or UFW without rebuilding the server</summary>
 
-Run `usfc` again — for already-configured items the menu shows the current state and asks whether to change it, rather than doing it silently.
+Run `usfc` again — for already-configured items the menu shows the current state and asks whether to change it.
 
 </details>
 
 ## Contributing
 
-Built primarily for my own servers, so some of the choices (which exact packages, which defaults) reflect what's convenient for me. Bugs and suggestions are welcome — open an issue. PRs too, just flag it in an issue first if it's bigger than a one-liner so nothing gets rewritten for nothing.
+Built primarily for my own servers, so some of the choices reflect what's convenient for me. Bugs and suggestions are welcome — open an issue.
 
 ## Requirements
 
-Ubuntu 24.04 or 26.04 (untested elsewhere), root access, outbound internet for apt/PPA/GitHub raw/download.docker.com/starship.rs.
+Ubuntu 24.04 or 26.04, root access, outbound internet.
 
 ## License
 

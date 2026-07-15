@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="1.4.0"
+VERSION="2.0.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -20,6 +20,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
@@ -135,15 +137,17 @@ check_for_update() {
 # ═══════════════════════════════════════════════════════════════
 # STATUS-функции — только читают состояние, ничего не меняют
 # ═══════════════════════════════════════════════════════════════
-status_update()   { echo -e "${DIM}(действие, не отслеживается)${NC}"; return 1; }
-
 status_cli() {
     local c missing=""
     for c in eza bat fd-find ripgrep zoxide ncdu; do
         dpkg -s "$c" &>/dev/null || missing="${missing}${missing:+, }${c}"
     done
+    command -v starship &>/dev/null || missing="${missing}${missing:+, }starship"
     if [ -n "$missing" ]; then
         echo -e "${YELLOW}○ не хватает: ${missing}${NC}"; return 1
+    fi
+    if ! grep -qF "# >>> vps-setup:cli >>>" "${TARGET_HOME}/.bashrc" 2>/dev/null; then
+        echo -e "${YELLOW}! всё стоит, алиасов в .bashrc нет${NC}"; return 1
     fi
     echo -e "${GREEN}✓ установлено${NC}"; return 0
 }
@@ -184,35 +188,19 @@ status_docker() {
 }
 
 status_fastfetch() {
-    if command -v fastfetch &>/dev/null; then
-        local v lowest
-        v="$(fastfetch --version | grep -oP '\d+\.\d+\.\d+' | head -n1)"
-        lowest="$(printf '%s\n%s\n' "$v" "2.64.0" | sort -V | head -n1)"
-        if [ "$lowest" = "2.64.0" ]; then
-            echo -e "${GREEN}✓ ${v}${NC}"; return 0
-        else
-            echo -e "${YELLOW}! ${v} (нужна >= 2.64.0)${NC}"; return 1
-        fi
-    else
+    if ! command -v fastfetch &>/dev/null; then
         echo -e "${YELLOW}○ не установлен${NC}"; return 1
     fi
-}
-
-status_starship() {
-    command -v starship &>/dev/null \
-        && { echo -e "${GREEN}✓ установлен${NC}"; return 0; } \
-        || { echo -e "${YELLOW}○ не установлен${NC}"; return 1; }
-}
-
-status_dotfiles() {
-    local cfg_ok=false marker_ok=false
-    [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ] && cfg_ok=true
-    grep -qF "# >>> vps-setup >>>" "${TARGET_HOME}/.bashrc" 2>/dev/null && marker_ok=true
-    if [ "$cfg_ok" = true ] && [ "$marker_ok" = true ]; then
-        echo -e "${GREEN}✓ установлено${NC}"; return 0
-    else
-        echo -e "${YELLOW}○ не установлено${NC}"; return 1
+    local v lowest
+    v="$(fastfetch --version | grep -oP '\d+\.\d+\.\d+' | head -n1)"
+    lowest="$(printf '%s\n%s\n' "$v" "2.64.0" | sort -V | head -n1)"
+    if [ "$lowest" != "2.64.0" ]; then
+        echo -e "${YELLOW}! ${v} (нужна >= 2.64.0)${NC}"; return 1
     fi
+    if [ ! -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
+        echo -e "${YELLOW}! ${v}, конфига нет${NC}"; return 1
+    fi
+    echo -e "${GREEN}✓ ${v}${NC}"; return 0
 }
 
 status_tmux() {
@@ -301,22 +289,49 @@ status_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # APPLY-функции
 # ═══════════════════════════════════════════════════════════════
-apply_update() {
-    if ask_yn "Выполнить apt update && apt upgrade?"; then
-        apt-get update -qq
-        apt-get upgrade -y -qq
-        log_success "Система обновлена"
-        [ -f /var/run/reboot-required ] && log_warn "Требуется перезагрузка (обновилось ядро или системная библиотека)"
-    else
-        apt-get update -qq
-        log_info "Только apt update, upgrade пропущен"
-    fi
-}
-
 apply_cli() {
-    if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu?"; then
-        apt-get install -y eza bat fd-find ripgrep zoxide ncdu \
-            && log_success "Установлено" || log_error "Установка не удалась"
+    local need_install=false p
+    for p in eza bat fd-find ripgrep zoxide ncdu; do
+        dpkg -s "$p" &>/dev/null || need_install=true
+    done
+    command -v starship &>/dev/null || need_install=true
+
+    if [ "$need_install" = true ]; then
+        if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu, starship?"; then
+            apt-get install -y eza bat fd-find ripgrep zoxide ncdu \
+                && log_success "CLI-утилиты установлены" || log_error "Установка не удалась"
+            if ! command -v starship &>/dev/null; then
+                curl -sS https://starship.rs/install.sh | sh -s -- -y \
+                    && log_success "starship установлен" || log_error "Установка starship не удалась"
+            fi
+        fi
+    else
+        log_success "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены"
+    fi
+
+    # алиасы и промпт пишем сразу следом — не отдельным пунктом меню
+    local BASHRC="${TARGET_HOME}/.bashrc"
+    if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
+        log_info "Алиасы CLI-утилит в .bashrc уже есть"
+    else
+        cat >> "$BASHRC" <<EOF
+
+# >>> vps-setup:cli >>>
+alias ls='eza --icons --group-directories-first'
+alias ll='eza -lah --icons --group-directories-first'
+alias la='eza -a --icons --group-directories-first'
+alias lt='eza --tree --icons --level=2 --group-directories-first'
+alias cat='batcat --paging=never'
+alias catp='batcat'
+alias scat='sudo batcat --paging=never'
+alias fd='fdfind'
+command -v zoxide &>/dev/null && eval "\$(zoxide init bash)"
+command -v starship &>/dev/null && eval "\$(starship init bash)"
+# <<< vps-setup:cli <<<
+EOF
+        chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
+        log_success "Алиасы добавлены в .bashrc"
+        log_warn "Появятся в НОВОЙ сессии — либо source ~/.bashrc, либо переподключись"
     fi
 }
 
@@ -372,22 +387,30 @@ apply_docker() {
 }
 
 apply_fastfetch() {
-    if ! ask_yn "Установить/обновить fastfetch (через PPA)?"; then return; fi
-    add-apt-repository -y ppa:zhangsongcui3371/fastfetch
-    apt-get update -qq
-    apt-get install -y fastfetch && log_success "fastfetch: $(fastfetch --version)" || log_error "Установка не удалась"
-}
-
-apply_starship() {
-    if ask_yn "Установить starship?"; then
-        curl -sS https://starship.rs/install.sh | sh -s -- -y && log_success "starship установлен" || log_error "Установка не удалась"
+    local need_ppa=true
+    if command -v fastfetch &>/dev/null; then
+        local v lowest
+        v="$(fastfetch --version | grep -oP '\d+\.\d+\.\d+' | head -n1)"
+        lowest="$(printf '%s\n%s\n' "$v" "2.64.0" | sort -V | head -n1)"
+        [ "$lowest" = "2.64.0" ] && need_ppa=false
     fi
-}
+    if [ "$need_ppa" = true ]; then
+        if ask_yn "Установить/обновить fastfetch (через PPA)?"; then
+            add-apt-repository -y ppa:zhangsongcui3371/fastfetch
+            apt-get update -qq
+            apt-get install -y fastfetch && log_success "fastfetch: $(fastfetch --version)" || log_error "Установка не удалась"
+        fi
+    else
+        log_success "fastfetch уже подходящей версии"
+    fi
 
-apply_dotfiles() {
-    if ! ask_yn "Установить fastfetch config.jsonc и алиасы/хуки в .bashrc?"; then return; fi
+    # конфиг и автозапуск в .bashrc пишем сразу следом — не отдельным пунктом меню
+    if ! command -v fastfetch &>/dev/null; then return; fi
+
     sudo -u "$TARGET_USER" mkdir -p "${TARGET_HOME}/.config/fastfetch"
-    if curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
+    if [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
+        log_info "config.jsonc уже есть"
+    elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
         chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
         log_success "config.jsonc установлен"
     else
@@ -395,39 +418,20 @@ apply_dotfiles() {
     fi
 
     local BASHRC="${TARGET_HOME}/.bashrc"
-    if grep -qF "# >>> vps-setup >>>" "$BASHRC" 2>/dev/null; then
-        log_info "Блок vps-setup уже есть в .bashrc"
+    if grep -qF "# >>> vps-setup:fastfetch >>>" "$BASHRC" 2>/dev/null; then
+        log_info "Автозапуск fastfetch в .bashrc уже есть"
     else
         cat >> "$BASHRC" <<EOF
 
-# >>> vps-setup >>>
-alias ls='eza --icons --group-directories-first'
-alias ll='eza -lah --icons --group-directories-first'
-alias la='eza -a --icons --group-directories-first'
-alias lt='eza --tree --icons --level=2 --group-directories-first'
-alias cat='batcat --paging=never'
-alias catp='batcat'
-alias scat='sudo batcat --paging=never'
-alias fd='fdfind'
-alias usfc='sudo usfc'
-
+# >>> vps-setup:fastfetch >>>
 if [ -x "\$(command -v fastfetch)" ]; then
     fastfetch
 fi
-
-command -v zoxide &>/dev/null && eval "\$(zoxide init bash)"
-command -v starship &>/dev/null && eval "\$(starship init bash)"
-# <<< vps-setup <<<
+# <<< vps-setup:fastfetch <<<
 EOF
         chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
-        log_success ".bashrc обновлён"
+        log_success "Автозапуск добавлен в .bashrc"
     fi
-    # Скрипт работает в собственном подпроцессе — "source ~/.bashrc" отсюда
-    # никак не повлияет на твою текущую интерактивную сессию (дочерний процесс
-    # не может менять окружение родительского). Поэтому не пытаемся, а прямо говорим:
-    log_warn "Новые алиасы появятся только в НОВОЙ сессии — либо выполни сам:"
-    log_warn "  source ~/.bashrc"
-    log_warn "либо просто переподключись по SSH"
 }
 
 apply_tmux() {
@@ -458,7 +462,7 @@ EOF
 
 apply_dockerlog() {
     if ! command -v docker &>/dev/null; then
-        log_info "Docker не установлен — сначала установи Docker (пункт 8)"
+        log_info "Docker не установлен — сначала установи Docker (пункт 5)"
         return
     fi
     [ -f /etc/docker/daemon.json ] && log_warn "daemon.json уже существует, будет дополнен (не перезаписан целиком)"
@@ -776,24 +780,22 @@ disable_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # Меню
 # ═══════════════════════════════════════════════════════════════
-ITEM_IDS=(update basepkgs cli fastfetch starship dotfiles tmux docker nginx dockerlog fail2ban unattended zram sshhardening ufw)
+ITEM_IDS=(basepkgs cli fastfetch tmux docker nginx dockerlog fail2ban unattended zram sshhardening ufw)
 ITEM_TITLES=(
-    "Обновление системы"
-    "Базовые пакеты (micro/curl/git/certbot/...)"
-    "CLI-утилиты (eza/bat/fd/ripgrep/zoxide/ncdu)"
+    "Базовые пакеты"
+    "CLI-утилиты + starship"
     "fastfetch"
-    "starship"
-    "fastfetch config + .bashrc"
     "tmux"
     "Docker + Compose"
     "nginx-full"
     "Docker log rotation"
     "fail2ban"
     "unattended-upgrades"
-    "ZRAM + swap + sysctl + earlyoom"
+    "ZRAM + swap + earlyoom"
     "SSH hardening"
     "UFW firewall"
 )
+ITEM_SECTIONS=(база база база база сервисы сервисы защита защита защита защита защита защита)
 DISABLE_SUPPORTED=(dockerlog fail2ban unattended zram ufw)
 
 item_supports_disable() {
@@ -814,33 +816,32 @@ show_menu() {
     show_header
     echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
     echo ""
-    local header_title
-    header_title="$(pad_title "Пункт" 48)"
-    printf "  ${BOLD}%3s  %sСтатус${NC}\n" "#" "$header_title"
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..80})${NC}"
-    local i=1 id
+    local header_section header_title
+    header_section="$(pad_title "Раздел" 10)"
+    header_title="$(pad_title "Пункт" 26)"
+    printf "  ${BOLD}%5s  %s%sСтатус${NC}\n" "#" "$header_section" "$header_title"
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..92})${NC}"
+    local i=1 id section section_color
     for id in "${ITEM_IDS[@]}"; do
-        case "$i" in
-            1) echo -e "  ${DIM}── база ──${NC}" ;;
-            4) echo -e "  ${DIM}── сервисы ──${NC}" ;;
-            10) echo -e "  ${DIM}── защита и обслуживание ──${NC}" ;;
+        local status_line padded_title padded_section
+        section="${ITEM_SECTIONS[$((i-1))]}"
+        case "$section" in
+            база)     section_color="$CYAN" ;;
+            сервисы)  section_color="$BLUE" ;;
+            защита)   section_color="$MAGENTA" ;;
         esac
-        local status_line padded_title
         status_line="$(status_"$id")"
-        padded_title="$(pad_title "${ITEM_TITLES[$((i-1))]}" 48)"
-        printf "  ${CYAN}%3d${NC}  %s%b\n" "$i" "$padded_title" "$status_line"
+        padded_section="$(pad_title "$section" 10)"
+        padded_title="$(pad_title "${ITEM_TITLES[$((i-1))]}" 26)"
+        printf "  ${BOLD}[%2d]${NC}  ${section_color}%s${NC}%s%b\n" "$i" "$padded_section" "$padded_title" "$status_line"
         i=$((i+1))
     done
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..80})${NC}"
+    echo -e "  ${DIM}$(printf -- '─%.0s' {1..92})${NC}"
     echo ""
-    echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}   применить один пункт или сразу несколько"
-    echo -e "  ${DIM}уже применённый пункт из группы «защита и обслуживание» — предложит отключить${NC}"
-    echo -e "  ${CYAN}${BOLD}B${NC} / ${CYAN}${BOLD}S${NC} / ${CYAN}${BOLD}P${NC}    применить весь раздел разом (база / сервисы / защита)"
-    echo -e "  ${CYAN}${BOLD}A${NC}        применить вообще всё ещё не применённое"
-    echo -e "  ${CYAN}${BOLD}H${NC}        справка по алиасам (ls/ll/la/lt/cat/catp/scat/fd)"
-    echo -e "  ${CYAN}${BOLD}R${NC}        показать команды отката (справочно, ничего не выполняет)"
-    echo -e "  ${CYAN}${BOLD}U${NC}        удалить сам vps-setup из системы"
-    echo -e "  ${CYAN}${BOLD}Q${NC}        выход"
+    echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}  — номер пункта, можно несколько сразу"
+    echo -e "  ${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
+    echo -e "  ${CYAN}${BOLD}B${NC}/${CYAN}${BOLD}S${NC}/${CYAN}${BOLD}P${NC}/${CYAN}${BOLD}A${NC} — раздел целиком: база/сервисы/защита/всё, можно сочетать (${DIM}B,S${NC})"
+    echo -e "  ${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
     echo ""
 }
 
@@ -864,7 +865,7 @@ process_item() {
 
 show_aliases_help() {
     show_header
-    echo -e "  ${BOLD}Алиасы, которые ставит пункт 6 (fastfetch config + .bashrc)${NC}"
+    echo -e "  ${BOLD}Алиасы${NC} ${DIM}(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)${NC}"
     echo ""
     printf "  ${BOLD}%-8s %-42s %s${NC}\n" "Алиас" "Реальная команда" "Что делает"
     echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
@@ -952,6 +953,24 @@ main() {
     show_header
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
     log_info "SSH-порт: ${SSH_PORT}"
+
+    # алиас usfc='sudo usfc' — не отдельный пункт меню, ставится сам при первом запуске,
+    # свой маркер, идемпотентно
+    local BASHRC="${TARGET_HOME}/.bashrc"
+    if ! grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
+        cat >> "$BASHRC" <<EOF
+
+# >>> vps-setup:self >>>
+alias usfc='sudo usfc'
+# <<< vps-setup:self <<<
+EOF
+        chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC" 2>/dev/null
+    fi
+
+    # apt update один раз за сессию — дальше все apt install по всему меню используют свежие списки,
+    # отдельного пункта "обновление системы" больше нет (apt upgrade — дело юзера, не скрипта)
+    apt-get update -qq 2>/dev/null
+
     # check_for_update возвращает 0, если реально что-то показал (есть апдейт / сеть недоступна) —
     # тогда стоит дать прочитать. Если 1 — всё тихо (последняя версия или локальная новее репозитория),
     # сразу в меню без лишнего Enter.
@@ -979,10 +998,10 @@ main() {
                     [ -z "$tok" ] && continue
                     upper="$(echo "$tok" | tr '[:lower:]' '[:upper:]')"
                     case "$upper" in
-                        B) valid+=(2 3) ;;
-                        S) valid+=(4 5 6 7 8 9) ;;
-                        P) valid+=(10 11 12 13 14 15) ;;
-                        A) for ((i = 2; i <= ${#ITEM_IDS[@]}; i++)); do valid+=("$i"); done ;;
+                        B) valid+=(1 2 3 4) ;;
+                        S) valid+=(5 6) ;;
+                        P) valid+=(7 8 9 10 11 12) ;;
+                        A) for ((i = 1; i <= ${#ITEM_IDS[@]}; i++)); do valid+=("$i"); done ;;
                         *)
                             if [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
                                 valid+=("$tok")
