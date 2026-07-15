@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.0.0"
+VERSION="2.1.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -31,6 +31,11 @@ log_success() { echo -e "  ${GREEN}[✓]${NC} ${1:-}"; }
 log_warn()    { echo -e "  ${YELLOW}[!]${NC} ${1:-}" >&2; }
 log_error()   { echo -e "  ${RED}[✗]${NC} ${1:-}" >&2; }
 
+# на Ubuntu 24.04+ needrestart может всплыть интерактивным диалогом посреди
+# apt-get install и подвесить безголовый скрипт — глушим заранее
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+
 BULK_MODE=false
 
 ask_yn() {
@@ -48,14 +53,15 @@ ask_yn() {
 show_header() {
     clear 2>/dev/null || printf '\033[2J\033[H'
     echo ""
-    echo -e "  ${CYAN}██╗   ██╗██████╗ ███████╗      ███████╗███████╗████████╗██╗   ██╗██████╗ ${NC}"
-    echo -e "  ${CYAN}██║   ██║██╔══██╗██╔════╝      ██╔════╝██╔════╝╚══██╔══╝██║   ██║██╔══██╗${NC}"
-    echo -e "  ${CYAN}██║   ██║██████╔╝███████╗█████╗███████╗█████╗     ██║   ██║   ██║██████╔╝${NC}"
-    echo -e "  ${CYAN}╚██╗ ██╔╝██╔═══╝ ╚════██║╚════╝╚════██║██╔══╝     ██║   ██║   ██║██╔═══╝ ${NC}"
-    echo -e "  ${CYAN} ╚████╔╝ ██║     ███████║      ███████║███████╗   ██║   ╚██████╔╝██║     ${NC}"
-    echo -e "  ${CYAN}  ╚═══╝  ╚═╝     ╚══════╝      ╚══════╝╚══════╝   ╚═╝    ╚═════╝ ╚═╝     ${NC}"
-    echo -e "  ${BOLD}vps-setup${NC} ${DIM}v${VERSION} by SkyDeaD${NC}    ${DIM}CLI · Docker · zram/swap · fastfetch · starship · hardening${NC}"
-    echo -e "  ${CYAN}────────────────────────────────────────────────────────────────────${NC}"
+    echo -e "  ${CYAN}██╗   ██╗███████╗███████╗ ██████╗${NC}"
+    echo -e "  ${CYAN}██║   ██║██╔════╝██╔════╝██╔════╝${NC}"
+    echo -e "  ${CYAN}██║   ██║███████╗█████╗  ██║     ${NC}"
+    echo -e "  ${CYAN}██║   ██║╚════██║██╔══╝  ██║     ${NC}"
+    echo -e "  ${CYAN}╚██████╔╝███████║██║     ╚██████╗${NC}"
+    echo -e "  ${CYAN} ╚═════╝ ╚══════╝╚═╝      ╚═════╝${NC}"
+    echo -e "  ${BOLD}USFC${NC} ${DIM}v${VERSION} by SkyDeaD${NC}   ${DIM}UbuntuServer Fast Configuration${NC}"
+    echo -e "  ${DIM}CLI · Docker · zram/swap · fastfetch · starship · hardening${NC}"
+    hr "$CYAN"
 }
 
 pause() {
@@ -112,7 +118,7 @@ check_for_update() {
     fi
 
     log_info "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}"
-    if ask_yn "Обновить vps-setup до ${remote_version} сейчас?"; then
+    if ask_yn "Обновить usfc до ${remote_version} сейчас?"; then
         local tmp
         tmp="$(mktemp)"
         if curl -fsSL "${REPO_RAW_BASE}/setup.sh" -o "$tmp"; then
@@ -144,7 +150,7 @@ status_cli() {
     done
     command -v starship &>/dev/null || missing="${missing}${missing:+, }starship"
     if [ -n "$missing" ]; then
-        echo -e "${YELLOW}○ не хватает: ${missing}${NC}"; return 1
+        echo -e "${DIM}○ не хватает: ${missing}${NC}"; return 1
     fi
     if ! grep -qF "# >>> vps-setup:cli >>>" "${TARGET_HOME}/.bashrc" 2>/dev/null; then
         echo -e "${YELLOW}! всё стоит, алиасов в .bashrc нет${NC}"; return 1
@@ -162,7 +168,7 @@ status_basepkgs() {
         dpkg -s "$p" &>/dev/null || missing="${missing}${missing:+, }${p}"
     done
     if [ -n "$missing" ]; then
-        echo -e "${YELLOW}○ не хватает: ${missing}${NC}"; return 1
+        echo -e "${DIM}○ не хватает: ${missing}${NC}"; return 1
     fi
     echo -e "${GREEN}✓ установлено${NC}"; return 0
 }
@@ -175,7 +181,7 @@ status_nginx() {
             echo -e "${YELLOW}! установлен, не запущен${NC}"; return 1
         fi
     else
-        echo -e "${YELLOW}○ не установлен${NC}"; return 1
+        echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
 }
 
@@ -183,13 +189,13 @@ status_docker() {
     if command -v docker &>/dev/null; then
         echo -e "${GREEN}✓ установлен ($(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1))${NC}"; return 0
     else
-        echo -e "${YELLOW}○ не установлен${NC}"; return 1
+        echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
 }
 
 status_fastfetch() {
     if ! command -v fastfetch &>/dev/null; then
-        echo -e "${YELLOW}○ не установлен${NC}"; return 1
+        echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
     local v lowest
     v="$(fastfetch --version | grep -oP '\d+\.\d+\.\d+' | head -n1)"
@@ -211,7 +217,7 @@ status_tmux() {
             echo -e "${YELLOW}! установлен, конфига нет${NC}"; return 1
         fi
     else
-        echo -e "${YELLOW}○ не установлен${NC}"; return 1
+        echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
 }
 
@@ -229,21 +235,21 @@ except Exception:
 " 2>/dev/null; then
         echo -e "${GREEN}✓ настроено (max-size=10m)${NC}"; return 0
     else
-        echo -e "${YELLOW}○ не настроено${NC}"; return 1
+        echo -e "${DIM}○ не настроено${NC}"; return 1
     fi
 }
 
 status_fail2ban() {
     systemctl is-active fail2ban &>/dev/null \
         && { echo -e "${GREEN}✓ запущен${NC}"; return 0; } \
-        || { echo -e "${YELLOW}○ не запущен${NC}"; return 1; }
+        || { echo -e "${DIM}○ не запущен${NC}"; return 1; }
 }
 
 status_unattended() {
     if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && grep -q 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
         echo -e "${GREEN}✓ включено${NC}"; return 0
     else
-        echo -e "${YELLOW}○ выключено${NC}"; return 1
+        echo -e "${DIM}○ выключено${NC}"; return 1
     fi
 }
 
@@ -260,7 +266,7 @@ status_zram() {
     elif [ "$zram_ok" = true ] || [ "$swap_ok" = true ]; then
         echo -e "${YELLOW}! настроено частично${NC}"; return 1
     else
-        echo -e "${YELLOW}○ не настроено${NC}"; return 1
+        echo -e "${DIM}○ не настроено${NC}"; return 1
     fi
 }
 
@@ -274,7 +280,7 @@ status_sshhardening() {
             echo -e "${YELLOW}! конфиг есть, но passwordauthentication=${pa}${NC}"; return 1
         fi
     else
-        echo -e "${YELLOW}○ не применено${NC}"; return 1
+        echo -e "${DIM}○ не применено${NC}"; return 1
     fi
 }
 
@@ -282,7 +288,7 @@ status_ufw() {
     if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         echo -e "${GREEN}✓ включён${NC}"; return 0
     else
-        echo -e "${YELLOW}○ выключен${NC}"; return 1
+        echo -e "${DIM}○ выключен${NC}"; return 1
     fi
 }
 
@@ -309,7 +315,13 @@ apply_cli() {
         log_success "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены"
     fi
 
-    # алиасы и промпт пишем сразу следом — не отдельным пунктом меню
+    # алиасы и промпт пишем сразу следом — не отдельным пунктом меню, но только если
+    # утилиты реально стоят: если пользователь отказался ставить или apt не смог,
+    # алиасы на несуществующие eza/batcat сломают ls/cat в следующей сессии
+    if ! command -v eza &>/dev/null && ! command -v batcat &>/dev/null; then
+        log_warn "eza/batcat не установлены — алиасы в .bashrc не пишу"
+        return
+    fi
     local BASHRC="${TARGET_HOME}/.bashrc"
     if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
         log_info "Алиасы CLI-утилит в .bashrc уже есть"
@@ -532,17 +544,23 @@ apply_zram() {
         else
             log_warn "zram активен, но приоритет ${zram_prio} (в гайде — 100), похоже настраивали вручную"
             if ask_yn "Перенастроить под рекомендованные значения?" N; then
-                apt-get install -y zram-tools
-                printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
-                systemctl restart zramswap
-                log_success "zram перенастроен"
+                if apt-get install -y zram-tools; then
+                    printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
+                    systemctl restart zramswap
+                    log_success "zram перенастроен"
+                else
+                    log_error "Установка zram-tools не удалась"
+                fi
             fi
         fi
     elif ask_yn "Установить и настроить zram-tools (lz4, 75% RAM, приоритет 100)?"; then
-        apt-get install -y zram-tools
-        printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
-        systemctl restart zramswap
-        log_success "zram-tools установлен и настроен"
+        if apt-get install -y zram-tools; then
+            printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
+            systemctl restart zramswap
+            log_success "zram-tools установлен и настроен"
+        else
+            log_error "Установка zram-tools не удалась"
+        fi
     fi
 
     if [ "$swap_active" = true ]; then
@@ -591,9 +609,12 @@ apply_zram() {
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
         log_success "earlyoom уже включён"
     elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
-        apt-get install -y earlyoom
-        systemctl enable --now earlyoom >/dev/null
-        log_success "earlyoom установлен"
+        if apt-get install -y earlyoom; then
+            systemctl enable --now earlyoom >/dev/null
+            log_success "earlyoom установлен"
+        else
+            log_error "Установка earlyoom не удалась"
+        fi
     fi
 
     echo ""
@@ -692,6 +713,19 @@ EOF
     sleep 1
     log_info "Проверяю вход по ключу ПОСЛЕ применения hardening..."
     if ssh_selftest; then
+        # вход по ключу подтверждает только то, что ключевая аутентификация жива —
+        # отдельно сверяем через sshd -T, что PasswordAuthentication реально no
+        # (например, без "Include .../sshd_config.d/*.conf" в базовом sshd_config
+        # наш дроп-ин просто не подхватился бы, а ключевой вход при этом всё равно работал)
+        local pa
+        pa="$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}')"
+        if [ "$pa" != "no" ]; then
+            log_error "Вход по ключу работает, но sshd -T показывает passwordauthentication=${pa:-?} — конфиг не применился"
+            log_error "Вероятная причина: в /etc/ssh/sshd_config нет 'Include /etc/ssh/sshd_config.d/*.conf'"
+            log_warn "Дроп-ин не откатываю — он и так не действует, откат ничего не изменит"
+            cleanup_test_key
+            return 1
+        fi
         log_success "SSH hardening применён: root-логин выключен, пароль выключен"
         log_info "Текущая сессия не разрывалась — рестарт sshd не убивает открытые соединения"
         cleanup_test_key
@@ -725,7 +759,7 @@ apply_ufw() {
     echo ""
     log_warn "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его"
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
-    apt-get install -y ufw
+    apt-get install -y ufw || { log_error "Установка UFW не удалась"; return 1; }
     ufw allow "${SSH_PORT}"/tcp >/dev/null
     while read -r p; do
         [ -n "$p" ] && ufw allow "${p}"/tcp >/dev/null
@@ -798,10 +832,90 @@ ITEM_TITLES=(
 ITEM_SECTIONS=(база база база база сервисы сервисы защита защита защита защита защита защита)
 DISABLE_SUPPORTED=(dockerlog fail2ban unattended zram ufw)
 
+# Параллельно ITEM_IDS — команды отката для справочного экрана (R). Пусто там,
+# где пункт входит в DISABLE_SUPPORTED: для них show_rollback_reference() сама
+# генерирует единую строку вместо ручных команд, так что нумерация/маркеры
+# никогда не расходятся с реальным меню.
+ROLLBACK_NOTES=(
+"sudo apt purge micro certbot python3-certbot-nginx unzip htop bind9-dnsutils jq rsync
+     (осторожно: curl/git/ca-certificates часто нужны другим программам — не удаляй не глядя)"
+"sudo apt purge eza bat fd-find ripgrep zoxide ncdu
+     sudo rm -f \"\$(command -v starship)\"   # если ставился этим же пунктом"
+"sudo apt purge fastfetch
+     sudo add-apt-repository --remove ppa:zhangsongcui3371/fastfetch
+     rm -f ~/.config/fastfetch/config.jsonc
+     sed -i '/# >>> vps-setup:fastfetch >>>/,/# <<< vps-setup:fastfetch <<</d' ~/.bashrc"
+"sudo apt purge tmux
+     rm -f ~/.tmux.conf"
+"sudo systemctl stop docker
+     sudo apt purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+     sudo rm -rf /var/lib/docker /var/lib/containerd
+     # УДАЛЯЕТ все контейнеры/образы/volume без возврата — сначала забэкапь данные"
+"sudo systemctl stop nginx
+     sudo apt purge nginx-full
+     sudo rm -rf /etc/nginx
+     # УДАЛЯЕТ конфиги сайтов в /etc/nginx — если уже настраивал поверх, забэкапь"
+""
+""
+""
+""
+"sudo rm -f /etc/ssh/sshd_config.d/10-hardening.conf
+     sudo systemctl restart ssh
+     sudo rm -f /etc/sudoers.d/${TARGET_USER}
+     # возвращает вход по паролю — убедись, что есть другой способ попасть на сервер"
+""
+)
+
 item_supports_disable() {
     local id="${1:-}" d
     for d in "${DISABLE_SUPPORTED[@]}"; do [ "$d" = "$id" ] && return 0; done
     return 1
+}
+
+# ── Адаптивная раскладка — один источник истины для ширины разделителей/рамок ──
+# возвращает не сырую ширину терминала, а уже за вычетом 2-пробельного отступа,
+# который hr()/box_line()/строки меню всегда добавляют слева — иначе рамка
+# оказывается на 2 колонки шире реального терминала, и на настоящем pty это
+# рвёт многобайтовые "─" переносом строки посреди символа
+term_width() {
+    local w
+    w="$(tput cols 2>/dev/null)"
+    [[ "$w" =~ ^[0-9]+$ ]] || w=80
+    [ "$w" -lt 60 ] && w=60
+    [ "$w" -gt 100 ] && w=100
+    echo "$((w - 2))"
+}
+
+# N штук "─" одной строкой. Специально не через "printf '%*s' | tr ' ' '─'" —
+# на боксах со сломанным/негенерированным locale (LANG=en_US.UTF-8 объявлен,
+# но сам locale не собран — нередкая история именно на свежих VPS-образах) tr
+# начинает работать побайтово и режет 3-байтовый UTF-8 "─" на мусорные байты.
+# printf с "%.0s" многобайтовый символ не трогает вообще — печатает его из
+# формат-строки как есть на каждой итерации, независимо от locale
+repeat_dash() {
+    local n="$1"
+    printf -- '─%.0s' $(seq 1 "$n")
+}
+
+hr() {
+    local color="${1:-$DIM}" width
+    width="$(term_width)"
+    echo -e "  ${color}$(repeat_dash "$width")${NC}"
+}
+
+# box_line color left mid right w1 w2 ... — одна строка рамки (┌─┬─┐ / ├─┼─┤ / └─┴─┘)
+box_line() {
+    local color="$1" left="$2" mid="$3" right="$4"; shift 4
+    local out="$left" first=true w seg
+    for w in "$@"; do
+        seg="$(repeat_dash "$((w + 2))")"
+        if [ "$first" = true ]; then
+            out="${out}${seg}"; first=false
+        else
+            out="${out}${mid}${seg}"
+        fi
+    done
+    echo -e "  ${color}${out}${right}${NC}"
 }
 
 pad_title() {
@@ -816,14 +930,31 @@ show_menu() {
     show_header
     echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
     echo ""
-    local header_section header_title
-    header_section="$(pad_title "Раздел" 10)"
-    header_title="$(pad_title "Пункт" 26)"
-    printf "  ${BOLD}%5s  %s%sСтатус${NC}\n" "#" "$header_section" "$header_title"
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..92})${NC}"
+
+    # ширины колонок — фикс для #/Раздел/Пункт, Статус забирает остаток term_width()
+    # idx_w=3, не 2: pad_title всегда добавляет минимум 1 пробел-паддинга (см. её
+    # реализацию), поэтому при ширине ровно "12" (2 символа) паддинг обнулялся бы
+    # и принудительно поднимался до 1, ломая выравнивание рамки именно на пунктах 10-12
+    local idx_w=3 section_w=10 title_w=26 status_w inner_w
+    inner_w="$(term_width)"
+    # -7: 5 символов рамки (┌/│×3/┐ или их аналоги на разных строках) + 2 — паддинг
+    # самой статусной колонки, которую эта формула вычисляет (её собственные "+2"
+    # не должны компенсироваться дважды)
+    status_w=$(( inner_w - (idx_w + 2) - (section_w + 2) - (title_w + 2) - 7 ))
+    # 6 — минимум, при котором рамка ещё точно влезает в нижнюю границу term_width()
+    # (60 сырых колонок терминала); при более узком клампе сама рамка вылезала бы
+    # за пределы терминала независимо от длины текста статуса
+    [ "$status_w" -lt 6 ] && status_w=6
+
+    box_line "$DIM" '┌' '┬' '┐' "$idx_w" "$section_w" "$title_w" "$status_w"
+    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
+        "$(pad_title "#" "$idx_w")" "$(pad_title "Раздел" "$section_w")" \
+        "$(pad_title "Пункт" "$title_w")" "$(pad_title "Статус" "$status_w")"
+    box_line "$DIM" '├' '┼' '┤' "$idx_w" "$section_w" "$title_w" "$status_w"
+
     local i=1 id section section_color
     for id in "${ITEM_IDS[@]}"; do
-        local status_line padded_title padded_section
+        local status_line visible_status status_len status_pad
         section="${ITEM_SECTIONS[$((i-1))]}"
         case "$section" in
             база)     section_color="$CYAN" ;;
@@ -831,17 +962,29 @@ show_menu() {
             защита)   section_color="$MAGENTA" ;;
         esac
         status_line="$(status_"$id")"
-        padded_section="$(pad_title "$section" 10)"
-        padded_title="$(pad_title "${ITEM_TITLES[$((i-1))]}" 26)"
-        printf "  ${BOLD}[%2d]${NC}  ${section_color}%s${NC}%s%b\n" "$i" "$padded_section" "$padded_title" "$status_line"
+        # известный компромисс: если статус длиннее status_w (например, длинный список
+        # недостающих пакетов), эта конкретная строка вылезет за правую рамку — текст
+        # не обрезаем, диагностика важнее ровного края одной строки
+        visible_status="$(printf '%s' "$status_line" | sed -E 's/\x1b\[[0-9;]*m//g')"
+        status_len="$(python3 -c "import sys; print(len(sys.argv[1]))" "$visible_status" 2>/dev/null || echo "${#visible_status}")"
+        status_pad=$((status_w - status_len))
+        [ "$status_pad" -lt 0 ] && status_pad=0
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+            "$(pad_title "$i" "$idx_w")" "$(pad_title "$section" "$section_w")" \
+            "$(pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w")" "$status_line" "$status_pad" ""
         i=$((i+1))
     done
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..92})${NC}"
+    box_line "$DIM" '└' '┴' '┘' "$idx_w" "$section_w" "$title_w" "$status_w"
+
     echo ""
-    echo -e "  ${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC}  — номер пункта, можно несколько сразу"
-    echo -e "  ${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
-    echo -e "  ${CYAN}${BOLD}B${NC}/${CYAN}${BOLD}S${NC}/${CYAN}${BOLD}P${NC}/${CYAN}${BOLD}A${NC} — раздел целиком: база/сервисы/защита/всё, можно сочетать (${DIM}B,S${NC})"
-    echo -e "  ${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
+    local lbl_choice lbl_sections lbl_commands
+    lbl_choice="$(pad_title "Выбор:" 10)"
+    lbl_sections="$(pad_title "Разделы:" 10)"
+    lbl_commands="$(pad_title "Команды:" 10)"
+    echo -e "  ${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
+    echo -e "  $(pad_title "" 10)${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
+    echo -e "  ${BOLD}${lbl_sections}${NC}${CYAN}${BOLD}B${NC}=${CYAN}база${NC}   ${BLUE}${BOLD}S${NC}=${BLUE}сервисы${NC}   ${MAGENTA}${BOLD}P${NC}=${MAGENTA}защита${NC}   ${BOLD}A${NC}=всё   ${DIM}(сочетать: B,S)${NC}"
+    echo -e "  ${BOLD}${lbl_commands}${NC}${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
     echo ""
 }
 
@@ -852,14 +995,14 @@ process_item() {
     if item_supports_disable "$id"; then
         status_"$id" >/dev/null
         if [ $? -eq 0 ]; then
-            echo -e "${CYAN}${BOLD}→ Отключить: ${ITEM_TITLES[$((idx-1))]}${NC}"
-            echo -e "${DIM}────────────────────────────────────────${NC}"
+            echo -e "  ${CYAN}${BOLD}→ Отключить: ${ITEM_TITLES[$((idx-1))]}${NC}"
+            hr
             "disable_${id}"
             return
         fi
     fi
-    echo -e "${CYAN}${BOLD}→ ${ITEM_TITLES[$((idx-1))]}${NC}"
-    echo -e "${DIM}────────────────────────────────────────${NC}"
+    echo -e "  ${CYAN}${BOLD}→ ${ITEM_TITLES[$((idx-1))]}${NC}"
+    hr
     "apply_${id}"
 }
 
@@ -867,18 +1010,18 @@ show_aliases_help() {
     show_header
     echo -e "  ${BOLD}Алиасы${NC} ${DIM}(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)${NC}"
     echo ""
-    printf "  ${BOLD}%-8s %-42s %s${NC}\n" "Алиас" "Реальная команда" "Что делает"
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "ls"   "eza --icons --group-directories-first"                  "список файлов с иконками (замена ls)"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "ll"   "eza -lah --icons --group-directories-first"              "подробный список, аналог ls -la"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "la"   "eza -a --icons --group-directories-first"                "список вместе со скрытыми файлами"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "lt"   "eza --tree --icons --level=2 ..."                        "дерево каталогов, 2 уровня вглубь"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "cat"  "batcat --paging=never"                                   "вывод файла с подсветкой, без пейджера"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "catp" "batcat"                                                  "то же, но с пейджером (для длинных файлов, поиск / внутри)"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "scat" "sudo batcat --paging=never"                              "cat для файлов, читаемых только под root"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "fd"   "fdfind"                                                  "быстрый поиск файлов, замена find"
-    printf "  ${CYAN}%-8s${NC} %-42s %s\n" "usfc" "sudo usfc"                                                "запуск этого меню сразу с sudo"
-    echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
+    printf "  ${BOLD}%s %s %s${NC}\n" "$(pad_title "Алиас" 8)" "$(pad_title "Реальная команда" 42)" "Что делает"
+    hr
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "ls" 8)"   "$(pad_title "eza --icons --group-directories-first" 42)"       "список файлов с иконками (замена ls)"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "ll" 8)"   "$(pad_title "eza -lah --icons --group-directories-first" 42)"   "подробный список, аналог ls -la"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "la" 8)"   "$(pad_title "eza -a --icons --group-directories-first" 42)"     "список вместе со скрытыми файлами"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "lt" 8)"   "$(pad_title "eza --tree --icons --level=2 ..." 42)"             "дерево каталогов, 2 уровня вглубь"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "cat" 8)"  "$(pad_title "batcat --paging=never" 42)"                        "вывод файла с подсветкой, без пейджера"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "catp" 8)" "$(pad_title "batcat" 42)"                                       "то же, но с пейджером (для длинных файлов, поиск / внутри)"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "scat" 8)" "$(pad_title "sudo batcat --paging=never" 42)"                   "cat для файлов, читаемых только под root"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "fd" 8)"   "$(pad_title "fdfind" 42)"                                       "быстрый поиск файлов, замена find"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "usfc" 8)" "$(pad_title "sudo usfc" 42)"                                    "запуск этого меню сразу с sudo"
+    hr
     echo ""
     log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
     log_info "Почему у cat/ls вообще другое поведение под sudo — см. README, раздел FAQ"
@@ -889,62 +1032,38 @@ show_aliases_help() {
 show_rollback_reference() {
     show_header
     echo -e "  ${BOLD}Откат по пунктам${NC} ${DIM}— только справка, ни одна из этих команд не выполняется скриптом сама${NC}"
-    echo -e "  ${DIM}Пункты 10 fail2ban / 11 unattended / 12 zram (частично) / 13 UFW уже откатываются прямо в меню —${NC}"
-    echo -e "  ${DIM}выбери их номер ещё раз, скрипт сам увидит, что применено, и предложит отключить${NC}"
     echo ""
-    cat <<EOF
-  2  CLI-утилиты:
-     sudo apt purge eza bat fd-find ripgrep zoxide ncdu
-
-  3  Базовые пакеты (осторожно: curl/git/ca-certificates часто нужны другим программам,
-     не удаляй не глядя, что реально использует их ещё):
-     sudo apt purge micro certbot python3-certbot-nginx unzip htop dnsutils jq rsync
-
-  4  Docker — УДАЛЯЕТ все контейнеры/образы/volume без возврата, сначала забэкапь данные:
-     sudo systemctl stop docker
-     sudo apt purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-     sudo rm -rf /var/lib/docker /var/lib/containerd
-
-  5  nginx — УДАЛЯЕТ конфиги сайтов в /etc/nginx, если уже что-то настраивал поверх — забэкапь:
-     sudo systemctl stop nginx
-     sudo apt purge nginx-full
-     sudo rm -rf /etc/nginx
-
-  6  fastfetch:
-     sudo apt purge fastfetch
-     sudo add-apt-repository --remove ppa:zhangsongcui3371/fastfetch
-
-  7  starship:
-     sudo rm -f "\$(command -v starship)"
-
-  8  fastfetch config + .bashrc-блок:
-     rm -f ~/.config/fastfetch/config.jsonc
-     sed -i '/# >>> vps-setup >>>/,/# <<< vps-setup <<</d' ~/.bashrc
-
-  9  tmux:
-     sudo apt purge tmux
-     rm -f ~/.tmux.conf
-
-  14 SSH hardening — возвращает вход по паролю, убедись, что есть другой способ попасть
-     на сервер (консоль провайдера), прежде чем это делать:
-     sudo rm -f /etc/ssh/sshd_config.d/10-hardening.conf
-     sudo systemctl restart ssh
-     sudo rm -f /etc/sudoers.d/${TARGET_USER}
-EOF
-    echo ""
+    local i=1 id section section_color note
+    for id in "${ITEM_IDS[@]}"; do
+        section="${ITEM_SECTIONS[$((i-1))]}"
+        case "$section" in
+            база)     section_color="$CYAN" ;;
+            сервисы)  section_color="$BLUE" ;;
+            защита)   section_color="$MAGENTA" ;;
+        esac
+        echo -e "  ${section_color}${BOLD}[$i] ${ITEM_TITLES[$((i-1))]}${NC}"
+        if item_supports_disable "$id"; then
+            echo -e "     ${DIM}уже откатывается прямо в меню — выбери пункт [$i] ещё раз, скрипт сам увидит, что применено, и предложит отключить${NC}"
+        else
+            note="${ROLLBACK_NOTES[$((i-1))]}"
+            echo -e "     ${DIM}${note}${NC}"
+        fi
+        echo ""
+        i=$((i+1))
+    done
     pause
 }
 
 uninstall_self() {
     echo ""
-    log_warn "Это удаляет СЕБЯ (сам скрипт vps-setup) — /opt/vps-setup и команду usfc"
+    log_warn "Это удаляет СЕБЯ (сам скрипт usfc) — /opt/vps-setup и команду usfc"
     log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
     log_info "этим не трогается. Для этого есть пункт R (справка по откату)"
-    if ask_yn "Точно удалить vps-setup из системы?" N; then
+    if ask_yn "Точно удалить usfc из системы?" N; then
         rm -f /usr/local/bin/usfc
         rm -rf /opt/vps-setup
         echo ""
-        log_success "vps-setup удалён. Пока."
+        log_success "usfc удалён. Пока."
         exit 0
     fi
 }
@@ -955,9 +1074,10 @@ main() {
     log_info "SSH-порт: ${SSH_PORT}"
 
     # алиас usfc='sudo usfc' — не отдельный пункт меню, ставится сам при первом запуске,
-    # свой маркер, идемпотентно
+    # свой маркер, идемпотентно. Пропускаем для прямого root — sudo тут бесполезен
+    # (и может быть даже не установлен на такой машине)
     local BASHRC="${TARGET_HOME}/.bashrc"
-    if ! grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
+    if [ "$TARGET_USER" != "root" ] && ! grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
         cat >> "$BASHRC" <<EOF
 
 # >>> vps-setup:self >>>
