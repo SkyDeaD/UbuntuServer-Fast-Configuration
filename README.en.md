@@ -35,31 +35,16 @@ curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configura
 
 Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
 
-```
-  ┌─────┬────────────┬────────────────────────────┬────────────────────────────┐
-  │ #   │ Section    │ Item                       │ Status                     │
-  ├─────┼────────────┼────────────────────────────┼────────────────────────────┤
-  │ 1   │ base       │ Base packages              │ ○ missing: micro, curl,…  │
-  │ 2   │ base       │ CLI tools + starship       │ ✓ installed                │
-  │ 3   │ base       │ fastfetch                  │ ✓ 2.66.0                   │
-  │ 4   │ base       │ tmux                       │ ! installed, no config     │
-  │ 5   │ services   │ Docker + Compose           │ ○ not installed            │
-  │ 6   │ services   │ nginx-full                 │ ○ not installed            │
-  │ 7   │ hardening  │ Docker log rotation        │ — (needs Docker)           │
-  │ 8   │ hardening  │ fail2ban                   │ ○ not running              │
-  │ 9   │ hardening  │ unattended-upgrades        │ ✓ enabled                  │
-  │ 10  │ hardening  │ ZRAM + swap + earlyoom     │ ○ not configured           │
-  │ 11  │ hardening  │ SSH hardening              │ ○ not applied              │
-  │ 12  │ hardening  │ UFW firewall               │ ○ disabled                 │
-  └─────┴────────────┴────────────────────────────┴────────────────────────────┘
+<div align="center">
 
-  ┌────────────────────────────────────────────────────────────────────────────┐
-  │ Choose:   5 / 1 3 5 / 1,3,5 — one item or several at once                  │
-  │           section letters can combine too (B,S); a re-selected applied ha… │
-  │ Sections: B base          S services      P hardening     A all            │
-  │ Commands: H aliases       R rollback      U remove        Q quit           │
-  └────────────────────────────────────────────────────────────────────────────┘
-```
+<img width="300" height="252" alt="2026-07-15_23-02" src="https://github.com/user-attachments/assets/0d7c5bb1-16e0-42d0-a886-03467955772e" />
+<img width="300" height="252" alt="2026-07-15_23-05" src="https://github.com/user-attachments/assets/4b808cbc-30d7-44f6-a1fc-ea20bcf9cebb" />
+<img width="300" height="252" alt="2026-07-15_23-07" src="https://github.com/user-attachments/assets/debb0f28-dde0-4690-b39a-907119865a39" />
+<img width="300" height="252" alt="2026-07-15_23-12" src="https://github.com/user-attachments/assets/97efbc16-fbce-4c3d-924b-70b7762cacb4" />
+<img width="300" height="252" alt="2026-07-15_23-15" src="https://github.com/user-attachments/assets/e1d0b5a7-fff2-469f-8fe1-a036261b3844" />
+<img width="300" height="252" alt="2026-07-15_23-20" src="https://github.com/user-attachments/assets/b85fe841-2482-49dd-b20c-32be47bc807a" />
+
+</div>
 
 Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
