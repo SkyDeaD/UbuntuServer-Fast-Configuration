@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.4.1"
+VERSION="2.4.2"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -37,6 +37,8 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
 BULK_MODE=false
+ZRAM_BULK_PERCENT=""
+SWAP_BULK_MB=""
 
 ask_yn() {
     local question="${1:-}" default="${2:-Y}" reply prompt
@@ -569,15 +571,23 @@ suggest_swap_mb() {
     echo "$suggested"
 }
 
-apply_zram() {
-    local zram_active=false zram_prio="" swap_active=false swap_prio="" swap_path=""
+# читает текущее состояние zram/swap в глобальные переменные — общий
+# парсинг для apply_zram() и предзапроса значений перед bulk-режимом в main()
+read_swap_state() {
+    ZRAM_ACTIVE=false; ZRAM_PRIO=""; SWAP_ACTIVE=false; SWAP_PRIO=""; SWAP_PATH=""
     local n t s u p
     while read -r n t s u p; do
         case "$n" in
-            /dev/zram*) zram_active=true; zram_prio="$p" ;;
-            *)          swap_active=true; swap_prio="$p"; swap_path="$n" ;;
+            /dev/zram*) ZRAM_ACTIVE=true; ZRAM_PRIO="$p" ;;
+            *)          SWAP_ACTIVE=true; SWAP_PRIO="$p"; SWAP_PATH="$n" ;;
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
+}
+
+apply_zram() {
+    read_swap_state
+    local zram_active="$ZRAM_ACTIVE" zram_prio="$ZRAM_PRIO" \
+          swap_active="$SWAP_ACTIVE" swap_prio="$SWAP_PRIO" swap_path="$SWAP_PATH"
 
     if [ "$zram_active" = true ]; then
         if [ "$zram_prio" = "100" ]; then
@@ -609,7 +619,7 @@ apply_zram() {
         fi
     elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
         local zram_percent
-        zram_percent="$(ask_value "Сколько % RAM выделить под zram?" 75)"
+        zram_percent="$(ask_value "Сколько % RAM выделить под zram?" "${ZRAM_BULK_PERCENT:-75}")"
         if apt-get install -y zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
@@ -654,7 +664,7 @@ apply_zram() {
         suggested_mb="$(suggest_swap_mb)"
         if ask_yn "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?"; then
             local swap_mb
-            swap_mb="$(ask_value "Размер swap-файла, МБ?" "$suggested_mb")"
+            swap_mb="$(ask_value "Размер swap-файла, МБ?" "${SWAP_BULK_MB:-$suggested_mb}")"
             fallocate -l "${swap_mb}M" /swapfile
             chmod 600 /swapfile
             mkswap /swapfile >/dev/null
@@ -1374,6 +1384,18 @@ EOF
                     else
                         log_info "Не применено из выбранного: ${pending[*]} (${#pending[@]} шт.)"
                         log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
+                        # пункт 10 (zram) — единственное исключение: % под zram и МБ
+                        # резервного swap-файла спрашиваем один раз здесь, ДО BULK_MODE=true
+                        # (пока ask_value ещё реально интерактивна), а не молча дефолтим
+                        if printf '%s\n' "${pending[@]}" | grep -qx 10; then
+                            read_swap_state
+                            if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
+                                ZRAM_BULK_PERCENT="$(ask_value "Сколько % RAM выделить под zram?" 75)"
+                            fi
+                            if [ "$SWAP_ACTIVE" != true ]; then
+                                SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
+                            fi
+                        fi
                         if ask_yn "Применить сразу?"; then
                             BULK_MODE=true
                             for num in "${pending[@]}"; do
@@ -1381,6 +1403,8 @@ EOF
                             done
                             BULK_MODE=false
                         fi
+                        ZRAM_BULK_PERCENT=""
+                        SWAP_BULK_MB=""
                         pause
                     fi
                 fi
