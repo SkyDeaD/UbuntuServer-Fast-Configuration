@@ -32,21 +32,37 @@ Every time you spin up a new VPS it's the same routine: get a decent `ls` going,
 curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash
 ```
 
-Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. `alias usfc='sudo usfc'` is added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed.
+Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
 
 ```
-    #  Section    Item                      Status
-  ────────────────────────────────────────────────────────
-  [ 1]  base       Base packages             ○ missing: ...
-  [ 2]  base       CLI tools + starship      ✓ installed
-  [ 3]  base       fastfetch                 ✓ 2.66.0
-  ...
-  B/S/P/A — a whole section at once: base/services/hardening/everything
+  ┌─────┬────────────┬────────────────────────────┬────────────────────────────┐
+  │ #   │ Section    │ Item                       │ Status                     │
+  ├─────┼────────────┼────────────────────────────┼────────────────────────────┤
+  │ 1   │ base       │ Base packages              │ ○ missing: micro, curl,…  │
+  │ 2   │ base       │ CLI tools + starship       │ ✓ installed                │
+  │ 3   │ base       │ fastfetch                  │ ✓ 2.66.0                   │
+  │ 4   │ base       │ tmux                       │ ! installed, no config     │
+  │ 5   │ services   │ Docker + Compose           │ ○ not installed            │
+  │ 6   │ services   │ nginx-full                 │ ○ not installed            │
+  │ 7   │ hardening  │ Docker log rotation        │ — (needs Docker)           │
+  │ 8   │ hardening  │ fail2ban                   │ ○ not running              │
+  │ 9   │ hardening  │ unattended-upgrades        │ ✓ enabled                  │
+  │ 10  │ hardening  │ ZRAM + swap + earlyoom     │ ○ not configured           │
+  │ 11  │ hardening  │ SSH hardening              │ ○ not applied              │
+  │ 12  │ hardening  │ UFW firewall               │ ○ disabled                 │
+  └─────┴────────────┴────────────────────────────┴────────────────────────────┘
+
+  ┌────────────────────────────────────────────────────────────────────────────┐
+  │ Choose:   5 / 1 3 5 / 1,3,5 — one item or several at once                  │
+  │           re-selecting an applied "hardening" item offers to disable it    │
+  │ Sections: B=base    S=services   P=hardening  A=all    (combine: B,S)      │
+  │ Commands: H aliases   R rollback   U remove usfc   Q quit                  │
+  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
-> Worth running on a test VPS at least once before a production box — not because something is guaranteed to break, but because the SSH hardening item could in theory lock you out if something goes sideways on the network during its self-test.
+Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](MANUAL.en.md).
 
 ## What's inside
 
@@ -121,7 +137,7 @@ Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.s
 <details>
 <summary>New aliases didn't show up right after installing</summary>
 
-The script runs in a child process — `source ~/.bashrc` run from inside it can't touch your current SSH session, a Unix limitation. Run `source ~/.bashrc` yourself, or reconnect via SSH.
+Starting from the second time you run `usfc` (once the wrapper function exists in `.bashrc`), it re-sources `.bashrc` into your own session automatically right after the menu closes — nothing to do by hand. The very first run (via `curl | sudo bash`) isn't covered though: the function doesn't exist in your current shell yet, so `source ~/.bashrc` run from inside the script can't touch your current session — a Unix limitation. Run `source ~/.bashrc` yourself once, or reconnect via SSH — from then on `usfc` handles it on its own.
 
 </details>
 
