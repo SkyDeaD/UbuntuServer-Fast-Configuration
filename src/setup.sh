@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.4.0"
+VERSION="2.4.1"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -633,13 +633,20 @@ apply_zram() {
             log_success "Резервный своп на диске (${swap_path}) уже настроен (приоритет 10) — пропускаю"
         else
             log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)"
-            if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?" N; then
+            if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?"; then
                 local esc_path
                 esc_path="$(printf '%s' "$swap_path" | sed 's/[.[\*^$/]/\\&/g')"
                 sed -i -E "s#^(${esc_path}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
                 swapoff "$swap_path" 2>/dev/null || true
                 swapon -a
-                log_success "Приоритет исправлен"
+                # sed молча не найдёт строку, если своп в fstab указан через
+                # UUID=/LABEL=, а не путём (типично для разделов) — тогда без
+                # этой проверки log_success был бы враньём
+                if swapon --show --noheadings --raw 2>/dev/null | awk -v p="$swap_path" '$1==p {print $5}' | grep -q '^10$'; then
+                    log_success "Приоритет исправлен"
+                else
+                    log_error "Не удалось исправить приоритет ${swap_path} — возможно, в /etc/fstab он указан через UUID=/LABEL=, а не путём. Поправьте вручную: pri=10 в опциях монтирования"
+                fi
             fi
         fi
     else
@@ -697,6 +704,10 @@ apply_sshhardening() {
     if [ "$TARGET_USER" = "root" ]; then
         log_warn "Скрипт запущен напрямую под root — hardening требует отдельного пользователя"
         log_warn "Создай его (adduser <имя> && usermod -aG sudo <имя>) и перезайди под ним"
+        return
+    fi
+    if [ "$BULK_MODE" = true ]; then
+        log_warn "SSH hardening требует явного подтверждения — пропущено в bulk-режиме. Настройте отдельно пунктом 11."
         return
     fi
     if ! ask_yn "Настроить SSH hardening для ${TARGET_USER} (ключи вместо пароля, запрет root-логина)?" N; then return; fi
@@ -829,6 +840,10 @@ apply_ufw() {
     echo "$listening" | sed 's/^/      /'
     echo ""
     log_warn "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его"
+    if [ "$BULK_MODE" = true ]; then
+        log_warn "UFW требует явного подтверждения — пропущено в bulk-режиме. Настройте отдельно пунктом 12."
+        return
+    fi
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
     apt-get install -y ufw || { log_error "Установка UFW не удалась"; return 1; }
     ufw allow "${SSH_PORT}"/tcp >/dev/null
@@ -1169,18 +1184,28 @@ show_aliases_help() {
     )
 
     box_line "$DIM" '┌' '┬' '┐' "$col1" "$col2" "$col3"
-    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
-        "$(pad_title "Алиас" "$col1")" "$(pad_title "Реальная команда" "$col2")" "$(pad_title "Что делает" "$col3")"
+    local hdr3="Что делает" hdr3_len hdr3_pad
+    # col3 динамический (зависит от term_width()) и на узких терминалах может
+    # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
+    hdr3_len="$(visible_len "$hdr3")"; hdr3_pad=$((col3 - hdr3_len)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
+    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
+        "$(pad_title "Алиас" "$col1")" "$(pad_title "Реальная команда" "$col2")" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
-    local row alias cmd desc cmd_t desc_t
+    local row alias cmd desc cmd_t desc_t cmd_len cmd_pad desc_len desc_pad
     for row in "${rows[@]}"; do
         IFS='|' read -r alias cmd desc <<< "$row"
         cmd_t="$(truncate_colored "$cmd" "$col2")"
         desc_t="$(truncate_colored "$desc" "$col3")"
-        printf "  ${DIM}│${NC} ${CYAN}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC}\n" \
+        # руками, не через pad_title(): та форсирует минимум 1 пробел паддинга,
+        # а truncate_colored() при обрезке всегда возвращает СТРОКУ РОВНО В width
+        # символов — pad был бы 0, форс поднял бы его до 1, и рамка бы поехала
+        # (та же схема, что уже используется для status_line/легенды в show_menu())
+        cmd_len="$(visible_len "$cmd_t")";   cmd_pad=$((col2 - cmd_len));  [ "$cmd_pad" -lt 0 ] && cmd_pad=0
+        desc_len="$(visible_len "$desc_t")"; desc_pad=$((col3 - desc_len)); [ "$desc_pad" -lt 0 ] && desc_pad=0
+        printf "  ${DIM}│${NC} ${CYAN}%s${NC} ${DIM}│${NC} %s%*s ${DIM}│${NC} %s%*s ${DIM}│${NC}\n" \
             "$(pad_title "$alias" "$col1")" \
-            "$(pad_title "$cmd_t" "$col2")" \
-            "$(pad_title "$desc_t" "$col3")"
+            "$cmd_t" "$cmd_pad" "" \
+            "$desc_t" "$desc_pad" ""
     done
     box_line "$DIM" '└' '┴' '┘' "$col1" "$col2" "$col3"
 
