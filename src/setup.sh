@@ -272,6 +272,7 @@ status_unattended() {
 
 status_zram() {
     local zram_ok=false swap_ok=false
+    local n t s u p
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) [ "$p" = "100" ] && zram_ok=true ;;
@@ -570,6 +571,7 @@ suggest_swap_mb() {
 
 apply_zram() {
     local zram_active=false zram_prio="" swap_active=false swap_prio="" swap_path=""
+    local n t s u p
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) zram_active=true; zram_prio="$p" ;;
