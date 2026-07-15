@@ -1,21 +1,37 @@
-MIT License
+Лицензия MIT
 
-Copyright (c) 2026 SkyDeaD
+Копирайт (c) 2026 SkyDeaD
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Коротко: делай с этим кодом что хочешь — используй, копируй, меняй,
+публикуй, распространяй, встраивай в свой проект, продавай — платно или
+бесплатно, в открытом или закрытом виде. Единственное условие — не убирать
+уведомление об авторстве и текст этой лицензии из копий кода. Автор ничего
+не гарантирует и не несёт ответственности за то, как и где это используется.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Полный текст:
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Настоящим предоставляется бесплатное разрешение любому лицу, получившему
+копию данного программного обеспечения и сопутствующей документации (далее
+— «Программное обеспечение»), использовать Программное обеспечение без
+ограничений, включая, помимо прочего, права на использование, копирование,
+изменение, слияние, публикацию, распространение, сублицензирование и/или
+продажу копий Программного обеспечения, а также разрешать лицам, которым
+предоставляется Программное обеспечение, делать то же самое при соблюдении
+следующих условий:
+
+Указанное выше уведомление об авторских правах и данное уведомление о
+разрешении должны быть включены во все копии или значительные части
+Программного обеспечения.
+
+ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ,
+ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ, ПОМИМО ПРОЧЕГО, ГАРАНТИИ ТОВАРНОЙ
+ПРИГОДНОСТИ, СООТВЕТСТВИЯ ОПРЕДЕЛЁННОЙ ЦЕЛИ И ОТСУТСТВИЯ НАРУШЕНИЙ ПРАВ
+ТРЕТЬИХ ЛИЦ. НИ ПРИ КАКИХ ОБСТОЯТЕЛЬСТВАХ АВТОРЫ ИЛИ ПРАВООБЛАДАТЕЛИ НЕ
+НЕСУТ ОТВЕТСТВЕННОСТИ ПО КАКИМ-ЛИБО ИСКАМ, ЗА УБЫТКИ ИЛИ ИНЫЕ ТРЕБОВАНИЯ,
+БУДЬ ТО В РАМКАХ ДОГОВОРНЫХ ОБЯЗАТЕЛЬСТВ, ДЕЛИКТА ИЛИ ИНЫМ ОБРАЗОМ,
+ВОЗНИКАЮЩИЕ ИЗ, В РЕЗУЛЬТАТЕ ИЛИ В СВЯЗИ С ПРОГРАММНЫМ ОБЕСПЕЧЕНИЕМ ИЛИ ЕГО
+ИСПОЛЬЗОВАНИЕМ, ЛИБО ИНЫМИ ДЕЙСТВИЯМИ С ПРОГРАММНЫМ ОБЕСПЕЧЕНИЕМ.
+
+—
+
+English version: LICENSE.en

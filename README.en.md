@@ -29,10 +29,12 @@ Every time you spin up a new VPS it's the same routine: get a decent `ls` going,
 ## Quick start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash && source ~/.bashrc
 ```
 
 Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
+
+The trailing `&& source ~/.bashrc` above isn't cosmetic: the script itself runs under `sudo` and can't touch your shell from the inside (see FAQ), but `&&` runs in your own shell — so even on the very first install (before the `usfc` wrapper function exists in `.bashrc` yet), aliases still show up right away, no reconnect needed.
 
 ```
   ┌─────┬────────────┬────────────────────────────┬────────────────────────────┐
@@ -54,15 +56,15 @@ Installs itself as the `usfc` command, quietly runs `apt update`, and opens the 
 
   ┌────────────────────────────────────────────────────────────────────────────┐
   │ Choose:   5 / 1 3 5 / 1,3,5 — one item or several at once                  │
-  │           re-selecting an applied "hardening" item offers to disable it    │
-  │ Sections: B=base    S=services   P=hardening  A=all    (combine: B,S)      │
-  │ Commands: H aliases   R rollback   U remove usfc   Q quit                  │
+  │           section letters can combine too (B,S); a re-selected applied ha… │
+  │ Sections: B base          S services      P hardening     A all            │
+  │ Commands: H aliases       R rollback      U remove        Q quit           │
   └────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
-Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](MANUAL.en.md).
+Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
 
 ## What's inside
 
@@ -124,9 +126,9 @@ Before enabling, the script parses `ss -tln` and shows what's actually listening
 
 ## Customization
 
-The fastfetch `config.jsonc` — edit and commit it, `setup.sh` pulls it from the raw URL on every run.
+The fastfetch `src/config.jsonc` — edit and commit it, `src/setup.sh` pulls it from the raw URL on every run.
 
-Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.sh`. Version checking runs off a separate `VERSION` file — if you edit `setup.sh`, bump it.
+Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `src/setup.sh`. Version checking runs off a separate `src/VERSION` file — if you edit `src/setup.sh`, bump it.
 
 ## Deliberately not automated
 
@@ -137,7 +139,9 @@ Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `setup.s
 <details>
 <summary>New aliases didn't show up right after installing</summary>
 
-Starting from the second time you run `usfc` (once the wrapper function exists in `.bashrc`), it re-sources `.bashrc` into your own session automatically right after the menu closes — nothing to do by hand. The very first run (via `curl | sudo bash`) isn't covered though: the function doesn't exist in your current shell yet, so `source ~/.bashrc` run from inside the script can't touch your current session — a Unix limitation. Run `source ~/.bashrc` yourself once, or reconnect via SSH — from then on `usfc` handles it on its own.
+If you installed with the Quick Start command as-is (ending in `&& source ~/.bashrc`), this shouldn't happen — that tail runs in your own shell and picks up `.bashrc` right away, even on the very first install. Starting from the second time you run `usfc` (once the wrapper function exists in `.bashrc`), it re-sources `.bashrc` on its own right after the menu closes, without that tail.
+
+If it still didn't show up, you likely installed without `&& source ~/.bashrc` (e.g. copied only part of the command). The script runs under `sudo` and can't touch your current shell from the inside — a Unix limitation, not a bug. Run `source ~/.bashrc` yourself once, or reconnect via SSH — from then on `usfc` handles it on its own.
 
 </details>
 
@@ -165,4 +169,4 @@ Ubuntu 24.04 or 26.04, root access, outbound internet.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE.en)
