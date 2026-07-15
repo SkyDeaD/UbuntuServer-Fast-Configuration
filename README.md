@@ -1,11 +1,14 @@
 # UbuntuServer Fast Configuration
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
+![bash](https://img.shields.io/badge/bash-%3E%3D5.0-4EAA25?logo=gnubash&logoColor=white)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
+![last commit](https://img.shields.io/github/last-commit/SkyDeaD/UbuntuServer-Fast-Configuration)
+![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
 
 <p align="center"><b>🇷🇺 Русский</b> · <a href="README.en.md">🇬🇧 English</a></p>
 
-Каждый раз, когда поднимаешь новый VPS, повторяется одно и то же: поставить нормальный `ls`, накатить Docker, разобраться со свопом на маленьком сервере, включить SSH только по ключу и не забыть про UFW. Задолбало гуглить одно и то же — написал скрипт с меню на 15 пунктов, который делает это всё сам, спрашивая только там, где решение реально важно принять тебе, а не ему.
+Каждый раз, когда поднимаешь новый VPS, повторяется одно и то же: поставить нормальный `ls`, накатить Docker, разобраться со свопом на маленьком сервере, включить SSH только по ключу и не забыть про UFW. Чтобы не повторять регулярно одно и то же — написал скрипт с меню на 15 пунктов, который делает это всё сам, спрашивая только там, где решение реально важно принять тебе, а не ему.
 
 Пожелания и баг-репорты приветствуются — пишите в issues, но делался в первую очередь под свои сервера, так что часть решений (какие именно пакеты, какие дефолты) — это то, что удобно мне.
 

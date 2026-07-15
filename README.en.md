@@ -1,11 +1,14 @@
 # UbuntuServer Fast Configuration
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
+![bash](https://img.shields.io/badge/bash-%3E%3D5.0-4EAA25?logo=gnubash&logoColor=white)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
+![last commit](https://img.shields.io/github/last-commit/SkyDeaD/UbuntuServer-Fast-Configuration)
+![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)
 
 <p align="center"><a href="README.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
-Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. Got tired of googling the same things every time, so I wrote a script with a 15-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
+Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 15-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
 
 Suggestions and bug reports are welcome, open an issue — but this was built primarily for my own servers, so some of the choices (which exact packages, which defaults) reflect what's convenient for me.
 
