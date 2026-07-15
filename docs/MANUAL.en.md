@@ -9,7 +9,7 @@
 <p align="center"><a href="MANUAL.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
 If you'd rather not run someone else's `curl | sudo bash` on your server —
-here are the same 12 menu items from [usfc](README.en.md), but by hand,
+here are the same 12 menu items from [usfc](../README.en.md), but by hand,
 as commands. The order matches the menu on purpose: the "hardening" section
 comes last, so UFW sees Docker/nginx already listening (see item 12).
 
@@ -74,11 +74,11 @@ sudo apt install -y fastfetch
 ```
 
 You need version ≥ 2.64.0 — older releases don't support the padding syntax
-in format strings that this repo's [`config.jsonc`](config.jsonc) relies on:
+in format strings that this repo's [`config.jsonc`](../src/config.jsonc) relies on:
 
 ```bash
 mkdir -p ~/.config/fastfetch
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/config.jsonc \
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src/config.jsonc \
     -o ~/.config/fastfetch/config.jsonc
 ```
 
@@ -251,7 +251,7 @@ sudo systemctl enable --now earlyoom
 **A separate, most important warning: doing this by hand means you lose the
 self-test the script does** (a one-time key, an actual login via
 `ssh user@127.0.0.1` before and after restarting `sshd`, automatic rollback
-on failure — see [README](README.en.md#how-it-works)). Nothing here is
+on failure — see [README](../README.en.md#how-it-works)). Nothing here is
 verified automatically — only you, with the commands below. **Before
 disabling the password, make sure key-based login actually works**, and
 keep your current session open until you've confirmed a new one connects too.

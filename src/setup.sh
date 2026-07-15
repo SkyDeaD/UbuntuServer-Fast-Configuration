@@ -12,8 +12,8 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.2.0"
-REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
+VERSION="2.3.0"
+REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -71,7 +71,7 @@ pause() {
 
 # ── root / целевой пользователь ────────────────────────────────
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Нужны права root: curl -fsSL .../install.sh | sudo bash" >&2
+    echo "Нужны права root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
     exit 1
 fi
 
@@ -342,7 +342,6 @@ command -v starship &>/dev/null && eval "\$(starship init bash)"
 EOF
         chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
         log_success "Алиасы добавлены в .bashrc"
-        log_warn "Появятся в НОВОЙ сессии — либо source ~/.bashrc, либо переподключись"
     fi
 }
 
@@ -1020,19 +1019,29 @@ show_menu() {
     box_line "$DIM" '└' '┴' '┘' "$idx_w" "$section_w" "$title_w" "$status_w"
 
     echo ""
+    # legend_w = inner_w - 4: box_line/рамка сама добавляет 2 бордюрных символа
+    # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
+    # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
+    local legend_w=$((inner_w - 4)) line
     local lbl_choice lbl_sections lbl_commands legend1 legend2 legend3 legend4
     lbl_choice="$(pad_title "Выбор:" 10)"
     lbl_sections="$(pad_title "Разделы:" 10)"
     lbl_commands="$(pad_title "Команды:" 10)"
     legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
-    legend2="$(pad_title "" 10)${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
-    legend3="${BOLD}${lbl_sections}${NC}${CYAN}${BOLD}B${NC}=${CYAN}база${NC}   ${BLUE}${BOLD}S${NC}=${BLUE}сервисы${NC}   ${MAGENTA}${BOLD}P${NC}=${MAGENTA}защита${NC}   ${BOLD}A${NC}=всё   ${DIM}(сочетать: B,S)${NC}"
-    legend4="${BOLD}${lbl_commands}${NC}${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
+    legend2="$(pad_title "" 10)${DIM}буквы разделов тоже можно сочетать (B,S); применённый пункт «защиты» — повторный выбор предложит отключить${NC}"
 
-    # legend_w = inner_w - 4: box_line/рамка сама добавляет 2 бордюрных символа
-    # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
-    # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
-    local legend_w=$((inner_w - 4)) line
+    # Разделы:/Команды: — сеткой в 4 равные колонки вместо инлайн-списка через
+    # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой
+    grid_cell() {
+        local content="$1" width="$2" clen cpad
+        clen="$(visible_len "$content")"
+        cpad=$((width - clen))
+        [ "$cpad" -lt 0 ] && cpad=0
+        printf '%s%*s' "$content" "$cpad" ""
+    }
+    local item_w=$(( (legend_w - 10) / 4 ))
+    legend3="${BOLD}${lbl_sections}${NC}$(grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}база${NC}" "$item_w")$(grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}" "$item_w")$(grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w")${BOLD}A${NC} всё"
+    legend4="${BOLD}${lbl_commands}${NC}$(grid_cell "${CYAN}${BOLD}H${NC} алиасы" "$item_w")$(grid_cell "${CYAN}${BOLD}R${NC} откат" "$item_w")$(grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w")${CYAN}${BOLD}Q${NC} выход"
     box_line "$DIM" '┌' '┬' '┐' "$legend_w"
     for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
         local ltrunc llen lpad

@@ -1,13 +1,16 @@
 #!/bin/bash
 # vps-setup — быстрая установка
-# Использование: curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash
+# Использование: curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash && source ~/.bashrc
+# "&& source ~/.bashrc" — не косметика: это выполняется уже в ТВОЕЙ оболочке
+# (в отличие от того, что делает изнутри сам скрипт), поэтому реально
+# подхватывает новые алиасы/промпт сразу после первой установки
 set -e
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
+REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 INSTALL_DIR="/opt/vps-setup"
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Запустите от root: curl -fsSL .../install.sh | sudo bash" >&2
+    echo "Запустите от root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
     exit 1
 fi
 

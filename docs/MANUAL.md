@@ -9,7 +9,7 @@
 <p align="center"><b>🇷🇺 Русский</b> · <a href="MANUAL.en.md">🇬🇧 English</a></p>
 
 Если не хочется гонять чужой `curl | sudo bash` на своём сервере — вот те же
-12 пунктов меню [usfc](README.md), но руками, командами. Порядок такой же,
+12 пунктов меню [usfc](../README.md), но руками, командами. Порядок такой же,
 как в самом меню, и это не случайно: раздел «защита» — последним, чтобы UFW
 увидел уже поднятые Docker/nginx (см. пункт 12).
 
@@ -74,11 +74,11 @@ sudo apt install -y fastfetch
 ```
 
 Нужна версия ≥ 2.64.0 — более старые не умеют выравнивание в format-строках,
-которое использует [`config.jsonc`](config.jsonc) из этого репозитория:
+которое использует [`config.jsonc`](../src/config.jsonc) из этого репозитория:
 
 ```bash
 mkdir -p ~/.config/fastfetch
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/config.jsonc \
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src/config.jsonc \
     -o ~/.config/fastfetch/config.jsonc
 ```
 
@@ -250,7 +250,7 @@ sudo systemctl enable --now earlyoom
 **Отдельное и самое важное предупреждение: делая это руками, вы теряете
 самопроверку, которую делает скрипт** (одноразовый ключ, реальный логин
 через `ssh user@127.0.0.1` до и после рестарта `sshd`, автоматический откат
-при сбое — см. [README](README.md#как-это-работает)). Здесь ничего не
+при сбое — см. [README](../README.md#как-это-работает)). Здесь ничего не
 проверяется автоматически — только вы сами, командами ниже. **Прежде чем
 выключать пароль — убедитесь, что вход по ключу реально работает**, и
 держите открытой текущую сессию, пока не убедитесь, что новая тоже
