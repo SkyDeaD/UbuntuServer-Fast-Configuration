@@ -2,6 +2,8 @@
 
 # UbuntuServer Fast Configuration
 
+<img width="300" height="300" alt="logo" src="https://github.com/user-attachments/assets/d86c5588-d76f-4564-8c29-11b065033c46" />
+
 ---
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
