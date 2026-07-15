@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.4.2"
+VERSION="2.4.3"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -598,7 +598,7 @@ apply_zram() {
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
-                zram_percent="$(ask_value "Сколько % RAM выделить под zram?" "$cur_percent")"
+                zram_percent="$(ask_value "Размер zram в % от RAM?" "$cur_percent")"
                 if apt-get install -y zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
@@ -619,7 +619,7 @@ apply_zram() {
         fi
     elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
         local zram_percent
-        zram_percent="$(ask_value "Сколько % RAM выделить под zram?" "${ZRAM_BULK_PERCENT:-75}")"
+        zram_percent="$(ask_value "Размер zram в % от RAM?" "${ZRAM_BULK_PERCENT:-75}")"
         if apt-get install -y zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
@@ -1390,7 +1390,7 @@ EOF
                         if printf '%s\n' "${pending[@]}" | grep -qx 10; then
                             read_swap_state
                             if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
-                                ZRAM_BULK_PERCENT="$(ask_value "Сколько % RAM выделить под zram?" 75)"
+                                ZRAM_BULK_PERCENT="$(ask_value "Размер zram в % от RAM?" 75)"
                             fi
                             if [ "$SWAP_ACTIVE" != true ]; then
                                 SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
