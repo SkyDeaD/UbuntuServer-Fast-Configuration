@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.3.0"
+VERSION="2.4.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -48,6 +48,24 @@ ask_yn() {
     read -r reply </dev/tty
     reply="${reply:-$default}"
     [[ "$reply" =~ ^[Yy] ]]
+}
+
+# ask_value question default — как ask_yn, но для чисел; печатает результат
+# в stdout (нужно вызывать через командную подстановку), весь интерактив — в stderr
+ask_value() {
+    local question="${1:-}" default="${2:-}" reply
+    if [ "$BULK_MODE" = true ]; then
+        echo "$default"
+        return
+    fi
+    echo -en "  ${BOLD}${question}${NC} ${DIM}[${default}]:${NC} " >&2
+    read -r reply </dev/tty
+    reply="${reply:-$default}"
+    if ! [[ "$reply" =~ ^[0-9]+$ ]]; then
+        log_warn "Не похоже на число — использую значение по умолчанию (${default})"
+        reply="$default"
+    fi
+    echo "$reply"
 }
 
 show_header() {
@@ -537,6 +555,19 @@ EOF
     log_success "unattended-upgrades включён"
 }
 
+# suggest_swap_mb — предлагает размер резервного swap-файла: 10% свободного
+# места на /, зажатое в 512-4096 МБ. На тесном диске (мало свободного места)
+# не раздувает своп; на просторном — не ограничивается устаревшим 1GB
+suggest_swap_mb() {
+    local free_mb suggested
+    free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
+    [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
+    suggested=$(( free_mb * 10 / 100 ))
+    [ "$suggested" -lt 512 ] && suggested=512
+    [ "$suggested" -gt 4096 ] && suggested=4096
+    echo "$suggested"
+}
+
 apply_zram() {
     local zram_active=false zram_prio="" swap_active=false swap_prio="" swap_path=""
     while read -r n t s u p; do
@@ -552,20 +583,26 @@ apply_zram() {
         else
             log_warn "zram активен, но приоритет ${zram_prio} (в гайде — 100), похоже настраивали вручную"
             if ask_yn "Перенастроить под рекомендованные значения?" N; then
+                local cur_percent zram_percent
+                cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
+                [ -z "$cur_percent" ] && cur_percent=75
+                zram_percent="$(ask_value "Сколько % RAM выделить под zram?" "$cur_percent")"
                 if apt-get install -y zram-tools; then
-                    printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
+                    printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
                     systemctl restart zramswap
-                    log_success "zram перенастроен"
+                    log_success "zram перенастроен (${zram_percent}% RAM)"
                 else
                     log_error "Установка zram-tools не удалась"
                 fi
             fi
         fi
-    elif ask_yn "Установить и настроить zram-tools (lz4, 75% RAM, приоритет 100)?"; then
+    elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
+        local zram_percent
+        zram_percent="$(ask_value "Сколько % RAM выделить под zram?" 75)"
         if apt-get install -y zram-tools; then
-            printf 'ALGO=lz4\nPERCENT=75\nPRIORITY=100\n' > /etc/default/zramswap
+            printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
             systemctl restart zramswap
-            log_success "zram-tools установлен и настроен"
+            log_success "zram-tools установлен и настроен (${zram_percent}% RAM)"
         else
             log_error "Установка zram-tools не удалась"
         fi
@@ -585,17 +622,23 @@ apply_zram() {
                 log_success "Приоритет исправлен"
             fi
         fi
-    elif ask_yn "Создать 1GB swapfile как резервный уровень (приоритет 10)?"; then
-        fallocate -l 1G /swapfile
-        chmod 600 /swapfile
-        mkswap /swapfile >/dev/null
-        if grep -qE '^/swapfile\s' /etc/fstab 2>/dev/null; then
-            sed -i -E 's#^(/swapfile\s+none\s+swap\s+)sw([^,].*)?$#\1sw,pri=10\2#' /etc/fstab
-        else
-            echo "/swapfile none swap sw,pri=10 0 0" >> /etc/fstab
+    else
+        local suggested_mb
+        suggested_mb="$(suggest_swap_mb)"
+        if ask_yn "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?"; then
+            local swap_mb
+            swap_mb="$(ask_value "Размер swap-файла, МБ?" "$suggested_mb")"
+            fallocate -l "${swap_mb}M" /swapfile
+            chmod 600 /swapfile
+            mkswap /swapfile >/dev/null
+            if grep -qE '^/swapfile\s' /etc/fstab 2>/dev/null; then
+                sed -i -E 's#^(/swapfile\s+none\s+swap\s+)sw([^,].*)?$#\1sw,pri=10\2#' /etc/fstab
+            else
+                echo "/swapfile none swap sw,pri=10 0 0" >> /etc/fstab
+            fi
+            swapon -a
+            log_success "swapfile создан (${swap_mb} МБ, приоритет 10)"
         fi
-        swapon -a
-        log_success "swapfile создан (1GB, приоритет 10)"
     fi
 
     local cur_sw cur_vfs
@@ -965,7 +1008,14 @@ import sys
 s, w = sys.argv[1], int(sys.argv[2])
 print(s[:max(w-1,0)] + '…')
 " "$plain" "$width")"
-    printf '%s%s%s' "$color" "$body" "$NC"
+    # NC добавляем только если реально был цветовой код — иначе для обычного
+    # текста (без цвета) это дописывает буквальный "\033[0m" как текст,
+    # который потом портит и вид, и подсчёт длины в pad_title
+    if [ -n "$color" ]; then
+        printf '%s%s%s' "$color" "$body" "$NC"
+    else
+        printf '%s' "$body"
+    fi
 }
 
 show_menu() {
@@ -1077,18 +1127,43 @@ show_aliases_help() {
     show_header
     echo -e "  ${BOLD}Алиасы${NC} ${DIM}(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)${NC}"
     echo ""
-    printf "  ${BOLD}%s %s %s${NC}\n" "$(pad_title "Алиас" 8)" "$(pad_title "Реальная команда" 42)" "Что делает"
-    hr
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "ls" 8)"   "$(pad_title "eza --icons --group-directories-first" 42)"       "список файлов с иконками (замена ls)"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "ll" 8)"   "$(pad_title "eza -lah --icons --group-directories-first" 42)"   "подробный список, аналог ls -la"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "la" 8)"   "$(pad_title "eza -a --icons --group-directories-first" 42)"     "список вместе со скрытыми файлами"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "lt" 8)"   "$(pad_title "eza --tree --icons --level=2 ..." 42)"             "дерево каталогов, 2 уровня вглубь"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "cat" 8)"  "$(pad_title "batcat --paging=never" 42)"                        "вывод файла с подсветкой, без пейджера"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "catp" 8)" "$(pad_title "batcat" 42)"                                       "то же, но с пейджером (для длинных файлов, поиск / внутри)"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "scat" 8)" "$(pad_title "sudo batcat --paging=never" 42)"                   "cat для файлов, читаемых только под root"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "fd" 8)"   "$(pad_title "fdfind" 42)"                                       "быстрый поиск файлов, замена find"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "usfc" 8)" "$(pad_title "sudo usfc + auto-source ~/.bashrc" 42)"              "запуск меню с sudo, .bashrc подхватится сам после выхода"
-    hr
+
+    local col1=8 col2=30 col3 inner_w
+    inner_w="$(term_width)"
+    # 6 = 4 бордюрных символа (│×3 + внешние) + 2 паддинга третьей колонки,
+    # которую эта формула вычисляет (её собственные "+2" не должны
+    # компенсироваться дважды) — тот же приём, что и в show_menu()
+    col3=$(( inner_w - (col1 + 2) - (col2 + 2) - 6 ))
+    [ "$col3" -lt 10 ] && col3=10
+
+    local rows=(
+        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)"
+        "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la"
+        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами"
+        "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь"
+        "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера"
+        "catp|batcat|то же, с пейджером (для длинных файлов)"
+        "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root"
+        "fd|fdfind|быстрый поиск файлов, замена find"
+        "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само"
+    )
+
+    box_line "$DIM" '┌' '┬' '┐' "$col1" "$col2" "$col3"
+    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
+        "$(pad_title "Алиас" "$col1")" "$(pad_title "Реальная команда" "$col2")" "$(pad_title "Что делает" "$col3")"
+    box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
+    local row alias cmd desc cmd_t desc_t
+    for row in "${rows[@]}"; do
+        IFS='|' read -r alias cmd desc <<< "$row"
+        cmd_t="$(truncate_colored "$cmd" "$col2")"
+        desc_t="$(truncate_colored "$desc" "$col3")"
+        printf "  ${DIM}│${NC} ${CYAN}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC}\n" \
+            "$(pad_title "$alias" "$col1")" \
+            "$(pad_title "$cmd_t" "$col2")" \
+            "$(pad_title "$desc_t" "$col3")"
+    done
+    box_line "$DIM" '└' '┴' '┘' "$col1" "$col2" "$col3"
+
     echo ""
     log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
     log_info "Почему у cat/ls вообще другое поведение под sudo — см. README, раздел FAQ"
@@ -1272,15 +1347,6 @@ EOF
         echo ""
         log_warn "Требуется перезагрузка сервера (было обновление ядра/библиотек)"
     fi
-    echo ""
-    log_info "Nerd Font ставится в ЛОКАЛЬНОМ терминале — это шрифт клиента, не сервера, скриптом не решается"
-
-    # source ~/.bashrc отсюда не подействует на твою сессию — дочерний процесс не может
-    # менять окружение родительского, это ограничение Unix. Сам скрипт не знает,
-    # вызвали его через usfc-обёртку (она сама сделает source сразу после выхода)
-    # или напрямую — поэтому подсказка покрывает оба случая.
-    log_info "Если запускал через usfc — новые алиасы/промпт подхватятся сами прямо сейчас"
-    log_warn "Если напрямую — либо сам выполни source ~/.bashrc, либо переподключись по SSH"
     echo ""
 }
 
