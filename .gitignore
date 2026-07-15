@@ -1,2 +1,11 @@
 .DS_Store
 Claude.md
+.claude/
+.clinerules
+.cursor/
+.gemini/
+.kiro/
+.windsurfrules
+AGENTS.md
+opencode.json
+tmp/

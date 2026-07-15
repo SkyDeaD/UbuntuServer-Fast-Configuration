@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.1.0"
+VERSION="2.2.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -60,7 +60,6 @@ show_header() {
     echo -e "  ${CYAN}╚██████╔╝███████║██║     ╚██████╗${NC}"
     echo -e "  ${CYAN} ╚═════╝ ╚══════╝╚═╝      ╚═════╝${NC}"
     echo -e "  ${BOLD}USFC${NC} ${DIM}v${VERSION} by SkyDeaD${NC}   ${DIM}UbuntuServer Fast Configuration${NC}"
-    echo -e "  ${DIM}CLI · Docker · zram/swap · fastfetch · starship · hardening${NC}"
     hr "$CYAN"
 }
 
@@ -429,14 +428,24 @@ apply_fastfetch() {
         log_warn "Не удалось скачать config.jsonc из ${REPO_RAW_BASE}"
     fi
 
-    local BASHRC="${TARGET_HOME}/.bashrc"
+    local BASHRC="${TARGET_HOME}/.bashrc" need_fastfetch_block=false
     if grep -qF "# >>> vps-setup:fastfetch >>>" "$BASHRC" 2>/dev/null; then
-        log_info "Автозапуск fastfetch в .bashrc уже есть"
+        # старый блок (без гейта USFC_RESOURCE) печатал бы fastfetch второй раз
+        # при каждом auto-source из usfc-обёртки (см. main()) — апгрейдим его
+        if grep -qF "USFC_RESOURCE:-" "$BASHRC" 2>/dev/null; then
+            log_info "Автозапуск fastfetch в .bashrc уже есть"
+        else
+            sed -i '/# >>> vps-setup:fastfetch >>>/,/# <<< vps-setup:fastfetch <<</d' "$BASHRC"
+            need_fastfetch_block=true
+        fi
     else
-        cat >> "$BASHRC" <<EOF
+        need_fastfetch_block=true
+    fi
+    if [ "$need_fastfetch_block" = true ]; then
+        cat >> "$BASHRC" <<'EOF'
 
 # >>> vps-setup:fastfetch >>>
-if [ -x "\$(command -v fastfetch)" ]; then
+if [ -z "${USFC_RESOURCE:-}" ] && [ -x "$(command -v fastfetch)" ]; then
     fastfetch
 fi
 # <<< vps-setup:fastfetch <<<
@@ -926,6 +935,40 @@ pad_title() {
     printf '%s%*s' "$s" "$pad" ""
 }
 
+# видимая (без ANSI-кодов) длина строки, Cyrillic-safe — общий счётчик для
+# паддинга/обрезки цветного текста (статусная колонка, рамка легенды)
+visible_len() {
+    local plain
+    # два разных вида "цветового кода" встречаются в этом файле: настоящий ESC-байт
+    # (\x1b) — так выглядит вывод, прошедший через echo -e/printf %b (например,
+    # результат status_* функций) — и буквальный 4-символьный текст "\033" — так
+    # выглядит цвет, если переменную типа $BOLD (объявлена в '...', без раскрытия
+    # escape-последовательностей) подставили в строку напрямую, минуя echo -e.
+    # Оба варианта не несут видимой ширины и должны вырезаться одинаково.
+    plain="$(printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g; s/\\033\[[0-9;]*m//g')"
+    python3 -c "import sys; print(len(sys.argv[1]))" "$plain" 2>/dev/null || echo "${#plain}"
+}
+
+# обрезает цветную строку до width видимых символов, добавляя "…" если длиннее.
+# Предполагает, что вся строка обёрнута РОВНО в один цветовой код (так и есть
+# у всех status_* — один ${COLOR}...${NC} на всю строку)
+truncate_colored() {
+    local text="$1" width="$2" plain color body
+    if [ "$(visible_len "$text")" -le "$width" ]; then
+        printf '%s' "$text"
+        return
+    fi
+    plain="$(printf '%s' "$text" | sed -E 's/\x1b\[[0-9;]*m//g; s/\\033\[[0-9;]*m//g')"
+    # цветовой код в начале строки — в любом из двух видов (см. visible_len)
+    color="$(printf '%s' "$text" | grep -oE '^(\x1b\[[0-9;]*m|\\033\[[0-9;]*m)')"
+    body="$(python3 -c "
+import sys
+s, w = sys.argv[1], int(sys.argv[2])
+print(s[:max(w-1,0)] + '…')
+" "$plain" "$width")"
+    printf '%s%s%s' "$color" "$body" "$NC"
+}
+
 show_menu() {
     show_header
     echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
@@ -954,7 +997,7 @@ show_menu() {
 
     local i=1 id section section_color
     for id in "${ITEM_IDS[@]}"; do
-        local status_line visible_status status_len status_pad
+        local status_line status_len status_pad
         section="${ITEM_SECTIONS[$((i-1))]}"
         case "$section" in
             база)     section_color="$CYAN" ;;
@@ -962,11 +1005,11 @@ show_menu() {
             защита)   section_color="$MAGENTA" ;;
         esac
         status_line="$(status_"$id")"
-        # известный компромисс: если статус длиннее status_w (например, длинный список
-        # недостающих пакетов), эта конкретная строка вылезет за правую рамку — текст
-        # не обрезаем, диагностика важнее ровного края одной строки
-        visible_status="$(printf '%s' "$status_line" | sed -E 's/\x1b\[[0-9;]*m//g')"
-        status_len="$(python3 -c "import sys; print(len(sys.argv[1]))" "$visible_status" 2>/dev/null || echo "${#visible_status}")"
+        # длинный статус (например, большой список недостающих пакетов) обрезаем
+        # с "…" вместо того, чтобы дать ему вылезти за правую рамку — рамка должна
+        # оставаться ровной на любой строке
+        status_line="$(truncate_colored "$status_line" "$status_w")"
+        status_len="$(visible_len "$status_line")"
         status_pad=$((status_w - status_len))
         [ "$status_pad" -lt 0 ] && status_pad=0
         printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
@@ -977,14 +1020,29 @@ show_menu() {
     box_line "$DIM" '└' '┴' '┘' "$idx_w" "$section_w" "$title_w" "$status_w"
 
     echo ""
-    local lbl_choice lbl_sections lbl_commands
+    local lbl_choice lbl_sections lbl_commands legend1 legend2 legend3 legend4
     lbl_choice="$(pad_title "Выбор:" 10)"
     lbl_sections="$(pad_title "Разделы:" 10)"
     lbl_commands="$(pad_title "Команды:" 10)"
-    echo -e "  ${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
-    echo -e "  $(pad_title "" 10)${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
-    echo -e "  ${BOLD}${lbl_sections}${NC}${CYAN}${BOLD}B${NC}=${CYAN}база${NC}   ${BLUE}${BOLD}S${NC}=${BLUE}сервисы${NC}   ${MAGENTA}${BOLD}P${NC}=${MAGENTA}защита${NC}   ${BOLD}A${NC}=всё   ${DIM}(сочетать: B,S)${NC}"
-    echo -e "  ${BOLD}${lbl_commands}${NC}${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
+    legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
+    legend2="$(pad_title "" 10)${DIM}применённый пункт раздела «защита» — повторный выбор предложит отключить${NC}"
+    legend3="${BOLD}${lbl_sections}${NC}${CYAN}${BOLD}B${NC}=${CYAN}база${NC}   ${BLUE}${BOLD}S${NC}=${BLUE}сервисы${NC}   ${MAGENTA}${BOLD}P${NC}=${MAGENTA}защита${NC}   ${BOLD}A${NC}=всё   ${DIM}(сочетать: B,S)${NC}"
+    legend4="${BOLD}${lbl_commands}${NC}${CYAN}${BOLD}H${NC} справка по алиасам   ${CYAN}${BOLD}R${NC} команды отката   ${CYAN}${BOLD}U${NC} удалить usfc   ${CYAN}${BOLD}Q${NC} выход"
+
+    # legend_w = inner_w - 4: box_line/рамка сама добавляет 2 бордюрных символа
+    # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
+    # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
+    local legend_w=$((inner_w - 4)) line
+    box_line "$DIM" '┌' '┬' '┐' "$legend_w"
+    for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
+        local ltrunc llen lpad
+        ltrunc="$(truncate_colored "$line" "$legend_w")"
+        llen="$(visible_len "$ltrunc")"
+        lpad=$((legend_w - llen))
+        [ "$lpad" -lt 0 ] && lpad=0
+        printf "  ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" "$ltrunc" "$lpad" ""
+    done
+    box_line "$DIM" '└' '┴' '┘' "$legend_w"
     echo ""
 }
 
@@ -1020,7 +1078,7 @@ show_aliases_help() {
     printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "catp" 8)" "$(pad_title "batcat" 42)"                                       "то же, но с пейджером (для длинных файлов, поиск / внутри)"
     printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "scat" 8)" "$(pad_title "sudo batcat --paging=never" 42)"                   "cat для файлов, читаемых только под root"
     printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "fd" 8)"   "$(pad_title "fdfind" 42)"                                       "быстрый поиск файлов, замена find"
-    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "usfc" 8)" "$(pad_title "sudo usfc" 42)"                                    "запуск этого меню сразу с sudo"
+    printf "  ${CYAN}%s${NC} %s %s\n" "$(pad_title "usfc" 8)" "$(pad_title "sudo usfc + auto-source ~/.bashrc" 42)"              "запуск меню с sudo, .bashrc подхватится сам после выхода"
     hr
     echo ""
     log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
@@ -1073,15 +1131,36 @@ main() {
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
     log_info "SSH-порт: ${SSH_PORT}"
 
-    # алиас usfc='sudo usfc' — не отдельный пункт меню, ставится сам при первом запуске,
+    # usfc-обёртка — не отдельный пункт меню, ставится сама при первом запуске,
     # свой маркер, идемпотентно. Пропускаем для прямого root — sudo тут бесполезен
-    # (и может быть даже не установлен на такой машине)
-    local BASHRC="${TARGET_HOME}/.bashrc"
-    if [ "$TARGET_USER" != "root" ] && ! grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
-        cat >> "$BASHRC" <<EOF
+    # (и может быть даже не установлен на такой машине).
+    # Это bash-ФУНКЦИЯ, а не alias: после того как дочерний sudo-процесс меню
+    # завершится, функция сама делает "source ~/.bashrc" — но уже в ТЕКУЩЕЙ
+    # интерактивной оболочке (функции выполняются в вызывающем шелле, не в
+    # подпроцессе), так что новые алиасы/промпт подхватываются без ручного
+    # source и без переподключения. USFC_RESOURCE гейтит fastfetch-автозапуск
+    # (см. apply_fastfetch) — иначе баннер печатался бы второй раз при каждом
+    # выходе из меню.
+    local BASHRC="${TARGET_HOME}/.bashrc" need_self_block=false
+    if [ "$TARGET_USER" != "root" ]; then
+        if grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
+            if grep -qF "alias usfc='sudo usfc'" "$BASHRC" 2>/dev/null; then
+                sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$BASHRC"
+                need_self_block=true
+            fi
+        else
+            need_self_block=true
+        fi
+    fi
+    if [ "$need_self_block" = true ]; then
+        cat >> "$BASHRC" <<'EOF'
 
 # >>> vps-setup:self >>>
-alias usfc='sudo usfc'
+usfc() {
+    sudo /usr/local/bin/usfc "$@"
+    USFC_RESOURCE=1 source ~/.bashrc 2>/dev/null
+    unset USFC_RESOURCE
+}
 # <<< vps-setup:self <<<
 EOF
         chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC" 2>/dev/null
