@@ -205,11 +205,16 @@ sudo systemctl enable --now unattended-upgrades
 
 ## 10. ZRAM + swap + earlyoom
 
+В скрипте и `PERCENT` для zram, и размер резервного swap-файла теперь
+спрашиваются интерактивно (zram — по умолчанию предлагает 75%, swap-файл —
+предлагает размер по объёму свободного места на диске, а не жёстко 1 ГБ).
+Руками — просто подставь свои значения вместо примеров ниже.
+
 ```bash
 sudo apt install -y zram-tools
 ```
 
-`/etc/default/zramswap`:
+`/etc/default/zramswap` (пример — 75%, подставь своё значение):
 
 ```
 ALGO=lz4
@@ -221,8 +226,9 @@ PRIORITY=100
 sudo systemctl restart zramswap
 ```
 
-Резервный swapfile на диске (1 GB, приоритет 10 — ниже, чем у zram, так что
-использоваться будет только когда zram заполнится):
+Резервный swapfile на диске (пример — 1 GB, приоритет 10 ниже, чем у zram,
+так что использоваться будет только когда zram заполнится; свой размер
+подставь вместо `1G`, например `2G` или `4G`):
 
 ```bash
 sudo fallocate -l 1G /swapfile
