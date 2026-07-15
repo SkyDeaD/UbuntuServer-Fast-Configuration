@@ -22,9 +22,7 @@ Ubuntu 24.04 or 26.04, root access, outbound internet.
 
 - [Quick start](#quick-start)
 - [What each item does](#what-each-item-does)
-- [How it works](#how-it-works)
 - [Customization](#customization)
-- [Deliberately not automated](#deliberately-not-automated)
 - [FAQ](#faq)
 - [Contributing](#contributing)
 - [License](#license)
@@ -92,33 +90,11 @@ Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, ite
 
 **ZRAM + swap + earlyoom** — zram (compressed memory living in RAM itself; how much % of RAM to give it is now asked at install time, 75% by default) plus a backup swap file on disk (its size is asked too — the script suggests something sensible based on free disk space, not a flat 1 GB for every server) at a lower priority, so it only kicks in once zram runs out. Plus `vm.swappiness=80`/`vm.vfs_cache_pressure=50`, and optionally `earlyoom` — protection against the whole server locking up when memory runs out.
 
-**SSH hardening** — switches login to key-only, disables password login and root login. The riskiest item in the menu, and the only one with a self-test before it applies anything — details below, under "How it works".
+**SSH hardening** — switches login to key-only, disables password login and root login. The riskiest item in the menu, and the only one with a self-test before it applies anything: before disabling the password, it sets up a one-time key and actually verifies login with it — if that check fails, it automatically rolls back the config and leaves the password enabled.
 
 **UFW** — a firewall: closes every port except the ones that matter (the SSH port, and whatever the server is already actually listening on at the time it's enabled).
 
 The hardening section comes last on purpose: UFW scans actually-listening ports when it enables, and if Docker/nginx are already up, the firewall sees their ports immediately instead of only port 22.
-
-</details>
-
-## How it works
-
-Every item is a pair of functions — one just reads the server's current state, the other applies changes. Every status gets re-checked before each menu redraw, so if something's already configured — including by hand, before you ever ran this script — it shows up immediately, and re-selecting the item won't blindly overwrite it.
-
-<details>
-<summary>How the SSH hardening self-test actually works</summary>
-
-The riskiest item, and the only one where the script doesn't just apply a config and hope. Before disabling the password, it generates a one-time keypair right on the server, adds it to a temporary `authorized_keys`, and actually logs in via `ssh user@127.0.0.1` — once before touching `sshd_config`, and again after restarting `sshd` with the new config. If either check fails, it rolls back automatically: removes `/etc/ssh/sshd_config.d/10-hardening.conf`, restarts `sshd` with the old settings, password stays on.
-
-The filename `10-hardening.conf` isn't arbitrary — configs in `sshd_config.d/` are read alphabetically, and a lot of cloud images already ship a `50-cloud-init.conf` with `PasswordAuthentication yes` that cloud-init can recreate on image rebuilds. `10` sorts before `50`, so ours wins the merge.
-
-Your current SSH session never drops during any of this — restarting `sshd` doesn't kill already-open connections, it just stops accepting new ones.
-
-</details>
-
-<details>
-<summary>Why UFW doesn't break services you're already running</summary>
-
-Before enabling, the script parses `ss -tln` and shows what's actually listening — if something's already running on a non-standard port (VPN, proxy), you'll see it in the list before the firewall would have cut it off, not after.
 
 </details>
 
@@ -128,20 +104,7 @@ The fastfetch `src/config.jsonc` — edit and commit it, `src/setup.sh` pulls it
 
 Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `src/setup.sh`. Version checking runs off a separate `src/VERSION` file — if you edit `src/setup.sh`, bump it.
 
-## Deliberately not automated
-
-`apt upgrade` — you decide when. Changing the SSH port — too specific to a given setup. Locking the root password — redundant once `PermitRootLogin` is already `no`. Fine-grained UFW rules and setting up the actual VPN/proxy stack — separate, server-specific tasks.
-
 ## FAQ
-
-<details>
-<summary>New aliases didn't show up right after installing</summary>
-
-If you installed with the Quick Start command as-is (ending in `&& source ~/.bashrc`), this shouldn't happen — that tail runs in your own shell and picks up `.bashrc` right away, even on the very first install. Starting from the second time you run `usfc` (once the wrapper function exists in `.bashrc`), it re-sources `.bashrc` on its own right after the menu closes, without that tail.
-
-If it still didn't show up, you likely installed without `&& source ~/.bashrc` (e.g. copied only part of the command). The script runs under `sudo` and can't touch your current shell from the inside — a Unix limitation, not a bug. Run `source ~/.bashrc` yourself once, or reconnect via SSH — from then on `usfc` handles it on its own.
-
-</details>
 
 <details>
 <summary>Icons/fonts in the terminal look like boxes or garbled characters</summary>

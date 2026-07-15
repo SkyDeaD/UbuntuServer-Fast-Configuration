@@ -257,7 +257,7 @@ sudo systemctl enable --now earlyoom
 **A separate, most important warning: doing this by hand means you lose the
 self-test the script does** (a one-time key, an actual login via
 `ssh user@127.0.0.1` before and after restarting `sshd`, automatic rollback
-on failure — see [README](../README.en.md#how-it-works)). Nothing here is
+on failure — see [README](../README.en.md)). Nothing here is
 verified automatically — only you, with the commands below. **Before
 disabling the password, make sure key-based login actually works**, and
 keep your current session open until you've confirmed a new one connects too.

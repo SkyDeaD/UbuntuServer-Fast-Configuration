@@ -279,7 +279,7 @@ status_zram() {
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
     if [ "$zram_ok" = true ] && [ "$swap_ok" = true ]; then
-        echo -e "${GREEN}✓ настроено по гайду${NC}"; return 0
+        echo -e "${GREEN}✓ настроено${NC}"; return 0
     elif [ "$zram_ok" = true ] || [ "$swap_ok" = true ]; then
         echo -e "${YELLOW}! настроено частично${NC}"; return 1
     else
@@ -581,16 +581,25 @@ apply_zram() {
         if [ "$zram_prio" = "100" ]; then
             log_success "zram уже настроен (приоритет 100) — пропускаю"
         else
-            log_warn "zram активен, но приоритет ${zram_prio} (в гайде — 100), похоже настраивали вручную"
+            log_warn "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную"
             if ask_yn "Перенастроить под рекомендованные значения?" N; then
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
                 zram_percent="$(ask_value "Сколько % RAM выделить под zram?" "$cur_percent")"
                 if apt-get install -y zram-tools; then
+                    systemctl stop zramswap 2>/dev/null
+                    swapoff /dev/zram0 2>/dev/null || true
                     printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
-                    systemctl restart zramswap
-                    log_success "zram перенастроен (${zram_percent}% RAM)"
+                    if ! systemctl start zramswap; then
+                        sleep 2
+                        systemctl start zramswap
+                    fi
+                    if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep -q '^/dev/zram'; then
+                        log_success "zram перенастроен (${zram_percent}% RAM)"
+                    else
+                        log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
+                    fi
                 else
                     log_error "Установка zram-tools не удалась"
                 fi
@@ -600,9 +609,18 @@ apply_zram() {
         local zram_percent
         zram_percent="$(ask_value "Сколько % RAM выделить под zram?" 75)"
         if apt-get install -y zram-tools; then
+            systemctl stop zramswap 2>/dev/null
+            swapoff /dev/zram0 2>/dev/null || true
             printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
-            systemctl restart zramswap
-            log_success "zram-tools установлен и настроен (${zram_percent}% RAM)"
+            if ! systemctl start zramswap; then
+                sleep 2
+                systemctl start zramswap
+            fi
+            if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep -q '^/dev/zram'; then
+                log_success "zram-tools установлен и настроен (${zram_percent}% RAM)"
+            else
+                log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
+            fi
         else
             log_error "Установка zram-tools не удалась"
         fi
@@ -612,7 +630,7 @@ apply_zram() {
         if [ "$swap_prio" = "10" ]; then
             log_success "Резервный своп на диске (${swap_path}) уже настроен (приоритет 10) — пропускаю"
         else
-            log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (в гайде — 10)"
+            log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)"
             if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?" N; then
                 local esc_path
                 esc_path="$(printf '%s' "$swap_path" | sed 's/[.[\*^$/]/\\&/g')"
@@ -645,7 +663,7 @@ apply_zram() {
     cur_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
     cur_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
     if [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; then
-        log_success "sysctl уже настроен как в гайде"
+        log_success "sysctl уже настроен как рекомендуется"
     else
         log_info "Сейчас: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(рекомендуется 80/50)${NC}"
         local sysctl_default=Y
@@ -805,7 +823,7 @@ EOF
 apply_ufw() {
     log_info "Обнаруженные слушающие TCP-порты:"
     local listening
-    listening="$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -oE '[0-9]+$' | sort -un)"
+    listening="$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' | grep -oE '[0-9]+$' | sort -un)"
     echo "$listening" | sed 's/^/      /'
     echo ""
     log_warn "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его"
@@ -1006,7 +1024,7 @@ truncate_colored() {
     body="$(python3 -c "
 import sys
 s, w = sys.argv[1], int(sys.argv[2])
-print(s[:max(w-1,0)] + '…')
+print(s[:max(w-3,0)] + '...')
 " "$plain" "$width")"
     # NC добавляем только если реально был цветовой код — иначе для обычного
     # текста (без цвета) это дописывает буквальный "\033[0m" как текст,
