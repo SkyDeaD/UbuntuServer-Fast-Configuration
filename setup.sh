@@ -12,7 +12,7 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="1.3.2"
+VERSION="1.4.0"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -458,7 +458,7 @@ EOF
 
 apply_dockerlog() {
     if ! command -v docker &>/dev/null; then
-        log_info "Docker не установлен — сначала установи Docker (пункт 4)"
+        log_info "Docker не установлен — сначала установи Docker (пункт 8)"
         return
     fi
     [ -f /etc/docker/daemon.json ] && log_warn "daemon.json уже существует, будет дополнен (не перезаписан целиком)"
@@ -776,17 +776,17 @@ disable_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # Меню
 # ═══════════════════════════════════════════════════════════════
-ITEM_IDS=(update cli basepkgs docker nginx fastfetch starship dotfiles tmux dockerlog fail2ban unattended zram sshhardening ufw)
+ITEM_IDS=(update basepkgs cli fastfetch starship dotfiles tmux docker nginx dockerlog fail2ban unattended zram sshhardening ufw)
 ITEM_TITLES=(
     "Обновление системы"
-    "CLI-утилиты (eza/bat/fd/ripgrep/zoxide/ncdu)"
     "Базовые пакеты (micro/curl/git/certbot/...)"
-    "Docker + Compose"
-    "nginx-full"
+    "CLI-утилиты (eza/bat/fd/ripgrep/zoxide/ncdu)"
     "fastfetch"
     "starship"
     "fastfetch config + .bashrc"
     "tmux"
+    "Docker + Compose"
+    "nginx-full"
     "Docker log rotation"
     "fail2ban"
     "unattended-upgrades"
@@ -862,38 +862,9 @@ process_item() {
     "apply_${id}"
 }
 
-apply_group() {
-    local start="$1" end="$2" label="$3"
-    local -a pending=()
-    local i=1 id
-    for id in "${ITEM_IDS[@]}"; do
-        if [ "$i" -ge "$start" ] && [ "$i" -le "$end" ] && [ "$id" != "update" ]; then
-            status_"$id" >/dev/null
-            [ $? -ne 0 ] && pending+=("$i")
-        fi
-        i=$((i+1))
-    done
-    echo ""
-    if [ "${#pending[@]}" -eq 0 ]; then
-        log_info "В разделе «${label}» уже всё применено"
-        sleep 1
-        return
-    fi
-    log_info "Раздел «${label}», не применено: ${pending[*]} (${#pending[@]} шт.)"
-    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
-    if ask_yn "Применить «${label}» сразу?"; then
-        BULK_MODE=true
-        for i in "${pending[@]}"; do
-            process_item "$i"
-        done
-        BULK_MODE=false
-    fi
-    pause
-}
-
 show_aliases_help() {
     show_header
-    echo -e "  ${BOLD}Алиасы, которые ставит пункт 8 (fastfetch config + .bashrc)${NC}"
+    echo -e "  ${BOLD}Алиасы, которые ставит пункт 6 (fastfetch config + .bashrc)${NC}"
     echo ""
     printf "  ${BOLD}%-8s %-42s %s${NC}\n" "Алиас" "Реальная команда" "Что делает"
     echo -e "  ${DIM}$(printf -- '─%.0s' {1..90})${NC}"
@@ -998,44 +969,73 @@ main() {
             [Hh]) show_aliases_help ;;
             [Rr]) show_rollback_reference ;;
             [Uu]) uninstall_self; pause ;;
-            [Bb]) apply_group 1 3 "база" ;;
-            [Ss]) apply_group 4 9 "сервисы" ;;
-            [Pp]) apply_group 10 15 "защита и обслуживание" ;;
-            [Aa]) apply_group 1 "${#ITEM_IDS[@]}" "всё" ;;
             *)
-                # один номер или несколько через пробел/запятую: "5", "1 3 5", "1,3,5"
+                # номера и буквы разделов вперемешку через пробел/запятую:
+                # "5", "1 3 5", "1,3,5", "B", "B,S", "B,14" — всё разбирается одинаково
                 local -a nums valid=()
                 IFS=', ' read -ra nums <<< "$choice"
-                local num
-                for num in "${nums[@]}"; do
-                    [ -z "$num" ] && continue
-                    if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#ITEM_IDS[@]}" ]; then
-                        valid+=("$num")
-                    else
-                        log_error "Нет пункта «${num}»"
-                    fi
+                local tok upper i
+                for tok in "${nums[@]}"; do
+                    [ -z "$tok" ] && continue
+                    upper="$(echo "$tok" | tr '[:lower:]' '[:upper:]')"
+                    case "$upper" in
+                        B) valid+=(2 3) ;;
+                        S) valid+=(4 5 6 7 8 9) ;;
+                        P) valid+=(10 11 12 13 14 15) ;;
+                        A) for ((i = 2; i <= ${#ITEM_IDS[@]}; i++)); do valid+=("$i"); done ;;
+                        *)
+                            if [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
+                                valid+=("$tok")
+                            else
+                                log_error "Нет пункта «${tok}»"
+                            fi
+                            ;;
+                    esac
                 done
 
+                # убрать дубликаты, сохраняя порядок (могут возникнуть при пересечении, например "3,B")
+                local -a dedup=()
+                local n already
+                for n in "${valid[@]}"; do
+                    already=false
+                    for i in "${dedup[@]}"; do [ "$i" = "$n" ] && already=true && break; done
+                    [ "$already" = false ] && dedup+=("$n")
+                done
+                valid=("${dedup[@]}")
+
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта (можно несколько через пробел/запятую), B/S/P/A, H, R, U или Q"
+                    log_error "Не понял ввод — номер пункта, буква раздела (B/S/P/A), можно сочетать через пробел/запятую, либо H, R, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
                     process_item "${valid[0]}"
                     pause
                 else
-                    # несколько пунктов разом — одно общее подтверждение, дальше без остановок
+                    # несколько пунктов разом — сначала убираем то, что уже применено
+                    # (иначе "B,S" при частично готовой системе будет зря переспрашивать про то, что и так стоит)
+                    local -a pending=() id
+                    for n in "${valid[@]}"; do
+                        id="${ITEM_IDS[$((n-1))]}"
+                        status_"$id" >/dev/null
+                        [ $? -ne 0 ] && pending+=("$n")
+                    done
+
                     echo ""
-                    log_info "Выбрано: ${valid[*]} (${#valid[@]} шт.)"
-                    log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
-                    if ask_yn "Применить все выбранные пункты сразу?"; then
-                        BULK_MODE=true
-                        for num in "${valid[@]}"; do
-                            process_item "$num"
-                        done
-                        BULK_MODE=false
+                    if [ "${#pending[@]}" -eq 0 ]; then
+                        log_info "Из выбранного (${valid[*]}) уже всё применено"
+                        sleep 1
+                    else
+                        log_info "Не применено из выбранного: ${pending[*]} (${#pending[@]} шт.)"
+                        log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
+                        if ask_yn "Применить сразу?"; then
+                            BULK_MODE=true
+                            for num in "${pending[@]}"; do
+                                process_item "$num"
+                            done
+                            BULK_MODE=false
+                        fi
+                        pause
                     fi
-                    pause
                 fi
                 ;;
         esac
@@ -1047,15 +1047,12 @@ main() {
     fi
     echo ""
     log_info "Nerd Font ставится в ЛОКАЛЬНОМ терминале — это шрифт клиента, не сервера, скриптом не решается"
-    echo ""
 
     # source ~/.bashrc отсюда не подействует на твою сессию — дочерний процесс не может
-    # менять окружение родительского. Но раз мы всё равно root (через sudo), можно вместо
-    # этого передать управление в свежий login-шелл нужного пользователя: он сам естественно
-    # прочитает .bashrc через .profile, и новые алиасы/промпт будут работать сразу.
-    if [ "$TARGET_USER" != "root" ] && ask_yn "Открыть свежий шелл с уже применёнными алиасами прямо сейчас?"; then
-        exec sudo -u "$TARGET_USER" -i
-    fi
+    # менять окружение родительского, это ограничение Unix, не обходится скриптом никак.
+    log_warn "Новые алиасы/промпт появятся в НОВОЙ сессии — либо сам выполни source ~/.bashrc,"
+    log_warn "либо просто переподключись по SSH"
+    echo ""
 }
 
 main
