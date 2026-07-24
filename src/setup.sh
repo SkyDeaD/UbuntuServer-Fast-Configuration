@@ -148,6 +148,7 @@ check_for_update() {
                 cp "$tmp" "$SCRIPT_PATH"
                 chmod +x "$SCRIPT_PATH"
                 rm -f "$tmp"
+                printf '%s' "$remote_version" > "${SCRIPT_DIR}/VERSION"
                 log_success "Обновлено до ${remote_version}, перезапускаю..."
                 exec "$SCRIPT_PATH"
             else
