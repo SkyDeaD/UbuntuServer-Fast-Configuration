@@ -12,7 +12,6 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
-VERSION="2.4.3"
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -110,6 +109,10 @@ SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
 [ -z "$SSH_PORT" ] && SSH_PORT=22
 
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+
+VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+[ -z "$VERSION" ] && VERSION="0.0.0"
 
 # ═══════════════════════════════════════════════════════════════
 # Самообновление — сверяется при каждом запуске
