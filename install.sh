@@ -17,6 +17,7 @@ fi
 mkdir -p "$INSTALL_DIR"
 curl -fsSL "${REPO_RAW_BASE}/setup.sh" -o "${INSTALL_DIR}/setup.sh"
 chmod +x "${INSTALL_DIR}/setup.sh"
+curl -fsSL "${REPO_RAW_BASE}/VERSION" -o "${INSTALL_DIR}/VERSION" || true
 ln -sf "${INSTALL_DIR}/setup.sh" /usr/local/bin/usfc
 
 echo "usfc установлен и готов к работе"
