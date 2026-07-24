@@ -193,7 +193,7 @@ status_basepkgs() {
 }
 
 status_nginx() {
-    if command -v nginx &>/dev/null; then
+    if dpkg -s nginx-full &>/dev/null; then
         if systemctl is-active nginx &>/dev/null; then
             echo -e "${GREEN}✓ установлен и запущен${NC}"; return 0
         else
@@ -375,7 +375,7 @@ apply_basepkgs() {
 }
 
 apply_nginx() {
-    if command -v nginx &>/dev/null; then
+    if dpkg -s nginx-full &>/dev/null; then
         log_info "nginx уже установлен"
     else
         if ! ask_yn "Установить nginx-full?"; then return; fi
