@@ -353,9 +353,9 @@ apply_cli() {
         cat >> "$BASHRC" <<EOF
 
 # >>> vps-setup:cli >>>
-alias ls='eza --icons --group-directories-first'
+alias ls='eza --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'
 alias ll='eza -lah --icons --group-directories-first'
-alias la='eza -a --icons --group-directories-first'
+alias la='eza -a --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'
 alias lt='eza --tree --icons --level=2 --group-directories-first'
 alias cat='batcat --paging=never'
 alias catp='batcat'
