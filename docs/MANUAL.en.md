@@ -311,10 +311,12 @@ sudo systemctl enable --now unattended-upgrades
 
 ## 12. ZRAM + swap + earlyoom
 
-In the script, both zram's `PERCENT` and the backup swap file's size are now
-asked interactively (zram defaults to suggesting 75%; the swap file suggests
-a size based on free disk space, not a flat 1 GB every time). By hand — just
-plug in your own numbers instead of the examples below.
+In the script, both zram's `PERCENT` and the backup swap file's size are
+asked interactively. zram defaults to 75%; the swap file defaults to
+`min(RAM, free/4)`, clamped to 512–4096 MB — the file is a backstop *under*
+zram, so it scales with memory, while dividing by 4 keeps it from eating a
+tight disk. By hand — just plug in your own numbers instead of the examples
+below.
 
 ```bash
 sudo apt install -y zram-tools

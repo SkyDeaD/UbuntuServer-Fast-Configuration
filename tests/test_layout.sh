@@ -200,6 +200,86 @@ else
     echo "FAIL: pkg_installed bash = ложь при непрогретом кэше"
 fi
 
+# ── регрессия: пустые массивы под set -u ────────────────────────────────────
+# `declare -A x` БЕЗ присваивания оставляет переменную «необъявленной» для
+# set -u, и первое же ${#x[@]} роняет скрипт с «unbound variable» (bash 5.3).
+# Ловилось это на самом первом показе шапки — то есть у каждого пользователя.
+for arr in PKG_INSTALLED _DASH_CACHE STATUS_TEXT STATUS_RC LOGO_COLORS HEADER_INFO \
+           SUMMARY_TITLES SUMMARY_RESULTS SUMMARY_TIMES SUMMARY_FAILED; do
+    if (set -u; eval "n=\${#${arr}[@]}") 2>/dev/null; then
+        CHECKED=$((CHECKED + 1))
+    else
+        FAIL=$((FAIL + 1)); CHECKED=$((CHECKED + 1))
+        echo "FAIL: \${#${arr}[@]} падает под set -u — нужно объявить с =()"
+    fi
+done
+
+# build_progress обязана переживать непостроенный кэш статусов: шапка рисуется
+# раньше, чем refresh_statuses успевает отработать
+# shellcheck disable=SC2034  # читаются внутри build_progress из setup.sh
+STATUS_TEXT=()
+# shellcheck disable=SC2034
+STATUS_RC=()
+if (set -u; build_progress) 2>/dev/null; then
+    CHECKED=$((CHECKED + 1))
+else
+    FAIL=$((FAIL + 1)); CHECKED=$((CHECKED + 1))
+    echo "FAIL: build_progress падает при пустом кэше статусов"
+fi
+
+# ── арифметика ширин таблицы меню ───────────────────────────────────────────
+# Колонок теперь три (#/Пункт/Статус), а не четыре: раздел уехал в подзаголовок
+# группы. Инвариант: рамка обязана точно совпадать с TERM_W, иначе на реальном
+# pty многобайтовые "─" рвутся переносом строки посреди символа.
+for tw in 58 78 98; do
+    idx_w=3; title_w=26
+    status_w=$(( tw - idx_w - title_w - 10 ))
+    [ "$status_w" -lt 6 ] && status_w=6
+    # box_line рисует: left + (w+2) + mid + (w+2) + mid + (w+2) + right
+    frame=$(( (idx_w + 2) + (title_w + 2) + (status_w + 2) + 4 ))
+    check "ширина рамки при TERM_W=$tw" "$frame" "$tw"
+done
+# и та же проверка на живой функции, а не только на арифметике
+for tw in 58 78 98; do
+    box_line "" '╭' '┬' '╮' 3 26 $(( tw - 3 - 26 - 10 )) > /tmp/usfc_frame.$$ 2>/dev/null
+    line="$(sed 's/^  //' /tmp/usfc_frame.$$)"
+    rm -f /tmp/usfc_frame.$$
+    visible_len "$line"
+    check "box_line при TERM_W=$tw" "$REPLY_LEN" "$tw"
+done
+
+# ── suggest_swap_mb: min(RAM, свободно/4), кламп 512..4096 ──────────────────
+# Формула чистая, но зависит от df и /proc/meminfo — подменяем их заглушками,
+# чтобы прогнать таблицу входов, включая обе границы клампа
+suggest_swap_stub() {   # <RAM_МБ> <свободно_МБ> -> рекомендация
+    local ram="$1" free="$2" want
+    want=$(( free / 4 ))
+    [ "$ram" -lt "$want" ] && want="$ram"
+    [ "$want" -lt 512 ] && want=512
+    [ "$want" -gt 4096 ] && want=4096
+    echo "$want"
+}
+check "swap: RAM ограничил"        "$(suggest_swap_stub 1642 6838)" "1642"
+check "swap: диск ограничил"       "$(suggest_swap_stub 8192 6000)" "1500"
+check "swap: нижний кламп"         "$(suggest_swap_stub 256 1000)"  "512"
+check "swap: верхний кламп"        "$(suggest_swap_stub 32768 65536)" "4096"
+check "swap: крошечная машина"     "$(suggest_swap_stub 512 2048)"  "512"
+
+# ── swap_needs_resize: порог 10% ────────────────────────────────────────────
+swap_needs_resize 1945 1642 && r=да || r=нет; check "resize 1945 vs 1642" "$r" "да"
+swap_needs_resize 1700 1642 && r=да || r=нет; check "resize 1700 vs 1642" "$r" "нет"
+swap_needs_resize 1642 1642 && r=да || r=нет; check "resize равные"       "$r" "нет"
+swap_needs_resize 512 4096  && r=да || r=нет; check "resize 512 vs 4096"  "$r" "да"
+swap_needs_resize 1000 0    && r=да || r=нет; check "resize без цели"     "$r" "нет"
+
+# ── human_to_mb: разбор вывода swapon --raw ─────────────────────────────────
+check "human_to_mb 1.9G"  "$(human_to_mb 1.9G)"   "1945"
+check "human_to_mb 12.1M" "$(human_to_mb 12.1M)"  "12"
+check "human_to_mb 2G"    "$(human_to_mb 2G)"     "2048"
+check "human_to_mb 4096M" "$(human_to_mb 4096M)"  "4096"
+check "human_to_mb 0B"    "$(human_to_mb 0B)"     "0"
+check "human_to_mb мусор" "$(human_to_mb '')"     "0"
+
 # ── параллельность массивов меню ────────────────────────────────────────────
 check "len(ITEM_TITLES)"   "${#ITEM_TITLES[@]}"   "${#ITEM_IDS[@]}"
 check "len(ITEM_SECTIONS)" "${#ITEM_SECTIONS[@]}" "${#ITEM_IDS[@]}"
