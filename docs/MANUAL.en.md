@@ -9,39 +9,75 @@
 <p align="center"><a href="MANUAL.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
 If you'd rather not run someone else's `curl | sudo bash` on your server —
-here are the same 12 menu items from [usfc](../README.en.md), but by hand,
+here are the same 14 menu items from [usfc](../README.en.md), but by hand,
 as commands. The order matches the menu on purpose: the "hardening" section
-comes last, so UFW sees Docker/nginx already listening (see item 12).
+comes last, so UFW sees Docker/nginx already listening (see item 14).
 
 ## Contents
 
-- [1. Base packages](#1-base-packages)
-- [2. CLI tools + starship](#2-cli-tools--starship)
-- [3. fastfetch](#3-fastfetch)
-- [4. tmux](#4-tmux)
-- [5. Docker + Compose](#5-docker--compose)
-- [6. nginx-full](#6-nginx-full)
-- [7. Docker log rotation](#7-docker-log-rotation)
-- [8. fail2ban](#8-fail2ban)
-- [9. unattended-upgrades](#9-unattended-upgrades)
-- [10. ZRAM + swap + earlyoom](#10-zram--swap--earlyoom)
-- [11. SSH hardening](#11-ssh-hardening)
-- [12. UFW firewall](#12-ufw-firewall)
+- [1. User + sudo](#1-user--sudo)
+- [2. Base packages](#2-base-packages)
+- [3. CLI tools + starship](#3-cli-tools--starship)
+- [4. fastfetch](#4-fastfetch)
+- [5. tmux](#5-tmux)
+- [6. Docker + Compose](#6-docker--compose)
+- [7. nginx-full](#7-nginx-full)
+- [8. Certbot + plugins](#8-certbot--plugins)
+- [9. Docker log rotation](#9-docker-log-rotation)
+- [10. fail2ban](#10-fail2ban)
+- [11. unattended-upgrades](#11-unattended-upgrades)
+- [12. ZRAM + swap + earlyoom](#12-zram--swap--earlyoom)
+- [13. SSH hardening](#13-ssh-hardening)
+- [14. UFW firewall](#14-ufw-firewall)
 
-## 1. Base packages
+## 1. User + sudo
+
+Only needed when the server came with nothing but `root` — the usual case with
+VPS hosts. Staying on root is a bad idea: SSH hardening (item 13) cannot work
+without a separate user at all, and anything written to a home directory
+(aliases, fastfetch, tmux, starship) lands in `/root` and disappears from view
+the moment you reconnect as a normal account.
+
+```bash
+# create the user with a home directory and a real shell
+useradd -m -s /bin/bash admin
+passwd admin                      # or: passwd -l admin — key-only login
+
+# grant sudo
+usermod -aG sudo admin
+```
+
+Now the part **most often forgotten**. If you reach the server over an SSH key,
+that key lives in `/root/.ssh/authorized_keys` and the new user doesn't have it.
+Without copying it they cannot log in at all — and applying SSH hardening after
+that locks you out of the server for good:
+
+```bash
+install -d -o admin -g admin -m 700 /home/admin/.ssh
+install -o admin -g admin -m 600 /root/.ssh/authorized_keys /home/admin/.ssh/authorized_keys
+```
+
+Verify the login works **without closing your current session**:
+
+```bash
+ssh admin@<server-ip> 'id && sudo -n true && echo SUDO_OK'
+```
+
+Only once that succeeds, reconnect as the new user and carry on from item 2.
+
+## 2. Base packages
 
 ```bash
 sudo apt update
-sudo apt install -y micro curl wget git nano certbot python3-certbot-nginx \
-    unzip htop bind9-dnsutils jq software-properties-common ca-certificates \
-    gnupg rsync
+sudo apt install -y micro curl wget git nano unzip htop bind9-dnsutils jq \
+    software-properties-common ca-certificates gnupg rsync
 ```
 
 `software-properties-common` is there for `add-apt-repository` — without it
-the fastfetch PPA (item 3) won't install. `bind9-dnsutils` is the real
+the fastfetch PPA (item 4) won't install. `certbot` is no longer part of this set — it moved to item 8. `bind9-dnsutils` is the real
 package name behind the virtual `dnsutils` on Ubuntu 26.04.
 
-## 2. CLI tools + starship
+## 3. CLI tools + starship
 
 ```bash
 sudo apt install -y eza bat fd-find ripgrep zoxide ncdu
@@ -65,7 +101,7 @@ command -v starship &>/dev/null && eval "$(starship init bash)"
 
 `eza`/`bat` work fine without the aliases too: `eza --icons -la`, `batcat file.txt`.
 
-## 3. fastfetch
+## 4. fastfetch
 
 ```bash
 sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch
@@ -90,7 +126,7 @@ if [ -x "$(command -v fastfetch)" ]; then
 fi
 ```
 
-## 4. tmux
+## 5. tmux
 
 ```bash
 sudo apt install -y tmux
@@ -108,7 +144,7 @@ set -g status-right '%H:%M %d-%b-%y'
 setw -g automatic-rename on
 ```
 
-## 5. Docker + Compose
+## 6. Docker + Compose
 
 The official Docker repo, not the `docker.io` package from Ubuntu's own
 repos — that one's stale:
@@ -132,14 +168,83 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"   # re-login for this to apply without sudo
 ```
 
-## 6. nginx-full
+## 7. nginx-full
 
 ```bash
 sudo apt install -y nginx-full
 sudo systemctl enable --now nginx
 ```
 
-## 7. Docker log rotation
+## 8. Certbot + plugins
+
+`certbot` moved out of the base packages into its own item: TLS is a service
+with its own plugins and secrets, and not every server needs it.
+
+```bash
+apt-get install -y certbot
+
+# HTTP-01 — ordinary certificates through an already running nginx
+apt-get install -y python3-certbot-nginx
+
+# DNS-01 — required for wildcards (*.example.com)
+apt-get install -y python3-certbot-dns-cloudflare
+```
+
+> **About the python-cloudflare 2.20 WARNING.** The plugin declares
+> `Depends: python3-cloudflare (<< 3.0)`, and Ubuntu 26.04's archive carries
+> exactly one matching version — `2.20.0`, with the banner left intact
+> (`/usr/lib/python3/dist-packages/CloudFlare/warning_2_20.py` is there).
+>
+> Verified on a live system: it fires from the client constructor
+> (`CloudFlare/cloudflare.py`), i.e. **when a certificate is actually issued**.
+> `apt install`, `certbot --version` and `certbot plugins` stay quiet.
+>
+> It cannot be turned off: `warn_warning_2_20()` calls
+> `warnings.simplefilter('always', PendingDeprecationWarning)` itself and
+> overrides both `PYTHONWARNINGS=ignore` and `python3 -W ignore` — neither
+> works, I tested. It is harmless though: the complaint does not apply to an
+> apt install (the version is pinned by the package's own dependency, not
+> dragged in by `pip`), and it does not affect issuance. No need to patch
+> distro files for silence.
+
+The Cloudflare plugin needs an API token with **Zone:DNS:Edit** permissions:
+
+```bash
+install -d -m 700 /root/.secrets/certbot
+umask 077
+echo 'dns_cloudflare_api_token = YOUR_TOKEN' > /root/.secrets/certbot/cloudflare.ini
+chmod 600 /root/.secrets/certbot/cloudflare.ini
+```
+
+The mode matters: certbot refuses to use the file if it is more permissive.
+Issuing a wildcard certificate:
+
+```bash
+certbot certonly --dns-cloudflare \
+  --dns-cloudflare-credentials /root/.secrets/certbot/cloudflare.ini \
+  -d example.com -d "*.example.com"
+```
+
+### TLS boilerplate for nginx
+
+`/etc/letsencrypt/ssl-dhparams.pem` and `/etc/letsencrypt/options-ssl-nginx.conf`
+are created only by certbot's nginx *installer* (that is, `certbot --nginx`).
+Issuing via `certbot certonly` — precisely what you install DNS-01 for — never
+creates them, so a typical nginx config referencing them takes the server down
+on start.
+
+There is no need to generate `dhparam` with `openssl`: it is the same standard
+ffdhe2048 group that already ships inside the certbot package. Just copy it:
+
+```bash
+install -d -m 755 /etc/letsencrypt
+install -m 644 "$(find /usr/lib/python3/dist-packages -name ssl-dhparams.pem | head -1)" \
+    /etc/letsencrypt/ssl-dhparams.pem
+install -m 644 "$(find /usr/lib/python3/dist-packages -name options-ssl-nginx.conf | head -1)" \
+    /etc/letsencrypt/options-ssl-nginx.conf
+```
+
+## 9. Docker log rotation
 
 Caps container logs (10 MB per file, 3 files max) without overwriting the
 rest of `daemon.json` if it already exists:
@@ -164,7 +269,7 @@ Add/merge into `/etc/docker/daemon.json`:
 sudo systemctl restart docker   # restarts ALL containers along with the daemon
 ```
 
-## 8. fail2ban
+## 10. fail2ban
 
 Replace `22` with your server's actual SSH port if it's different:
 
@@ -187,7 +292,7 @@ bantime = 1h
 sudo systemctl enable --now fail2ban
 ```
 
-## 9. unattended-upgrades
+## 11. unattended-upgrades
 
 ```bash
 sudo apt install -y unattended-upgrades
@@ -204,7 +309,7 @@ APT::Periodic::Unattended-Upgrade "1";
 sudo systemctl enable --now unattended-upgrades
 ```
 
-## 10. ZRAM + swap + earlyoom
+## 12. ZRAM + swap + earlyoom
 
 In the script, both zram's `PERCENT` and the backup swap file's size are now
 asked interactively (zram defaults to suggesting 75%; the swap file suggests
@@ -252,7 +357,7 @@ sudo apt install -y earlyoom
 sudo systemctl enable --now earlyoom
 ```
 
-## 11. SSH hardening
+## 13. SSH hardening
 
 **A separate, most important warning: doing this by hand means you lose the
 self-test the script does** (a one-time key, an actual login via
@@ -317,7 +422,7 @@ sudo chmod 440 /etc/sudoers.d/your_user
 sudo visudo -c   # check syntax AFTER writing it — don't skip this
 ```
 
-## 12. UFW firewall
+## 14. UFW firewall
 
 Check what's actually listening first — otherwise you risk cutting off
 something already running (a VPN, a proxy on a non-standard port):
