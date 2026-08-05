@@ -49,6 +49,22 @@ BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
 
+# Цвет выключается, если пользователь об этом попросил или если его некому
+# увидеть. Три общепринятых условия (no-color.org и clig.dev: «Disable color if
+# your program is not in a terminal or the user requested it»):
+#   * NO_COLOR непустая — значение неважно, важен сам факт;
+#   * TERM=dumb — терминал не умеет управляющие последовательности;
+#   * stdout не терминал — вывод уехал в файл или в пайп, escape-коды там мусор.
+# Разметка от этого не ломается: visible_len/pad_title корректно считают длину
+# при пустых цветовых переменных, это покрыто тестами.
+if [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ] || [ ! -t 1 ]; then
+    RED=''; GREEN=''; YELLOW=''; CYAN=''; BLUE=''; MAGENTA=''
+    BOLD=''; DIM=''; NC=''
+    USFC_NO_COLOR=true
+else
+    USFC_NO_COLOR=false
+fi
+
 log_info()    { echo -e "  ${CYAN}[i]${NC} ${1:-}"; }
 log_success() { echo -e "  ${GREEN}[✓]${NC} ${1:-}"; }
 log_warn()    { echo -e "  ${YELLOW}[!]${NC} ${1:-}" >&2; }
@@ -242,15 +258,19 @@ ask_value() {
 }
 
 # ── Шапка ─────────────────────────────────────────────────────────────────────
+# Шрифт ANSI Shadow с разрядкой в 4 пробела между буквами. Разрядка — самый
+# дешёвый способ сделать логотип крупнее: 45 колонок вместо 33 при той же
+# высоте в 6 строк. Шрифты вроде bigmono12 дали бы 12 строк, и экран меню
+# (сейчас ~43 строки) перестал бы влезать в стандартный терминал 40x120.
 LOGO_LINES=(
-'██╗   ██╗███████╗███████╗ ██████╗'
-'██║   ██║██╔════╝██╔════╝██╔════╝'
-'██║   ██║███████╗█████╗  ██║     '
-'██║   ██║╚════██║██╔══╝  ██║     '
-'╚██████╔╝███████║██║     ╚██████╗'
-' ╚═════╝ ╚══════╝╚═╝      ╚═════╝'
+'██╗   ██╗    ███████╗    ███████╗     ██████╗'
+'██║   ██║    ██╔════╝    ██╔════╝    ██╔════╝'
+'██║   ██║    ███████╗    █████╗      ██║     '
+'██║   ██║    ╚════██║    ██╔══╝      ██║     '
+'╚██████╔╝    ███████║    ██║         ╚██████╗'
+' ╚═════╝     ╚══════╝    ╚═╝          ╚═════╝'
 )
-LOGO_W=33
+LOGO_W=45
 
 # Перелив голубой → синий по строкам логотипа. 256-цветные коды поддерживают
 # практически все современные терминалы, но если TERM не задан (cron, пайп) или
@@ -258,9 +278,15 @@ LOGO_W=33
 LOGO_COLORS=()
 init_logo_colors() {
     local ncolors i ramp=(51 45 39 33 27 21)
+    LOGO_COLORS=()
+    # цвет выключен целиком (NO_COLOR / не терминал) — никакого градиента,
+    # иначе escape-коды полезли бы в файл вопреки просьбе пользователя
+    if [ "$USFC_NO_COLOR" = true ]; then
+        for i in "${!LOGO_LINES[@]}"; do LOGO_COLORS+=(''); done
+        return
+    fi
     ncolors="$(tput colors 2>/dev/null)"
     [[ "$ncolors" =~ ^[0-9]+$ ]] || ncolors=8
-    LOGO_COLORS=()
     for i in "${!LOGO_LINES[@]}"; do
         if [ "$ncolors" -ge 256 ]; then
             LOGO_COLORS+=("\033[38;5;${ramp[$i]}m")
@@ -318,24 +344,37 @@ REPLY_PROGRESS=''
 build_progress() {
     REPLY_PROGRESS=''
     [ "${#STATUS_RC[@]}" -eq 0 ] && return 0
-    local id done=0 total="${#ITEM_IDS[@]}" filled i bar=''
+    local id done=0 total="${#ITEM_IDS[@]}" cells filled i bar='' ch_full ch_empty
     for id in "${ITEM_IDS[@]}"; do
         [ "${STATUS_RC[$id]:-1}" -eq 0 ] && done=$((done + 1))
     done
-    filled=$(( done * 10 / (total > 0 ? total : 1) ))
-    for ((i = 0; i < 10; i++)); do
-        if [ "$i" -lt "$filled" ]; then bar+='█'; else bar+='░'; fi
+    [ "$total" -le 0 ] && return 0
+    # ровно 2 ячейки на пункт: деление точное, ошибок округления нет по построению
+    cells=$(( total * 2 ))
+    filled=$(( done * 2 ))
+    # ASCII-фолбэк при небитом locale — "#" и ".", но НЕ "=" и "-": шрифты
+    # с лигатурами (FiraCode, JetBrains Mono) склеивают их в стрелки и полосы
+    if [ "$CHARLEN_NATIVE" = true ]; then ch_full='█'; ch_empty='░'
+    else                                  ch_full='#'; ch_empty='.'
+    fi
+    for ((i = 0; i < cells; i++)); do
+        if [ "$i" -lt "$filled" ]; then bar+="$ch_full"; else bar+="$ch_empty"; fi
     done
     REPLY_PROGRESS="${DIM}применено${NC} ${BOLD}${done}${NC}${DIM} из ${total}${NC}  ${GREEN}${bar:0:filled}${NC}${DIM}${bar:filled}${NC}"
 }
 
 show_header() {
-    clear 2>/dev/null || printf '\033[2J\033[H'
+    # Очистка экрана осмысленна только в терминале: при перенаправлении в файл
+    # или в пайп это просто мусорные управляющие байты в начале вывода
+    if [ -t 1 ]; then
+        clear 2>/dev/null || printf '\033[2J\033[H'
+    fi
     [ "${#LOGO_COLORS[@]}" -eq 0 ] && init_logo_colors
 
-    # сводку показываем, только если она реально помещается рядом с логотипом
+    # сводку показываем, только если она реально помещается рядом с логотипом:
+    # 45 колонок логотипа + 3 отступа + ~34 на самую длинную строку сводки
     local with_info=false
-    if [ "$TERM_W" -ge 70 ]; then
+    if [ "$TERM_W" -ge 82 ]; then
         with_info=true
         build_header_info
     fi
@@ -356,12 +395,12 @@ show_header() {
 
     build_progress
     if [ -n "$REPLY_PROGRESS" ] && [ "$with_info" = true ]; then
-        pad_title "USFC v${VERSION} by SkyDeaD" 32
+        pad_title "USFC v${VERSION} by SkyDeaD" 44
         printf "  ${BOLD}%s${NC}  %b\n" "$REPLY_PAD" "$REPLY_PROGRESS"
     else
         echo -e "  ${BOLD}USFC${NC} ${DIM}v${VERSION} by SkyDeaD${NC}   ${DIM}UbuntuServer Fast Configuration${NC}"
     fi
-    hr "$CYAN"
+    hr_heavy "$CYAN"
 }
 
 pause() {
@@ -519,6 +558,43 @@ refresh_pkg_cache() {
 pkg_installed() {
     [ "$PKG_CACHE_READY" = true ] || refresh_pkg_cache
     [ -n "${PKG_INSTALLED[${1}]:-}" ]
+}
+
+# ── Отчёт по набору пакетов ───────────────────────────────────────────────────
+# Один apt-вызов на десяток пакетов схлопывается в одну строку итога, и из неё
+# не видно ни что приехало, ни зачем оно нужно. Снимаем состояние ДО установки,
+# после — печатаем по строке на пакет.
+declare -A PKG_WAS=()
+snapshot_pkgs() {
+    PKG_WAS=()
+    local p
+    for p in "$@"; do
+        pkg_installed "$p" && PKG_WAS[$p]=1
+    done
+}
+
+show_pkg_report() {
+    local p name_w=27 desc_w mark color desc
+    # 5 — отступ слева и маркер с пробелом; остальное отдаём описанию
+    desc_w=$(( TERM_W - 5 - name_w - 1 ))
+    [ "$desc_w" -lt 10 ] && desc_w=10
+    echo ""
+    for p in "$@"; do
+        if [ -n "${PKG_WAS[$p]:-}" ]; then
+            mark='·'; color="$DIM"
+        elif pkg_installed "$p"; then
+            mark='+'; color="$GREEN"
+        else
+            # apt отчитался успехом, но пакета нет — например, имя оказалось
+            # виртуальным. Молчать об этом нельзя
+            mark='✗'; color="$RED"
+        fi
+        desc="${PKG_DESC[$p]:-}"
+        truncate_colored "$desc" "$desc_w"; desc="$REPLY_TRUNC"
+        pad_title "$p" "$name_w"
+        printf "     %b%s%b %s${DIM}%s${NC}\n" "$color" "$mark" "$NC" "$REPLY_PAD" "$desc"
+    done
+    echo -e "     ${GREEN}+${NC}${DIM} — установлен сейчас    ${NC}${DIM}·${NC}${DIM} — уже был в системе${NC}"
 }
 
 # ── apt и блокировка dpkg ─────────────────────────────────────────────────────
@@ -688,7 +764,9 @@ status_newuser() {
 
 status_cli() {
     local c missing=""
-    for c in eza bat fd-find ripgrep zoxide ncdu; do
+    # $CLI_PKGS объявляется ниже по файлу, но присваивание верхнего уровня
+    # отрабатывает до первого вызова этой функции — читать безопасно
+    for c in $CLI_PKGS; do
         pkg_installed "$c" || missing="${missing}${missing:+, }${c}"
     done
     command -v starship &>/dev/null || missing="${missing}${missing:+, }starship"
@@ -706,6 +784,35 @@ status_cli() {
 # certbot и python3-certbot-nginx отсюда сознательно убраны: TLS — это сервис со
 # своими плагинами и секретами, ему выделен отдельный пункт меню (apply_certbot)
 BASE_PKGS="micro curl wget git nano unzip htop bind9-dnsutils jq software-properties-common ca-certificates gnupg rsync"
+
+# Пакеты CLI-набора вынесены в переменную: их перечисляли в трёх местах
+# (status_cli, apply_cli, установка), и списки уже начинали расходиться
+CLI_PKGS="eza bat fd-find ripgrep zoxide ncdu"
+
+# Короткие описания — чтобы после установки было видно не только ЧТО приехало,
+# но и зачем оно нужно. Пишем руками по-русски: apt-cache show даёт английский
+# текст на несколько абзацев и вразнобой по стилю, в одну строку он не ложится.
+declare -A PKG_DESC=(
+    [micro]="текстовый редактор в терминале, понятнее vim"
+    [curl]="скачивание по HTTP из командной строки"
+    [wget]="скачивание файлов, умеет докачку и рекурсию"
+    [git]="система контроля версий"
+    [nano]="простой редактор, есть почти на любом сервере"
+    [unzip]="распаковка zip-архивов"
+    [htop]="интерактивный монитор процессов и нагрузки"
+    [bind9-dnsutils]="dig и nslookup — диагностика DNS"
+    [jq]="разбор и фильтрация JSON в шелл-скриптах"
+    [software-properties-common]="даёт add-apt-repository для подключения PPA"
+    [ca-certificates]="корневые сертификаты, без них не работает HTTPS"
+    [gnupg]="проверка подписей пакетов и репозиториев"
+    [rsync]="синхронизация файлов и папок, в том числе по SSH"
+    [eza]="замена ls: иконки, цвета, дерево каталогов"
+    [bat]="замена cat с подсветкой синтаксиса"
+    [fd-find]="замена find — проще синтаксис и заметно быстрее"
+    [ripgrep]="быстрый поиск по содержимому файлов"
+    [zoxide]="«умный» cd, прыгает по часто используемым каталогам"
+    [ncdu]="показывает, что именно занимает место на диске"
+)
 
 status_basepkgs() {
     local p missing=""
@@ -1086,20 +1193,24 @@ apply_newuser() {
 
 apply_cli() {
     local need_install=false p
-    for p in eza bat fd-find ripgrep zoxide ncdu; do
+    for p in $CLI_PKGS; do
         pkg_installed "$p" || need_install=true
     done
     command -v starship &>/dev/null || need_install=true
 
     if [ "$need_install" = true ]; then
-        if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu, starship?"; then
+        if ask_yn "Установить ${CLI_PKGS// /, }, starship?"; then
             ensure_apt_updated
-            run_logged "CLI-утилиты (eza, bat, fd-find, ripgrep, zoxide, ncdu)" \
-                apt_get install -y eza bat fd-find ripgrep zoxide ncdu
+            # shellcheck disable=SC2086
+            snapshot_pkgs $CLI_PKGS
+            # shellcheck disable=SC2086
+            run_logged "CLI-утилиты (${CLI_PKGS// /, })" apt_get install -y $CLI_PKGS
             refresh_pkg_cache
             if ! command -v starship &>/dev/null; then
                 run_logged "starship" bash -c 'curl -sS https://starship.rs/install.sh | sh -s -- -y'
             fi
+            # shellcheck disable=SC2086
+            show_pkg_report $CLI_PKGS
         fi
     else
         log_success "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены"
@@ -1140,8 +1251,12 @@ apply_basepkgs() {
     if ask_yn "Установить базовый набор пакетов (${BASE_PKGS})?"; then
         ensure_apt_updated
         # shellcheck disable=SC2086
+        snapshot_pkgs $BASE_PKGS
+        # shellcheck disable=SC2086
         run_logged "Базовый набор пакетов" apt_get install -y $BASE_PKGS
         refresh_pkg_cache
+        # shellcheck disable=SC2086
+        show_pkg_report $BASE_PKGS
     fi
 }
 
@@ -2112,6 +2227,137 @@ expand_section_letter() {
     return 0
 }
 
+# ── Справка по пунктам (клавиша I) ────────────────────────────────────────────
+# Параллельно ITEM_IDS. Тексты — те же, что в разделе «Что делает каждый пункт»
+# в README: там ровно 14 описаний, один в один с меню. При правке одного места
+# правь и второе — расхождение заметить будет некому.
+ITEM_SHORT=(
+    "создаёт обычного юзера с sudo на голой VPS"
+    "micro, curl, git, htop, jq и прочая база"
+    "современные замены ls/cat/find + промпт"
+    "сводка о сервере при каждом заходе по SSH"
+    "мультиплексор: сессия переживает обрыв связи"
+    "Docker CE + Compose из официального репозитория"
+    "веб-сервер и реверс-прокси"
+    "TLS-сертификаты, в том числе wildcard через DNS"
+    "ограничивает логи контейнеров, чтобы не съели диск"
+    "банит перебор паролей по SSH"
+    "сам ставит security-обновления системы"
+    "сжатая память + резервный своп + защита от OOM"
+    "вход только по ключу, root-логин закрыт"
+    "файрвол: закрывает всё, кроме нужного"
+)
+
+ITEM_FULL=(
+"Нужен, когда хостер выдал сервер с одним лишь root. Работать из-под root
+не стоит: SSH hardening без отдельного пользователя не работает в принципе,
+а всё, что кладётся в домашний каталог (алиасы, fastfetch, tmux, starship),
+осядет в /root и исчезнет, как только ты перезайдёшь под нормальным аккаунтом.
+
+Спрашивает имя и пароль (скрытым вводом, с повтором), добавляет в группу sudo
+и — самое важное — копирует ключи из /root/.ssh/authorized_keys. Без этого
+новый пользователь не сможет войти вообще, а после SSH hardening доступ
+к серверу будет потерян. Дальше вся настройка переключается на него прямо
+в работающей сессии."
+
+"micro, curl, wget, git, nano, unzip, htop, jq, rsync и ещё несколько вещей,
+которые обычно ставишь в первую же минуту на любом сервере. В том числе
+software-properties-common, без которого не заработает add-apt-repository,
+нужный дальше для PPA fastfetch.
+
+После установки выводится список: что приехало сейчас, что уже стояло,
+и коротко — зачем каждый пакет нужен."
+
+"Современные замены классических утилит: eza вместо ls с иконками, bat вместо
+cat с подсветкой, fd вместо find, ripgrep для поиска по содержимому, zoxide —
+«умный» cd, ncdu для разбора места на диске. Плюс промпт starship.
+
+Всё вместе, потому что это один и тот же слой «как выглядит и ощущается
+терминал». Алиасы в .bashrc и eval-строки для zoxide/starship пишутся сразу
+этим же пунктом. Список алиасов — на экране H."
+
+"Показывает информацию о сервере (ОС, ядро, память, диск, IP) при каждом заходе
+по SSH. Версия не ниже 2.64.0: более старые не умеют выравнивание в format-
+строках, которое использует прилагаемый config.jsonc.
+
+Конфиг и автозапуск пишутся в .bashrc сразу этим же пунктом."
+
+"Мультиплексор терминала: держит сессию живой при обрыве связи. Переподключаешься
+по SSH — и всё, что запускал, на месте, включая несколько окон и панелей.
+Незаменим, когда запускаешь что-то долгое на сервере через нестабильный канал.
+
+Ставится с минимальным конфигом: мышь, история на 10000 строк, статус-бар."
+
+"Docker CE + Compose plugin из официального репозитория Docker, а не пакет
+docker.io из репозиториев Ubuntu — тот заметно старее.
+
+Автозапуск спрашивается ДО установки и по умолчанию выключен: сервер не всегда
+нужно поднимать прямо сейчас. Пользователь добавляется в группу docker, чтобы
+работать без sudo (нужен перелогин)."
+
+"Веб-сервер и реверс-прокси, пакет nginx-full.
+
+Автозапуск спрашивается ДО установки, по умолчанию выключен. Чтобы «не
+запускать» означало именно это, а не «поднять и тут же погасить» (nginx успел
+бы занять :80), установка оборачивается в policy-rc.d. Намеренно выключенный
+сервис считается законченным состоянием и больше не переспрашивается."
+
+"Сам certbot плюс, по выбору, плагин nginx (HTTP-01, обычные сертификаты)
+и плагин dns-cloudflare (DNS-01 — без него не выпустить wildcard).
+
+Для Cloudflare предлагается создать /root/.secrets/certbot/cloudflare.ini
+с API-токеном (права 600, токену нужны права Zone:DNS:Edit). Без файла плагин
+нерабочий, поэтому его отсутствие видно в меню отдельным статусом.
+
+Отдельно предлагается положить в /etc/letsencrypt заготовки ssl-dhparams.pem
+и options-ssl-nginx.conf: при выпуске wildcard через certonly они не создаются,
+а типовой конфиг nginx на них ссылается и роняет сервер при старте."
+
+"Ограничивает логи контейнеров: 10 МБ на файл, 3 файла.
+
+Без этого логи Docker ничем не ограничены и со временем способны забить весь
+диск — на маленькой VPS это вопрос недель. Настройка пишется в
+/etc/docker/daemon.json, существующий файл дополняется, а не перезаписывается."
+
+"Банит IP после нескольких неудачных попыток входа по SSH — защита от перебора
+паролей.
+
+Настраивается на реальный SSH-порт сервера, а не на захардкоженный 22."
+
+"Сам ставит security-обновления системы, без твоего участия.
+
+Полезно и одновременно коварно: именно unattended-upgrades держит блокировку
+dpkg на только что загруженном сервере, из-за чего установка пакетов может
+подождать несколько минут. Скрипт это учитывает и ждёт освобождения."
+
+"zram — сжатая память прямо в оперативке (по умолчанию 75% RAM, приоритет 100),
+плюс резервный swap-файл на диске с приоритетом 10, чтобы использовался только
+когда zram закончился.
+
+Размер свопа считается как min(RAM, свободно/4), зажатое в 512–4096 МБ. Если
+swap-файл уже есть и его размер расходится с рекомендацией больше чем на 10%,
+пункт предложит пересоздать. Разделы и LVM не трогаются.
+
+Плюс vm.swappiness=80 / vm.vfs_cache_pressure=50 и опционально earlyoom —
+защита от полного зависания сервера при нехватке памяти."
+
+"Переводит вход только на ключ: выключает пароль и запрещает root-логин.
+
+Самый рискованный пункт меню, поэтому единственный с самопроверкой. Перед тем
+как выключить пароль, скрипт заводит одноразовый ключ и реально проверяет вход
+по нему. Если проверка не прошла — автоматически откатывает конфиг и оставляет
+пароль включённым. Текущая сессия при этом не разрывается.
+
+Требует отдельного пользователя (пункт 1) — из-под root не работает."
+
+"Файрвол: закрывает все порты, кроме нужных — SSH-порта и того, что сервер уже
+реально слушает на момент включения.
+
+Автоопределение занятых портов сделано именно для того, чтобы включение UFW
+не отрезало уже поднятые Docker и nginx. Но если на сервере крутится VPN или
+прокси, его порт всё равно стоит проверить глазами перед включением."
+)
+
 # Параллельно ITEM_IDS — команды отката для справочного экрана (R). Пусто там,
 # где пункт входит в DISABLE_SUPPORTED: для них show_rollback_reference() сама
 # генерирует единую строку вместо ручных команд, так что нумерация/маркеры
@@ -2178,7 +2424,10 @@ refresh_term_width() {
     w="$(tput cols 2>/dev/null)"
     [[ "$w" =~ ^[0-9]+$ ]] || w=80
     [ "$w" -lt 60 ] && w=60
-    [ "$w" -gt 100 ] && w=100
+    # 120x40 — целевой размер холста по TUI-стандартам (80x24 — минимум, который
+    # обязан работать). Прежний потолок 100 резал широкие терминалы: статусная
+    # колонка не дорастала до длинных списков недостающих пакетов
+    [ "$w" -gt 120 ] && w=120
     TERM_W=$((w - 2))
 }
 
@@ -2190,20 +2439,32 @@ refresh_term_width() {
 # 3-байтовый "─" на мусор.
 declare -A _DASH_CACHE=()
 REPLY_DASH=''
-repeat_dash() {
-    local n="${1:-0}"
+# repeat_char <символ> <N> → REPLY_DASH. Кэш общий, ключ включает символ:
+# лёгкая линия "─" идёт на рамки и разделители внутри пунктов, тяжёлая "━" —
+# только под шапкой (канонический разделитель заголовка в TUI-стандартах)
+repeat_char() {
+    local ch="${1:-─}" n="${2:-0}" key
     [ "$n" -lt 0 ] && n=0
-    if [ -z "${_DASH_CACHE[$n]:-}" ]; then
+    key="${ch}:${n}"
+    if [ -z "${_DASH_CACHE[$key]:-}" ]; then
         local s='' i=0
-        while [ "$i" -lt "$n" ]; do s+='─'; i=$((i + 1)); done
-        _DASH_CACHE[$n]="$s"
+        while [ "$i" -lt "$n" ]; do s+="$ch"; i=$((i + 1)); done
+        _DASH_CACHE[$key]="$s"
     fi
-    REPLY_DASH="${_DASH_CACHE[$n]}"
+    REPLY_DASH="${_DASH_CACHE[$key]}"
 }
+repeat_dash() { repeat_char '─' "${1:-0}"; }
 
 hr() {
     local color="${1:-$DIM}"
     repeat_dash "$TERM_W"
+    echo -e "  ${color}${REPLY_DASH}${NC}"
+}
+
+# разделитель под шапкой — тяжёлой линией, чтобы отделять «обложку» от работы
+hr_heavy() {
+    local color="${1:-$CYAN}"
+    repeat_char '━' "$TERM_W"
     echo -e "  ${color}${REPLY_DASH}${NC}"
 }
 
@@ -2321,11 +2582,18 @@ truncate_colored() {
             i=$((i + 1))
         done
     fi
-    # NC добавляем только если реально был цветовой код — иначе для обычного
-    # текста (без цвета) это дописывает буквальный "\033[0m" как текст,
-    # который потом портит и вид, и подсчёт длины в pad_title
+    # Сброс дописываем, только если в строке реально был цветовой код — иначе
+    # для обычного текста это добавило бы буквальный "\033[0m" как текст,
+    # который потом портит и вид, и подсчёт длины в pad_title.
+    #
+    # Сброс берём НЕ из $NC, а того же вида, что и найденный префикс: цвет сюда
+    # пришёл внутри самой строки, и закрыть его надо независимо от того, включён
+    # ли цвет глобально. При NO_COLOR переменная $NC пуста, и опора на неё
+    # оставила бы незакрытую последовательность, текущую на всю рамку.
     if [ -n "$color" ]; then
-        REPLY_TRUNC="${color}${body}...${NC}"
+        local reset
+        if [[ "$color" == $'\e['* ]]; then reset=$'\e[0m'; else reset='\033[0m'; fi
+        REPLY_TRUNC="${color}${body}...${reset}"
     else
         REPLY_TRUNC="${body}..."
     fi
@@ -2451,17 +2719,20 @@ show_menu() {
     # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
     # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
     # Делим на 5, а не на 4: разделов теперь четыре (C/B/S/P) плюс хвостовое «A всё»
-    local item_w=$(( (legend_w - 10) / 5 )) g1 g2 g3 g4
+    # Делим на 6: четыре раздела (C/B/S/P) плюс хвостовое «A всё», а в строке
+    # команд теперь пять пунктов вместо четырёх — добавилась справка I
+    local item_w=$(( (legend_w - 10) / 6 )) g1 g2 g3 g4
     [ "$item_w" -lt 10 ] && item_w=10
     grid_cell "${YELLOW}${BOLD}C${NC} ${YELLOW}система${NC}"  "$item_w"; g1="$REPLY_CELL"
     grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}база${NC}"         "$item_w"; g2="$REPLY_CELL"
     grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}"      "$item_w"; g3="$REPLY_CELL"
     grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w"; g4="$REPLY_CELL"
     legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} всё"
-    grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g1="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}R${NC} откат"   "$item_w"; g2="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g3="$REPLY_CELL"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${CYAN}${BOLD}Q${NC} выход"
+    grid_cell "${CYAN}${BOLD}I${NC} справка" "$item_w"; g1="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g2="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}R${NC} откат"   "$item_w"; g3="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g4="$REPLY_CELL"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} выход"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
         local ltrunc lpad
@@ -2609,6 +2880,82 @@ show_aliases_help() {
     pause
 }
 
+# ── Экраны справки по пунктам ─────────────────────────────────────────────────
+# Список всех пунктов с однострочным описанием и выбором номера для подробностей.
+# Двухуровнево, потому что все 14 описаний целиком — это под сотню строк,
+# в один экран они не влезают ни при какой ширине.
+show_item_help() {
+    while true; do
+        refresh_term_width
+        refresh_statuses
+        show_header
+        echo -e "  ${BOLD}Справка по пунктам${NC} ${DIM}— что делает каждый пункт меню${NC}"
+        echo ""
+
+        local i=1 id section section_color prev_section="" num_w=4 title_w=26 desc_w
+        desc_w=$(( TERM_W - num_w - title_w - 4 ))
+        [ "$desc_w" -lt 10 ] && desc_w=10
+
+        for id in "${ITEM_IDS[@]}"; do
+            section="${ITEM_SECTIONS[$((i-1))]}"
+            section_color_for "$section"; section_color="$REPLY_COLOR"
+            if [ "$section" != "$prev_section" ]; then
+                prev_section="$section"
+                echo -e "  ${section_color}${BOLD}● ${section^^}${NC}"
+            fi
+            local short
+            truncate_colored "${ITEM_SHORT[$((i-1))]}" "$desc_w"; short="$REPLY_TRUNC"
+            pad_title "$i" "$num_w"
+            local c_num="$REPLY_PAD"
+            pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w"
+            printf "  ${DIM}%s${NC}%s ${DIM}%s${NC}\n" "$c_num" "$REPLY_PAD" "$short"
+            i=$((i+1))
+        done
+
+        echo ""
+        echo -en "  ${BOLD}Номер пункта — подробности, Enter — назад:${NC} "
+        local choice
+        read -r choice </dev/tty
+        [ -z "$choice" ] && return 0
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ITEM_IDS[@]}" ]; then
+            show_item_detail "$choice"
+        else
+            log_error "Нет пункта «${choice}» — введи число от 1 до ${#ITEM_IDS[@]} или Enter для выхода"
+            sleep 1
+        fi
+    done
+}
+
+# Подробности по одному пункту. Ничего не дублирует: описание берётся из
+# ITEM_FULL, текущее состояние — из кэша статусов, откат — из ROLLBACK_NOTES
+# (или из того же правила про повторный выбор, что показывает экран R).
+show_item_detail() {
+    local idx="$1"
+    local i=$((idx - 1))
+    local id="${ITEM_IDS[$i]}" section="${ITEM_SECTIONS[$i]}"
+    refresh_term_width
+    show_header
+    section_color_for "$section"
+    echo -e "  ${REPLY_COLOR}${BOLD}${idx}. ${ITEM_TITLES[$i]}${NC}   ${DIM}раздел: ${section}${NC}"
+    hr
+    echo ""
+    # описание печатаем как есть: переносы строк расставлены в тексте руками,
+    # чтобы не заниматься переносом слов в шелле
+    while IFS= read -r line; do
+        echo -e "  ${line}"
+    done <<< "${ITEM_FULL[$i]}"
+    echo ""
+    hr
+    echo -e "  ${BOLD}Статус сейчас:${NC} ${STATUS_TEXT[$id]:-—}"
+    if item_supports_disable "$id"; then
+        echo -e "  ${BOLD}Откат:${NC} ${DIM}выбери пункт ${idx} в меню ещё раз — скрипт увидит, что применено, и предложит отключить${NC}"
+    elif [ -n "${ROLLBACK_NOTES[$i]}" ]; then
+        echo -e "  ${BOLD}Откат:${NC}"
+        echo -e "     ${DIM}${ROLLBACK_NOTES[$i]}${NC}"
+    fi
+    pause
+}
+
 show_rollback_reference() {
     refresh_term_width
     show_header
@@ -2664,6 +3011,8 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
   USFC_NO_UPDATE=1          то же, что --no-update
   USFC_VERBOSE=1            то же, что --verbose
   USFC_KEEP_LOCALE=1        не форсировать LC_ALL=C.UTF-8
+  NO_COLOR=1                вывод без цвета (цвет отключается сам, если
+                            TERM=dumb или вывод идёт не в терминал)
   USFC_APT_LOCK_TIMEOUT=N   сколько секунд ждать освобождения блокировки dpkg
                             (по умолчанию ${APT_LOCK_TIMEOUT}; на свежем сервере её
                             держит unattended-upgrades)
@@ -2751,6 +3100,8 @@ main() {
         case "$choice" in
             [Qq]) echo ""; log_info "Пока. Повторный запуск: usfc"; break ;;
             [Hh]) show_aliases_help ;;
+            # "?" как синоним I: привычнее для тех, кто ищет справку вслепую
+            [Ii]|'?') show_item_help ;;
             [Rr]) show_rollback_reference ;;
             [Uu]) uninstall_self; pause ;;
             *)
@@ -2787,7 +3138,7 @@ main() {
                 valid=("${dedup[@]}")
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо H, R, U, Q"
+                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, R, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
