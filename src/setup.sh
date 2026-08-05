@@ -149,12 +149,34 @@ cleanup_spinner() {
 }
 
 _spin_wait() {
-    local pid="$1" desc="$2" started="$3" i=0 frame
+    local pid="$1" desc="$2" started="$3" offset="${4:-0}" i=0 frame note='' line
     tput civis 2>/dev/null && CURSOR_HIDDEN=true
     while kill -0 "$pid" 2>/dev/null; do
+        # Раз в ~3 секунды заглядываем в свежий хвост лога. Установка, застрявшая
+        # на блокировке dpkg, выглядит как обычный растущий таймер — пользователь
+        # видит «213s» и не понимает, чего ждёт. Причину сообщает сам apt
+        # («Waiting for cache lock: ... held by process N (unattended-upgr)»),
+        # поэтому не гадаем, а читаем её оттуда.
+        if [ $(( i % 20 )) -eq 0 ]; then
+            note=''
+            local lock_line holder
+            lock_line="$(tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null \
+                        | grep -F 'Waiting for cache lock' | tail -n1)"
+            if [ -n "$lock_line" ]; then
+                holder="${lock_line##*\(}"; holder="${holder%%)*}"
+                note=" ${YELLOW}— жду блокировку dpkg${NC}"
+                [ -n "$holder" ] && [ "$holder" != "$lock_line" ] && \
+                    note=" ${YELLOW}— жду: пакетный менеджер занят (${holder})${NC}"
+            fi
+        fi
         frame="${SPINNER_FRAMES:$((i % SPINNER_N)):1}"
         now_s
-        printf '\r  %b %s...  %ss ' "${CYAN}${frame}${NC}" "$desc" "$((REPLY_NOW - started))"
+        # Строку добиваем до ширины терминала: примечание то появляется, то
+        # исчезает, и без добивки от длинного варианта оставались бы хвосты
+        line="${CYAN}${frame}${NC} ${desc}...  $((REPLY_NOW - started))s${note}"
+        truncate_colored "$line" "$((TERM_W - 2))"
+        pad_title "$REPLY_TRUNC" "$((TERM_W - 2))"
+        printf '\r  %b' "$REPLY_PAD"
         i=$((i + 1))
         sleep 0.15
     done
@@ -195,6 +217,10 @@ run_logged() {
     printf '\n--- %s $ %s\n' "$(date '+%F %T')" "$*" >> "$USFC_LOG"
 
     local rc elapsed started
+    # Предупреждаем ДО начала ожидания, а не после. Раньше проверка жила внутри
+    # ensure_apt_updated и не срабатывала вовсе, если списки пакетов были свежими:
+    # обновление пропускалось, а установка потом молча висела на блокировке.
+    case "${1:-}" in apt_get|apt-get) warn_if_apt_busy ;; esac
     now_s; started="$REPLY_NOW"
     # stdin у команды всегда /dev/null: это заведомо неинтерактивные вызовы, а без
     # закрытого stdin фоновый apt способен вычитать ввод, предназначенный
@@ -207,7 +233,7 @@ run_logged() {
     else
         "$@" </dev/null >> "$USFC_LOG" 2>&1 &
         RUN_LOGGED_PID=$!
-        _spin_wait "$RUN_LOGGED_PID" "$desc" "$started"
+        _spin_wait "$RUN_LOGGED_PID" "$desc" "$started" "$offset"
         wait "$RUN_LOGGED_PID"; rc=$?
         RUN_LOGGED_PID=''
     fi
@@ -655,7 +681,6 @@ ensure_apt_updated() {
         APT_UPDATED=true
         return 0
     fi
-    warn_if_apt_busy
     run_logged "Обновление списков пакетов apt" apt_get update -qq
     APT_UPDATED=true
     refresh_pkg_cache
