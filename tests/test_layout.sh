@@ -227,11 +227,45 @@ else
     echo "FAIL: build_progress падает при пустом кэше статусов"
 fi
 
+# ── справка по пунктам: массивы параллельны и заполнены ─────────────────────
+check "len(ITEM_SHORT)" "${#ITEM_SHORT[@]}" "${#ITEM_IDS[@]}"
+check "len(ITEM_FULL)"  "${#ITEM_FULL[@]}"  "${#ITEM_IDS[@]}"
+for idx in "${!ITEM_IDS[@]}"; do
+    if [ -z "${ITEM_SHORT[$idx]}" ]; then
+        FAIL=$((FAIL+1)); echo "FAIL: пустое ITEM_SHORT у пункта $((idx+1))"
+    fi
+    CHECKED=$((CHECKED + 1))
+    if [ -z "${ITEM_FULL[$idx]}" ]; then
+        FAIL=$((FAIL+1)); echo "FAIL: пустое ITEM_FULL у пункта $((idx+1))"
+    fi
+    CHECKED=$((CHECKED + 1))
+done
+
+# ── у каждого устанавливаемого пакета есть описание ─────────────────────────
+# Иначе в отчёте после установки будет пустая строка вместо пояснения
+for pkg in $BASE_PKGS $CLI_PKGS; do
+    if [ -z "${PKG_DESC[$pkg]:-}" ]; then
+        FAIL=$((FAIL+1)); echo "FAIL: нет PKG_DESC[$pkg]"
+    fi
+    CHECKED=$((CHECKED + 1))
+done
+
+# ── режим NO_COLOR: разметка не должна ломаться на пустых цветах ────────────
+# Сохраняем цвета, обнуляем, проверяем длины, возвращаем обратно
+_save_nc="$NC"; _save_bold="$BOLD"; _save_green="$GREEN"
+NC=''; BOLD=''; GREEN=''
+visible_len "${GREEN}✓ установлено${NC}"
+check "NO_COLOR: visible_len" "$REPLY_LEN" "13"
+pad_title "${BOLD}Пункт${NC}" 20
+visible_len "$REPLY_PAD"
+check "NO_COLOR: pad_title"   "$REPLY_LEN" "20"
+NC="$_save_nc"; BOLD="$_save_bold"; GREEN="$_save_green"
+
 # ── арифметика ширин таблицы меню ───────────────────────────────────────────
 # Колонок теперь три (#/Пункт/Статус), а не четыре: раздел уехал в подзаголовок
 # группы. Инвариант: рамка обязана точно совпадать с TERM_W, иначе на реальном
 # pty многобайтовые "─" рвутся переносом строки посреди символа.
-for tw in 58 78 98; do
+for tw in 58 78 98 118; do
     idx_w=3; title_w=26
     status_w=$(( tw - idx_w - title_w - 10 ))
     [ "$status_w" -lt 6 ] && status_w=6
@@ -240,7 +274,7 @@ for tw in 58 78 98; do
     check "ширина рамки при TERM_W=$tw" "$frame" "$tw"
 done
 # и та же проверка на живой функции, а не только на арифметике
-for tw in 58 78 98; do
+for tw in 58 78 98 118; do
     box_line "" '╭' '┬' '╮' 3 26 $(( tw - 3 - 26 - 10 )) > /tmp/usfc_frame.$$ 2>/dev/null
     line="$(sed 's/^  //' /tmp/usfc_frame.$$)"
     rm -f /tmp/usfc_frame.$$

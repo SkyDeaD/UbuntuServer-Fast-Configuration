@@ -48,7 +48,7 @@ Installs itself as the `usfc` command and opens the menu right away — no waiti
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping, and finishes with a summary of what got installed, what failed, and what was skipped. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping, and finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`) — per-item help: what each item does, its current status and how to roll it back. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
 ### Running on a bare server (root only)
 
@@ -80,6 +80,8 @@ usfc --verbose     # raw command output instead of the spinner
 
 A full log of every command run is always written to `/var/log/usfc.log`, even when the screen only shows a spinner.
 
+Color is disabled by the `NO_COLOR` variable (its value does not matter, only its presence), and also automatically when `TERM=dumb` or output is not a terminal — e.g. `usfc > log.txt`.
+
 Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
 
 ## What each item does
@@ -89,7 +91,7 @@ Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, ite
 
 **Пользователь + sudo (user + sudo)** — creates a regular sudo user, copies SSH keys over from `/root`, and points the rest of the setup at them. This is what you want when the server arrived with only `root`. See above.
 
-**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. `certbot` moved out into its own item (see below).
+**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server. After the install a list is printed: what arrived just now, what was already there, and a one-line note on why each package is there — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. `certbot` moved out into its own item (see below).
 
 **CLI tools + starship** — modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd`; `ncdu` for disk usage) plus the starship prompt — bundled together since it's all the same "what the terminal looks and feels like" layer. `.bashrc` aliases (`ls`/`ll`/`la`/`lt`/`cat`/`catp`/`scat`/`fd`) and the zoxide/starship `eval` lines are written by this same item, not a separate step later.
 
