@@ -13,6 +13,14 @@ source "$SETUP"
 FAIL=0
 CHECKED=0
 
+# Эталон построен на python3. Без него ref_* молча свалились бы на побайтовый
+# фолбэк и сравнивали новую реализацию с заведомо неверными числами — то есть
+# тесты «проходили» бы, ничего не проверяя. Лучше отказаться сразу.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "python3 не найден — эталонные реализации работать не смогут, тесты бессмысленны" >&2
+    exit 2
+fi
+
 # ── эталон: ровно тот код, что стоял в setup.sh 2.4.5 ────────────────────────
 ref_visible_len() {
     local plain
@@ -281,6 +289,30 @@ for tw in 58 78 98 118; do
     visible_len "$line"
     check "box_line при TERM_W=$tw" "$REPLY_LEN" "$tw"
 done
+
+# Рамка экрана справки здесь НЕ проверяется: на тесном терминале ширины колонок
+# пересчитываются с ужатием, и повторять эту логику в тесте значило бы завести
+# второй источник истины, который разъедется с первым. Вместо этого есть
+# tests/test_help_widths.sh — он гоняет саму show_item_help и меряет её вывод.
+
+# ── status_marker: маркер берётся из STATUS_TEXT, а не выдумывается ─────────
+for pair in "✓ установлено:0:✓" "○ не установлен:1:○" "! конфига нет:1:!" "— (нужен Docker):1:—"; do
+    txt="${pair%%:*}"; rest="${pair#*:}"; rc="${rest%%:*}"; want="${rest##*:}"
+    # shellcheck disable=SC2034,SC2154  # читаются внутри status_marker из setup.sh
+    STATUS_TEXT['__t']="$txt"
+    # shellcheck disable=SC2034
+    STATUS_RC['__t']="$rc"
+    STATUS_DIRTY=false          # чтобы refresh_statuses не перезатёр подставленное
+    status_marker __t
+    strip_ansi "$REPLY_MARKER"
+    check "status_marker(${txt:0:14})" "$REPLY_PLAIN" "$want"
+    # маркер обязан занимать ровно одну колонку, иначе поедет узкая колонка
+    visible_len "$REPLY_MARKER"
+    check "ширина маркера(${txt:0:14})" "$REPLY_LEN" "1"
+done
+unset 'STATUS_TEXT[__t]' 'STATUS_RC[__t]'
+# shellcheck disable=SC2034  # читается внутри refresh_statuses из setup.sh
+STATUS_DIRTY=true
 
 # ── suggest_swap_mb: min(RAM, свободно/4), кламп 512..4096 ──────────────────
 # Формула чистая, но зависит от df и /proc/meminfo — подменяем их заглушками,

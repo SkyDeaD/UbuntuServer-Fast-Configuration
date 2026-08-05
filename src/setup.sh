@@ -534,6 +534,11 @@ trap 'cleanup_spinner; drop_policy_rc_d' EXIT INT TERM
 NGINX_AUTOSTART=""
 # shellcheck disable=SC2034
 DOCKER_AUTOSTART=""
+# Cloudflare-плагин и токен к нему. В BULK_MODE вопросов не задают by design,
+# поэтому и согласие, и сам токен спрашиваются заранее, в предзапросе main().
+# Без токена плагин нерабочий, так что спрашивать их порознь смысла нет.
+CERTBOT_CF_BULK=""
+CF_TOKEN_BULK=""
 
 # resolve_autostart <имя_переменной> <вопрос> — 0 если запускать, 1 если нет
 resolve_autostart() {
@@ -1140,15 +1145,25 @@ apply_newuser() {
     local auth_keys="$REPLY_AUTHKEYS"
     [ -s "$auth_keys" ] && key_ok=true
 
-    local root_keys="/root/.ssh/authorized_keys" n_keys=0
-    if [ -s "$root_keys" ]; then
-        n_keys="$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$root_keys" 2>/dev/null || echo 0)"
+    # Один и тот же шаблон и для счёта, и для копирования: иначе легко получить
+    # «найдено 0» с одновременным предложением их скопировать
+    local key_re='^(ssh-|ecdsa-|sk-)'
+    local root_keys="/root/.ssh/authorized_keys" n_keys=0 line
+    if [ -f "$root_keys" ]; then
+        while IFS= read -r line; do
+            [[ "$line" =~ $key_re ]] && n_keys=$((n_keys + 1))
+        done < "$root_keys"
+    fi
+    # Условие именно на счётчике, а не на размере файла: файл из одной пустой
+    # строки или комментария непустой, но копировать в нём нечего — а раньше
+    # мы всё равно предлагали это сделать и пугали потерей доступа
+    if [ "$n_keys" -gt 0 ]; then
         log_info "В /root/.ssh/authorized_keys найдено ключей: ${n_keys}"
         log_warn "Если ты заходишь на сервер по ключу — без копирования ${name} не сможет войти вообще"
         if ask_yn "Скопировать эти ключи для ${name}?" Y; then
-            local line copied=0
+            local copied=0
             while IFS= read -r line; do
-                [ -z "$line" ] && continue
+                [[ "$line" =~ $key_re ]] || continue
                 grep -qxF "$line" "$auth_keys" 2>/dev/null && continue
                 echo "$line" >> "$auth_keys"
                 copied=$((copied + 1))
@@ -1156,6 +1171,8 @@ apply_newuser() {
             log_success "Скопировано ключей: ${copied}"
             [ -s "$auth_keys" ] && key_ok=true
         fi
+    elif [ -f "$root_keys" ]; then
+        log_info "В /root/.ssh/authorized_keys ключей нет — копировать нечего"
     fi
     if ask_yn "Добавить ещё один публичный ключ вручную?" N; then
         add_pubkey_interactive "$auth_keys" && key_ok=true
@@ -1188,7 +1205,15 @@ apply_newuser() {
             log_error "Пароли не совпали"
             continue
         fi
-        [ "${#pw1}" -lt 8 ] && log_warn "Пароль короче 8 символов — на сервере, смотрящем в интернет, это слабо"
+        # Раньше здесь было предупреждение и проход дальше — то есть слабый
+        # пароль всё равно ставился. Для сервера, смотрящего в интернет, это
+        # не предупреждение, а отказ: перебор идёт круглосуточно.
+        if [ "${#pw1}" -lt 8 ]; then
+            log_error "Пароль короче 8 символов — слишком слабо для сервера"
+            [ "$key_ok" = true ] && \
+                log_info "Ключ уже добавлен — можно нажать Enter и обойтись без пароля вовсе"
+            continue
+        fi
         if printf '%s:%s\n' "$name" "$pw1" | chpasswd; then
             log_success "Пароль установлен"
             pw_set=true
@@ -1198,9 +1223,17 @@ apply_newuser() {
         break
     done
     unset pw1 pw2
-    if [ "$pw_set" = false ] && [ "$key_ok" = false ]; then
-        log_error "У ${name} нет ни пароля, ни ключа — зайти под ним будет невозможно"
-        log_warn "Задай пароль вручную: sudo passwd ${name}"
+    if [ "$pw_set" = false ]; then
+        if [ "$key_ok" = false ]; then
+            log_error "У ${name} нет ни пароля, ни ключа — зайти под ним будет невозможно"
+            log_warn "Задай пароль вручную: sudo passwd ${name}"
+        else
+            # попытки кончились, но ключ есть — молчать нельзя, иначе непонятно,
+            # с чем в итоге остался пользователь
+            passwd -l "$name" >/dev/null 2>&1
+            log_warn "Пароль так и не задан — вход только по SSH-ключу"
+            log_info "Задать позже: sudo passwd ${name}"
+        fi
     fi
 
     # ── sudo ──────────────────────────────────────────────────────────────────
@@ -1334,11 +1367,20 @@ apply_certbot() {
     fi
 
     # ── плагин Cloudflare (DNS-01) ────────────────────────────────────────────
-    local want_cf=false
+    local want_cf=false install_cf=false
     if pkg_installed python3-certbot-dns-cloudflare; then
         want_cf=true
         log_success "Плагин Cloudflare уже установлен"
-    elif ask_yn "Установить плагин Cloudflare (DNS-01, нужен для wildcard-сертификатов)?" N; then
+    else
+        # В пакетном режиме ask_yn вернёт дефолт N и плагин молча не поставится —
+        # поэтому согласие спрашивается заранее в main() и приезжает сюда готовым
+        if [ "$BULK_MODE" = true ]; then
+            [ "$CERTBOT_CF_BULK" = "Y" ] && install_cf=true
+        elif ask_yn "Установить плагин Cloudflare (DNS-01, нужен для wildcard-сертификатов)?" N; then
+            install_cf=true
+        fi
+    fi
+    if [ "$install_cf" = true ]; then
         if run_logged "python3-certbot-dns-cloudflare" apt_get install -y python3-certbot-dns-cloudflare; then
             refresh_pkg_cache
             want_cf=true
@@ -1365,6 +1407,17 @@ apply_certbot() {
 # Токен Cloudflare. Кладём в /root: certbot всегда запускается от root, а при более
 # открытых правах он сам ругается на небезопасный credentials-файл
 apply_cloudflare_credentials() {
+    local token=""
+
+    # Токен, введённый заранее в предзапросе пакетного режима. Спрашивать его
+    # здесь нельзя: в BULK_MODE вопросов не задают, и файл остался бы несозданным
+    if [ -n "$CF_TOKEN_BULK" ]; then
+        token="$CF_TOKEN_BULK"
+        CF_TOKEN_BULK=""
+        cf_write_credentials "$token"
+        return
+    fi
+
     if [ -s "$CF_CREDENTIALS" ]; then
         log_success "Credentials-файл уже есть: ${CF_CREDENTIALS}"
         if ! ask_yn "Перезаписать его новым токеном?" N; then return; fi
@@ -1379,14 +1432,28 @@ apply_cloudflare_credentials() {
         return
     fi
 
+    ask_cf_token || return 1
+    cf_write_credentials "$REPLY_CF_TOKEN"
+    REPLY_CF_TOKEN=""
+}
+
+# Запрос токена скрытым вводом → REPLY_CF_TOKEN. Вынесен отдельно, потому что
+# спрашивать его приходится из двух мест: обычного прогона и предзапроса перед
+# пакетным режимом
+REPLY_CF_TOKEN=""
+ask_cf_token() {
     echo -en "  ${BOLD}API-токен Cloudflare${NC} ${DIM}(права Zone:DNS:Edit, ввод скрыт):${NC} "
-    local token
-    read -rs token </dev/tty; echo ""
-    if [ -z "$token" ]; then
+    read -rs REPLY_CF_TOKEN </dev/tty; echo ""
+    if [ -z "$REPLY_CF_TOKEN" ]; then
         log_error "Пустой токен — файл не создан"
         return 1
     fi
+    return 0
+}
 
+cf_write_credentials() {
+    local token="$1"
+    [ -z "$token" ] && { log_error "Пустой токен — файл не создан"; return 1; }
     install -d -m 700 "$(dirname "$CF_CREDENTIALS")" || { log_error "Не удалось создать каталог"; return 1; }
     umask 077
     printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDENTIALS" || {
@@ -2651,6 +2718,34 @@ item_applied() {
     [ "${STATUS_RC[${1}]:-1}" -eq 0 ]
 }
 
+# Короткий маркер состояния пункта → REPLY_MARKER (для узкой колонки в справке).
+# Символ берём из уже посчитанного STATUS_TEXT — там он и так первый («✓», «○»,
+# «!», «—»), — а цвет по STATUS_RC. Так второго источника истины не заводим:
+# что показывает меню, то же увидит и справка.
+REPLY_MARKER=''
+status_marker() {
+    local id="${1:-}" ch
+    refresh_statuses
+    strip_ansi "${STATUS_TEXT[$id]:-}"
+    if [ "$CHARLEN_NATIVE" = true ]; then
+        ch="${REPLY_PLAIN:0:1}"
+    else
+        # при небитом locale срез идёт по БАЙТАМ, и от «✓» остался бы огрызок:
+        # берём ведущий байт вместе со всеми его континуационными
+        local s="$REPLY_PLAIN" n=1
+        while [ "$n" -lt "${#s}" ] && [[ "${s:n:1}" == [$'\x80'-$'\xbf'] ]]; do
+            n=$((n + 1))
+        done
+        ch="${s:0:n}"
+    fi
+    [ -z "$ch" ] && ch='?'
+    if [ "${STATUS_RC[$id]:-1}" -eq 0 ]; then
+        REPLY_MARKER="${GREEN}${ch}${NC}"
+    else
+        REPLY_MARKER="${DIM}${ch}${NC}"
+    fi
+}
+
 REPLY_COLOR=''
 section_color_for() {
     case "${1:-}" in
@@ -2918,25 +3013,70 @@ show_item_help() {
         echo -e "  ${BOLD}Справка по пунктам${NC} ${DIM}— что делает каждый пункт меню${NC}"
         echo ""
 
-        local i=1 id section section_color prev_section="" num_w=4 title_w=26 desc_w
-        desc_w=$(( TERM_W - num_w - title_w - 4 ))
-        [ "$desc_w" -lt 10 ] && desc_w=10
+        # Та же рамка и та же арифметика ширин, что у show_menu — справка
+        # не должна выглядеть чужой на фоне меню. Колонка «Сейчас» делает её
+        # заодно обзором: видно, что уже сделано, не возвращаясь в меню.
+        # title_w=26, как в меню, а не 24: самый длинный заголовок с отступом
+        # занимает ровно 24 символа, а pad_title форсирует ещё минимум один
+        # пробел — при 24 такие строки выпирали за колонку на единицу
+        local idx_w=3 title_w=26 st_w=8 desc_w
+        desc_w=$(( TERM_W - idx_w - title_w - st_w - 13 ))
+        # На тесном терминале колонки не влезают. Поднимать desc_w клэмпом нельзя:
+        # ширина рамки перестанет совпадать с TERM_W и её порвёт переносом строки.
+        # Поэтому недостачу забираем у названий, а если мало — у статуса.
+        if [ "$desc_w" -lt 12 ]; then
+            local need=$(( 12 - desc_w )) shrink
+            shrink=$(( title_w - 16 )); [ "$shrink" -gt "$need" ] && shrink="$need"
+            if [ "$shrink" -gt 0 ]; then title_w=$((title_w - shrink)); need=$((need - shrink)); fi
+            if [ "$need" -gt 0 ]; then
+                shrink=$(( st_w - 3 )); [ "$shrink" -gt "$need" ] && shrink="$need"
+                [ "$shrink" -gt 0 ] && st_w=$((st_w - shrink))
+            fi
+            desc_w=$(( TERM_W - idx_w - title_w - st_w - 13 ))
+        fi
 
+        local c_idx c_title c_desc c_st
+        box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$desc_w" "$st_w"
+        pad_title "#"          "$idx_w";   c_idx="$REPLY_PAD"
+        pad_title "Пункт"      "$title_w"; c_title="$REPLY_PAD"
+        pad_title "Что делает" "$desc_w";  c_desc="$REPLY_PAD"
+        pad_title "Сейчас"     "$st_w";    c_st="$REPLY_PAD"
+        printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
+            "$c_idx" "$c_title" "$c_desc" "$c_st"
+        box_line "$DIM" '├' '┼' '┤' "$idx_w" "$title_w" "$desc_w" "$st_w"
+
+        local i=1 id section section_color prev_section=""
         for id in "${ITEM_IDS[@]}"; do
             section="${ITEM_SECTIONS[$((i-1))]}"
             section_color_for "$section"; section_color="$REPLY_COLOR"
+            # Колонка названий на тесном терминале ужимается, а pad_title умеет
+            # только добивать — длинные заголовки выпирали бы за рамку. Поэтому
+            # везде сначала обрезаем, потом добиваем вручную (та же схема, что
+            # уже используется для статусной колонки в show_menu)
+            local t_pad
             if [ "$section" != "$prev_section" ]; then
                 prev_section="$section"
-                echo -e "  ${section_color}${BOLD}● ${section^^}${NC}"
+                truncate_colored "● ${section^^}" "$title_w"; c_title="$REPLY_TRUNC"
+                visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
+                pad_title "" "$idx_w";  c_idx="$REPLY_PAD"
+                pad_title "" "$desc_w"; c_desc="$REPLY_PAD"
+                pad_title "" "$st_w";   c_st="$REPLY_PAD"
+                printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}${BOLD}%s${NC}%*s ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC}\n" \
+                    "$c_idx" "$c_title" "$t_pad" "" "$c_desc" "$c_st"
             fi
-            local short
+            local short st_pad desc_pad
             truncate_colored "${ITEM_SHORT[$((i-1))]}" "$desc_w"; short="$REPLY_TRUNC"
-            pad_title "$i" "$num_w"
-            local c_num="$REPLY_PAD"
-            pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w"
-            printf "  ${DIM}%s${NC}%s ${DIM}%s${NC}\n" "$c_num" "$REPLY_PAD" "$short"
+            visible_len "$short"; desc_pad=$((desc_w - REPLY_LEN)); [ "$desc_pad" -lt 0 ] && desc_pad=0
+            truncate_colored "  ${ITEM_TITLES[$((i-1))]}" "$title_w"; c_title="$REPLY_TRUNC"
+            visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
+            status_marker "$id"
+            visible_len "$REPLY_MARKER"; st_pad=$((st_w - REPLY_LEN)); [ "$st_pad" -lt 0 ] && st_pad=0
+            pad_title "$i" "$idx_w"; c_idx="$REPLY_PAD"
+            printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s%*s ${DIM}│${NC} ${DIM}%s${NC}%*s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+                "$c_idx" "$c_title" "$t_pad" "" "$short" "$desc_pad" "" "$REPLY_MARKER" "$st_pad" ""
             i=$((i+1))
         done
+        box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$desc_w" "$st_w"
 
         echo ""
         echo -en "  ${BOLD}Номер пункта — подробности, Enter — назад:${NC} "
@@ -3201,9 +3341,14 @@ main() {
                                 zram)
                                     read_swap_state
                                     if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
+                                        echo ""
+                                        log_info "zram — сжатая память вместо свопа на диске: быстрее и не треплет SSD."
+                                        log_info "75% — разумный дефолт, менять обычно не нужно"
                                         ZRAM_BULK_PERCENT="$(ask_value "Размер zram в % от RAM?" 75)"
                                     fi
                                     if [ "$SWAP_ACTIVE" != true ]; then
+                                        echo ""
+                                        log_info "Своп-файл — запас на диске на случай, если zram кончится"
                                         SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
                                     elif [ "$SWAP_TYPE" = "file" ]; then
                                         # своп есть, но размер мог разъехаться с рекомендацией —
@@ -3217,17 +3362,42 @@ main() {
                                     fi
                                     ;;
                                 nginx)
+                                    echo ""
+                                    log_info "nginx — веб-сервер и реверс-прокси. Если сайты пока не настроены,"
+                                    log_info "поднимать его не обязательно — включится одной командой потом"
                                     ask_yn "Запускать nginx после установки (и включать автозапуск)?" N \
                                         && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
                                     ;;
                                 docker)
+                                    echo ""
+                                    log_info "Docker — запуск приложений в контейнерах. Если сейчас не нужен,"
+                                    log_info "можно не поднимать — потом включится одной командой"
                                     ask_yn "Запускать Docker после установки (и включать автозапуск)?" N \
                                         && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
+                                    ;;
+                                certbot)
+                                    # В BULK_MODE вопрос внутри apply_certbot молча
+                                    # ушёл бы в дефолт N, и плагин не поставился бы
+                                    # вовсе — спрашиваем здесь, вместе с токеном
+                                    if ! pkg_installed python3-certbot-dns-cloudflare; then
+                                        echo ""
+                                        log_info "Плагин Cloudflare нужен только для wildcard-сертификатов (*.example.com)."
+                                        log_info "Для обычных сертификатов хватает плагина nginx, который поставится сам"
+                                        if ask_yn "Установить плагин Cloudflare?" N; then
+                                            CERTBOT_CF_BULK=Y
+                                            log_info "Токену нужны права Zone:DNS:Edit. Без него плагин работать не будет"
+                                            ask_cf_token && CF_TOKEN_BULK="$REPLY_CF_TOKEN"
+                                            REPLY_CF_TOKEN=""
+                                        else
+                                            CERTBOT_CF_BULK=N
+                                        fi
+                                    fi
                                     ;;
                             esac
                         done
 
-                        if ask_yn "Применить сразу?"; then
+                        echo ""
+                        if ask_yn "Применить эти ${#pending[@]} пунктов сейчас?"; then
                             BULK_MODE=true
                             summary_reset
                             local pos=0 rc0 t0
@@ -3247,6 +3417,8 @@ main() {
                         NGINX_AUTOSTART=""
                         # shellcheck disable=SC2034
                         DOCKER_AUTOSTART=""
+                        CERTBOT_CF_BULK=""
+                        CF_TOKEN_BULK=""
                         pause
                     fi
                 fi
