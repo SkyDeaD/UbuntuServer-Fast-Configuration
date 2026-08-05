@@ -12,6 +12,30 @@ set -uo pipefail
 # живёт много действий подряд; одна упавшая подкоманда не должна
 # убивать всю сессию, только то конкретное действие.
 
+# Ассоциативные массивы (кэши пакетов/статусов/рамок) — bash 4+.
+# Ubuntu везде даёт bash 5, но если скрипт запустили через `sh setup.sh`
+# или на экзотике, лучше сказать это прямо, чем сыпать «declare -A: invalid option»
+if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+    echo "Нужен bash 4 или новее. Запуск: bash $0" >&2
+    exit 1
+fi
+
+# C.UTF-8 встроена в glibc и не требует locale-gen — в отличие от ru_RU.UTF-8/en_US.UTF-8,
+# которые на свежих VPS-образах часто объявлены, но не собраны. Именно из-за такого
+# полусломанного locale раньше приходилось считать длину строк через python3: ${#s} мерил
+# байты вместо символов, а tr резал многобайтовый "─" на мусор. Фиксируем окружение один
+# раз здесь — и вся отрисовка живёт на чистом bash.
+if [ -z "${USFC_KEEP_LOCALE:-}" ] && locale -a 2>/dev/null | grep -qiE '^C\.utf-?8$'; then
+    export LC_ALL=C.UTF-8
+    export LANG=C.UTF-8
+fi
+
+# Считает ли ${#s} символы (а не байты) — определяем один раз, дальше это
+# горячий путь отрисовки меню, там не до проверок
+_probe='─'
+if [ "${#_probe}" -eq 1 ]; then CHARLEN_NATIVE=true; else CHARLEN_NATIVE=false; fi
+unset _probe
+
 REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
 
 # ── Цвета ─────────────────────────────────────────────────────
@@ -38,6 +62,139 @@ export NEEDRESTART_MODE=a
 BULK_MODE=false
 ZRAM_BULK_PERCENT=""
 SWAP_BULK_MB=""
+
+# ═══════════════════════════════════════════════════════════════
+# Лог и запуск длинных команд
+# ═══════════════════════════════════════════════════════════════
+# Сырой вывод apt/curl/systemctl всегда уезжает в файл, а на экране остаётся одна
+# живая строка со спиннером. Лог обязателен: без него сворачивание вывода
+# превратило бы любую неудачную установку в неотлаживаемую.
+USFC_LOG="/var/log/usfc.log"
+USFC_LOG_MAX=5242880   # 5 МБ, дальше — ротация в .1
+USFC_VERBOSE="${USFC_VERBOSE:-}"
+
+log_init() {
+    local size
+    size="$(stat -c %s "$USFC_LOG" 2>/dev/null)" || size=0
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    [ "$size" -gt "$USFC_LOG_MAX" ] && mv -f "$USFC_LOG" "${USFC_LOG}.1" 2>/dev/null
+    if ! touch "$USFC_LOG" 2>/dev/null; then
+        # некуда писать (только чтение / нет прав) — не падаем, просто теряем лог
+        USFC_LOG="/dev/null"
+        return
+    fi
+    chmod 640 "$USFC_LOG" 2>/dev/null
+    chgrp adm "$USFC_LOG" 2>/dev/null
+    printf '\n===== %s  usfc %s  пользователь=%s =====\n' \
+        "$(date '+%F %T')" "${VERSION:-?}" "${TARGET_USER:-?}" >> "$USFC_LOG"
+}
+
+# брайлевские кадры красивее, но при несобранном locale порежутся на мусорные
+# байты — там честнее обычная ASCII-вертушка
+if [ "$CHARLEN_NATIVE" = true ]; then
+    SPINNER_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; SPINNER_N=10
+else
+    SPINNER_FRAMES='|/-\'; SPINNER_N=4
+fi
+
+# Текущее время в секундах → REPLY_NOW.
+# Специально НЕ через магическую переменную SECONDS: её присваивание глобально
+# сбрасывает счётчик, и вложенный замер (run_logged внутри пункта) обнулял бы
+# внешний замер этого пункта — в сводке получались отрицательные секунды.
+# EPOCHSECONDS есть в bash 5 и не стоит ни одного форка; date — запасной путь.
+REPLY_NOW=0
+now_s() {
+    if [ -n "${EPOCHSECONDS:-}" ]; then
+        REPLY_NOW="$EPOCHSECONDS"
+    else
+        REPLY_NOW="$(date +%s)"
+    fi
+}
+
+RUN_LOGGED_PID=''
+# курсор возвращаем в любом случае — иначе Ctrl-C посреди установки оставит
+# пользователя в терминале без курсора
+cleanup_spinner() {
+    [ -n "$RUN_LOGGED_PID" ] && kill "$RUN_LOGGED_PID" 2>/dev/null
+    RUN_LOGGED_PID=''
+    tput cnorm 2>/dev/null
+}
+
+_spin_wait() {
+    local pid="$1" desc="$2" started="$3" i=0 frame
+    tput civis 2>/dev/null
+    while kill -0 "$pid" 2>/dev/null; do
+        frame="${SPINNER_FRAMES:$((i % SPINNER_N)):1}"
+        now_s
+        printf '\r  %b %s...  %ss ' "${CYAN}${frame}${NC}" "$desc" "$((REPLY_NOW - started))"
+        i=$((i + 1))
+        sleep 0.15
+    done
+    tput cnorm 2>/dev/null
+    printf '\r%*s\r' "$((TERM_W + 6))" ''
+}
+
+# best-effort статистика из вывода apt → REPLY_STATS. Локаль форсирована в C.UTF-8,
+# так что строки apt английские и предсказуемые; не распарсилось — молча опускаем
+REPLY_STATS=''
+_apt_stats_since() {
+    REPLY_STATS=''
+    local offset="$1" line pkgs='' size=''
+    while IFS= read -r line; do
+        if [[ "$line" =~ ([0-9]+)\ upgraded,\ ([0-9]+)\ newly\ installed ]]; then
+            pkgs=$(( BASH_REMATCH[1] + BASH_REMATCH[2] ))
+        elif [[ "$line" =~ ^Need\ to\ get\ ([0-9.,]+\ [kMG]?B) ]]; then
+            size="${BASH_REMATCH[1]}"
+        fi
+    done < <(tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null)
+    [ -n "$pkgs" ] && [ "$pkgs" -gt 0 ] && REPLY_STATS="${pkgs} пакет(ов)"
+    [ -n "$size" ] && REPLY_STATS="${REPLY_STATS}${REPLY_STATS:+, }${size}"
+}
+
+# run_logged "<описание>" команда аргументы... — выполняет команду, пряча её вывод
+# в лог и показывая одну строку со спиннером. Возвращает код возврата команды.
+# ВАЖНО: только для НЕинтерактивных команд — спиннер затрёт любой вопрос.
+run_logged() {
+    local desc="${1:-Выполнение}"; shift
+    [ "$#" -eq 0 ] && return 0
+
+    local offset
+    offset="$(stat -c %s "$USFC_LOG" 2>/dev/null)" || offset=0
+    [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
+    printf '\n--- %s $ %s\n' "$(date '+%F %T')" "$*" >> "$USFC_LOG"
+
+    local rc elapsed started
+    now_s; started="$REPLY_NOW"
+    # stdin у команды всегда /dev/null: это заведомо неинтерактивные вызовы, а без
+    # закрытого stdin фоновый apt способен вычитать ввод, предназначенный
+    # следующему вопросу скрипта, и вопрос молча «проскочит»
+    if [ -n "$USFC_VERBOSE" ] || [ ! -t 1 ]; then
+        # verbose или вывод не в терминал (перенаправление в файл, CI) — спиннер
+        # там бесполезен и только насорит управляющими последовательностями
+        "$@" </dev/null 2>&1 | tee -a "$USFC_LOG"
+        rc="${PIPESTATUS[0]}"
+    else
+        "$@" </dev/null >> "$USFC_LOG" 2>&1 &
+        RUN_LOGGED_PID=$!
+        _spin_wait "$RUN_LOGGED_PID" "$desc" "$started"
+        wait "$RUN_LOGGED_PID"; rc=$?
+        RUN_LOGGED_PID=''
+    fi
+    now_s; elapsed=$((REPLY_NOW - started))
+
+    if [ "$rc" -eq 0 ]; then
+        _apt_stats_since "$offset"
+        local extra="${elapsed}s"
+        [ -n "$REPLY_STATS" ] && extra="${REPLY_STATS}, ${elapsed}s"
+        log_success "${desc} ${DIM}(${extra})${NC}"
+    else
+        log_error "${desc} — не удалось (код ${rc}, ${elapsed}s)"
+        echo -e "  ${DIM}последние строки вывода:${NC}"
+        tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null | tail -n 20 | sed 's/^/      /'
+        log_info "полный лог: ${USFC_LOG}"
+    fi
+    return "$rc"
+}
 
 ask_yn() {
     local question="${1:-}" default="${2:-Y}" reply prompt
@@ -89,7 +246,9 @@ pause() {
 }
 
 # ── root / целевой пользователь ────────────────────────────────
-if [ "$(id -u)" -ne 0 ]; then
+# root нужен, чтобы что-то ДЕЛАТЬ. Просто загрузить функции (тесты, CI) можно и
+# без него — иначе линтер пришлось бы гонять от root на ровном месте
+if [ "$(id -u)" -ne 0 ] && [ -z "${USFC_SOURCE_ONLY:-}" ]; then
     echo "Нужны права root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
     exit 1
 fi
@@ -97,16 +256,47 @@ fi
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
     TARGET_USER="$SUDO_USER"
 else
-    TARGET_USER="$(logname 2>/dev/null || echo root)"
+    # ОСТОРОЖНО с logname: когда login-сессии нет (консоль хостера на свежей VPS,
+    # cloud-init, запуск из systemd-юнита), он печатает "no login name" в stderr
+    # и выходит с кодом НОЛЬ. То есть "logname || echo root" не спасает: подстановка
+    # молча даёт пустую строку, и дальше скрипт падал на getent с пустым именем —
+    # ровно на том сценарии голого root, ради которого всё и затевалось.
+    TARGET_USER="$(logname 2>/dev/null)"
+fi
+# нет имени или такого пользователя не существует — значит login-сессии нет,
+# работаем от root: это нормальное состояние свежей виртуалки, а не ошибка
+if [ -z "$TARGET_USER" ] || ! id -u "$TARGET_USER" >/dev/null 2>&1; then
+    TARGET_USER=root
 fi
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
-    echo "Не удалось определить домашнюю директорию пользователя $TARGET_USER" >&2
-    exit 1
+    if [ -n "${USFC_SOURCE_ONLY:-}" ]; then
+        TARGET_HOME="${HOME:-/root}"
+    else
+        echo "Не удалось определить домашнюю директорию пользователя $TARGET_USER" >&2
+        exit 1
+    fi
 fi
 
-SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
-[ -z "$SSH_PORT" ] && SSH_PORT=22
+# sshd -T — не самый быстрый вызов, а нужен он в двух местах (порт при старте и
+# passwordauthentication в status_sshhardening, который считается на каждой
+# перерисовке меню). Разбираем один раз в глобальные, обновляем только после
+# реальной правки конфига в apply_sshhardening()
+SSH_PORT=22
+SSHD_PASSWORDAUTH=''
+refresh_sshd_config() {
+    local out key val
+    out="$(sshd -T 2>/dev/null)"
+    SSH_PORT=''; SSHD_PASSWORDAUTH=''
+    while read -r key val _; do
+        case "$key" in
+            port)                   [ -z "$SSH_PORT" ] && SSH_PORT="$val" ;;
+            passwordauthentication) SSHD_PASSWORDAUTH="$val" ;;
+        esac
+    done <<< "$out"
+    [ -z "$SSH_PORT" ] && SSH_PORT=22
+}
+refresh_sshd_config
 
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
 SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
@@ -115,11 +305,152 @@ VERSION="$(cat "${SCRIPT_DIR}/VERSION" 2>/dev/null | tr -d '[:space:]')"
 [ -z "$VERSION" ] && VERSION="0.0.0"
 
 # ═══════════════════════════════════════════════════════════════
+# Автозапуск сервисов
+# ═══════════════════════════════════════════════════════════════
+# deb-пакеты nginx и docker поднимают сервис сами, из postinst — раньше, чем
+# скрипт вообще получит управление. Чтобы «не запускать» означало именно это, а не
+# «поднять и тут же погасить» (nginx успел бы занять :80 — а если порт уже занят,
+# то и сама установка ругнётся), установка оборачивается в policy-rc.d: штатный
+# для Debian способ сказать пакетам «сервисы не трогать».
+POLICY_RC_D=/usr/sbin/policy-rc.d
+POLICY_RC_D_OURS=false
+
+drop_policy_rc_d() {
+    [ "$POLICY_RC_D_OURS" = true ] || return 0
+    rm -f "$POLICY_RC_D"
+    POLICY_RC_D_OURS=false
+}
+
+with_no_service_start() {
+    # чужой policy-rc.d не трогаем вообще: он не наш и, возможно, кому-то нужен
+    if [ ! -e "$POLICY_RC_D" ]; then
+        printf '#!/bin/sh\nexit 101\n' > "$POLICY_RC_D"
+        chmod +x "$POLICY_RC_D"
+        POLICY_RC_D_OURS=true
+    fi
+    "$@"
+    local rc=$?
+    drop_policy_rc_d
+    return "$rc"
+}
+
+# Забытый policy-rc.d тихо ломает старт сервисов при ЛЮБОЙ будущей apt install
+# в системе — поэтому убираем его и при аварийном выходе, не только при штатном
+trap 'cleanup_spinner; drop_policy_rc_d' EXIT INT TERM
+
+# Предзаданные ответы для пакетного режима (см. main): пусто — спрашиваем.
+# Читаются косвенно, через ${!1} в resolve_autostart — shellcheck этого не видит.
+# shellcheck disable=SC2034
+NGINX_AUTOSTART=""
+# shellcheck disable=SC2034
+DOCKER_AUTOSTART=""
+
+# resolve_autostart <имя_переменной> <вопрос> — 0 если запускать, 1 если нет
+resolve_autostart() {
+    local preset="${!1:-}"
+    case "$preset" in
+        Y) return 0 ;;
+        N) return 1 ;;
+    esac
+    ask_yn "$2" N
+}
+
+apply_service_autostart() {
+    local svc="$1" want="$2"
+    if [ "$want" = true ]; then
+        if systemctl enable --now "$svc" >/dev/null 2>&1; then
+            log_success "${svc}: запущен, автозапуск включён"
+        else
+            log_error "Не удалось запустить ${svc} — подробности: journalctl -u ${svc}"
+        fi
+    else
+        systemctl disable --now "$svc" >/dev/null 2>&1
+        log_success "${svc}: установлен, но НЕ запущен (автозапуск выключен)"
+        log_info "Запустить позже: ${BOLD}sudo systemctl enable --now ${svc}${NC}"
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════
+# Кэш установленных пакетов и ленивый apt update
+# ═══════════════════════════════════════════════════════════════
+# Раньше каждая status_*-функция дёргала `dpkg -s` отдельно на каждый пакет —
+# около 25 запусков за одну перерисовку меню, и каждый из них перечитывает
+# /var/lib/dpkg/status целиком. Один снимок вместо этого.
+declare -A PKG_INSTALLED
+PKG_CACHE_READY=false
+refresh_pkg_cache() {
+    local pkg state
+    PKG_INSTALLED=()
+    while read -r pkg state; do
+        [ "$state" = "installed" ] && PKG_INSTALLED[$pkg]=1
+    done < <(dpkg-query -W -f='${Package} ${db:Status-Status}\n' 2>/dev/null)
+    PKG_CACHE_READY=true
+}
+# сам наполняет кэш, если его ещё не строили: иначе любой вызов до
+# refresh_pkg_cache молча отвечал бы «пакет не установлен» на всё подряд
+pkg_installed() {
+    [ "$PKG_CACHE_READY" = true ] || refresh_pkg_cache
+    [ -n "${PKG_INSTALLED[${1}]:-}" ]
+}
+
+# apt-get update больше не висит на старте каждого запуска: списки нужны только
+# перед реальной установкой, и только если они успели протухнуть. Открыть меню
+# и посмотреть статусы теперь не стоит ни одного сетевого запроса.
+APT_UPDATED=false
+APT_MAX_AGE=3600
+ensure_apt_updated() {
+    [ "$APT_UPDATED" = true ] && return 0
+    local now mtime age src
+    now="$(date +%s)"
+    # update-success-stamp честнее mtime каталога: он отражает именно успешный
+    # update, а не любое касание /var/lib/apt/lists
+    if [ -f /var/lib/apt/periodic/update-success-stamp ]; then
+        src=/var/lib/apt/periodic/update-success-stamp
+    else
+        src=/var/lib/apt/lists
+    fi
+    mtime="$(stat -c %Y "$src" 2>/dev/null)" || mtime=0
+    [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
+    age=$(( now - mtime ))
+    if [ "$mtime" -gt 0 ] && [ "$age" -lt "$APT_MAX_AGE" ]; then
+        APT_UPDATED=true
+        return 0
+    fi
+    run_logged "Обновление списков пакетов apt" apt-get update -qq
+    APT_UPDATED=true
+    refresh_pkg_cache
+}
+
+# ═══════════════════════════════════════════════════════════════
 # Самообновление — сверяется при каждом запуске
 # ═══════════════════════════════════════════════════════════════
+# Проверка обязательна на КАЖДОМ запуске, кэша по времени тут нет специально.
+# Ускорение достигается иначе: curl уходит в фон первой же строкой main(), пока
+# считается кэш пакетов и статусы. Итоговая цена — max(сеть, локальная работа),
+# а не их сумма, как было раньше.
+UPDATE_CHECK_FILE=""
+UPDATE_CHECK_PID=""
+
+start_update_check() {
+    [ -n "${USFC_NO_UPDATE:-}" ] && return 0
+    UPDATE_CHECK_FILE="$(mktemp)"
+    curl -fsSL --max-time 5 "${REPO_RAW_BASE}/VERSION" -o "$UPDATE_CHECK_FILE" 2>/dev/null &
+    UPDATE_CHECK_PID=$!
+}
+
 check_for_update() {
-    local remote_version
-    remote_version="$(curl -fsSL --max-time 5 "${REPO_RAW_BASE}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+    if [ -n "${USFC_NO_UPDATE:-}" ]; then
+        log_info "Проверка обновлений отключена (--no-update)"
+        return 1
+    fi
+
+    local remote_version=""
+    if [ -n "$UPDATE_CHECK_PID" ]; then
+        wait "$UPDATE_CHECK_PID" 2>/dev/null
+        UPDATE_CHECK_PID=""
+        remote_version="$(tr -d '[:space:]' < "$UPDATE_CHECK_FILE" 2>/dev/null)"
+        rm -f "$UPDATE_CHECK_FILE"
+    fi
 
     if [ -z "$remote_version" ]; then
         log_warn "Не удалось проверить обновления (нет сети или файла VERSION в репо)"
@@ -166,10 +497,35 @@ check_for_update() {
 # ═══════════════════════════════════════════════════════════════
 # STATUS-функции — только читают состояние, ничего не меняют
 # ═══════════════════════════════════════════════════════════════
+# не-root пользователи в группе sudo → REPLY_SUDOERS (через запятую)
+REPLY_SUDOERS=''
+list_sudo_users() {
+    local members u
+    members="$(getent group sudo 2>/dev/null | cut -d: -f4)"
+    REPLY_SUDOERS=''
+    IFS=',' read -ra members <<< "$members"
+    for u in "${members[@]}"; do
+        [ -z "$u" ] && continue
+        [ "$u" = "root" ] && continue
+        REPLY_SUDOERS="${REPLY_SUDOERS}${REPLY_SUDOERS:+, }${u}"
+    done
+}
+
+status_newuser() {
+    if [ "$TARGET_USER" != "root" ]; then
+        echo -e "${GREEN}✓ работаем от ${TARGET_USER}${NC}"; return 0
+    fi
+    list_sudo_users
+    if [ -n "$REPLY_SUDOERS" ]; then
+        echo -e "${YELLOW}! есть: ${REPLY_SUDOERS}, но вы под root${NC}"; return 1
+    fi
+    echo -e "${DIM}○ только root${NC}"; return 1
+}
+
 status_cli() {
     local c missing=""
     for c in eza bat fd-find ripgrep zoxide ncdu; do
-        dpkg -s "$c" &>/dev/null || missing="${missing}${missing:+, }${c}"
+        pkg_installed "$c" || missing="${missing}${missing:+, }${c}"
     done
     command -v starship &>/dev/null || missing="${missing}${missing:+, }starship"
     if [ -n "$missing" ]; then
@@ -182,13 +538,15 @@ status_cli() {
 }
 
 # dnsutils в Ubuntu 26.04 — виртуальный пакет (алиас), apt install его резолвит,
-# но dpkg -s dnsutils ничего не находит; реальное имя пакета — bind9-dnsutils
-BASE_PKGS="micro curl wget git nano certbot python3-certbot-nginx unzip htop bind9-dnsutils jq software-properties-common ca-certificates gnupg rsync"
+# но в списке установленных его нет; реальное имя пакета — bind9-dnsutils.
+# certbot и python3-certbot-nginx отсюда сознательно убраны: TLS — это сервис со
+# своими плагинами и секретами, ему выделен отдельный пункт меню (apply_certbot)
+BASE_PKGS="micro curl wget git nano unzip htop bind9-dnsutils jq software-properties-common ca-certificates gnupg rsync"
 
 status_basepkgs() {
     local p missing=""
     for p in $BASE_PKGS; do
-        dpkg -s "$p" &>/dev/null || missing="${missing}${missing:+, }${p}"
+        pkg_installed "$p" || missing="${missing}${missing:+, }${p}"
     done
     if [ -n "$missing" ]; then
         echo -e "${DIM}○ не хватает: ${missing}${NC}"; return 1
@@ -196,24 +554,60 @@ status_basepkgs() {
     echo -e "${GREEN}✓ установлено${NC}"; return 0
 }
 
+# ПРО «автозапуск выкл.» ниже: сервис, который пользователь сознательно попросил не
+# запускать (см. apply_service_autostart), — это законченное состояние, а не недоделка.
+# Если бы он числился «не применён», режим A переспрашивал бы про него при каждом
+# прогоне. Само состояние хранит systemd, отдельный файл-состояния не нужен.
 status_nginx() {
-    if dpkg -s nginx-full &>/dev/null; then
-        if systemctl is-active nginx &>/dev/null; then
-            echo -e "${GREEN}✓ установлен и запущен${NC}"; return 0
-        else
-            echo -e "${YELLOW}! установлен, не запущен${NC}"; return 1
-        fi
-    else
+    if ! pkg_installed nginx-full; then
         echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
+    if systemctl is-active nginx &>/dev/null; then
+        echo -e "${GREEN}✓ установлен и запущен${NC}"; return 0
+    fi
+    if [ "$(systemctl is-enabled nginx 2>/dev/null)" = "disabled" ]; then
+        echo -e "${GREEN}✓ установлен, автозапуск выкл.${NC}"; return 0
+    fi
+    echo -e "${YELLOW}! установлен, не запущен${NC}"; return 1
 }
 
 status_docker() {
-    if command -v docker &>/dev/null; then
-        echo -e "${GREEN}✓ установлен ($(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1))${NC}"; return 0
-    else
+    if ! command -v docker &>/dev/null; then
         echo -e "${DIM}○ не установлен${NC}"; return 1
     fi
+    local ver
+    ver="$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
+    if systemctl is-active docker &>/dev/null; then
+        echo -e "${GREEN}✓ установлен (${ver})${NC}"; return 0
+    fi
+    if [ "$(systemctl is-enabled docker 2>/dev/null)" = "disabled" ]; then
+        echo -e "${GREEN}✓ ${ver}, автозапуск выкл.${NC}"; return 0
+    fi
+    echo -e "${YELLOW}! ${ver}, не запущен${NC}"; return 1
+}
+
+# Cloudflare-плагин без credentials-файла нерабочий, поэтому «токен не задан» —
+# отдельное видимое состояние в меню, а не тихая недоделка
+CF_CREDENTIALS="/root/.secrets/certbot/cloudflare.ini"
+
+status_certbot() {
+    if ! pkg_installed certbot; then
+        echo -e "${DIM}○ не установлен${NC}"; return 1
+    fi
+    local has_nginx=false has_cf=false
+    pkg_installed python3-certbot-nginx && has_nginx=true
+    pkg_installed python3-certbot-dns-cloudflare && has_cf=true
+
+    if [ "$has_cf" = true ] && [ ! -s "$CF_CREDENTIALS" ]; then
+        echo -e "${YELLOW}! токен CF не задан${NC}"; return 1
+    fi
+    if [ "$has_nginx" = false ] && [ "$has_cf" = false ]; then
+        echo -e "${YELLOW}! без плагинов${NC}"; return 1
+    fi
+    local plugins=""
+    [ "$has_nginx" = true ] && plugins="nginx"
+    [ "$has_cf" = true ] && plugins="${plugins}${plugins:+,}CF"
+    echo -e "${GREEN}✓ certbot + ${plugins}${NC}"; return 0
 }
 
 status_fastfetch() {
@@ -295,17 +689,18 @@ status_zram() {
 }
 
 status_sshhardening() {
-    if [ -f /etc/ssh/sshd_config.d/10-hardening.conf ]; then
-        local pa
-        pa="$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}')"
-        if [ "$pa" = "no" ]; then
-            echo -e "${GREEN}✓ применено (пароль выключен)${NC}"; return 0
-        else
-            echo -e "${YELLOW}! конфиг есть, но passwordauthentication=${pa}${NC}"; return 1
+    if [ ! -f /etc/ssh/sshd_config.d/10-hardening.conf ]; then
+        # под прямым root пункт неприменим в принципе (нужен отдельный пользователь) —
+        # честнее сказать это сразу, чем показывать «не применено» и молчать о причине
+        if [ "$TARGET_USER" = "root" ]; then
+            echo -e "${DIM}— нужен обычный пользователь${NC}"; return 1
         fi
-    else
         echo -e "${DIM}○ не применено${NC}"; return 1
     fi
+    if [ "$SSHD_PASSWORDAUTH" = "no" ]; then
+        echo -e "${GREEN}✓ применено (пароль выключен)${NC}"; return 0
+    fi
+    echo -e "${YELLOW}! конфиг есть, но passwordauthentication=${SSHD_PASSWORDAUTH:-?}${NC}"; return 1
 }
 
 status_ufw() {
@@ -319,20 +714,227 @@ status_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # APPLY-функции
 # ═══════════════════════════════════════════════════════════════
+# usfc-обёртка — не отдельный пункт меню, ставится сама при первом запуске,
+# свой маркер, идемпотентно. Пропускаем для прямого root — sudo тут бесполезен
+# (и может быть даже не установлен на такой машине); зато сразу после создания
+# пользователя (switch_target_user) она ставится уже ему.
+# Это bash-ФУНКЦИЯ, а не alias: после того как дочерний sudo-процесс меню
+# завершится, функция сама делает "source ~/.bashrc" — но уже в ТЕКУЩЕЙ
+# интерактивной оболочке (функции выполняются в вызывающем шелле, не в
+# подпроцессе), так что новые алиасы/промпт подхватываются без ручного
+# source и без переподключения. USFC_RESOURCE гейтит fastfetch-автозапуск
+# (см. apply_fastfetch) — иначе баннер печатался бы второй раз при каждом
+# выходе из меню.
+install_usfc_wrapper() {
+    [ "$TARGET_USER" = "root" ] && return 0
+    local bashrc="${TARGET_HOME}/.bashrc" need_block=false
+    if grep -qF "# >>> vps-setup:self >>>" "$bashrc" 2>/dev/null; then
+        if grep -qF "alias usfc='sudo usfc'" "$bashrc" 2>/dev/null; then
+            sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$bashrc"
+            need_block=true
+        fi
+    else
+        need_block=true
+    fi
+    [ "$need_block" = false ] && return 0
+    cat >> "$bashrc" <<'EOF'
+
+# >>> vps-setup:self >>>
+usfc() {
+    sudo /usr/local/bin/usfc "$@"
+    USFC_RESOURCE=1 source ~/.bashrc 2>/dev/null
+    unset USFC_RESOURCE
+}
+# <<< vps-setup:self <<<
+EOF
+    chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$bashrc" 2>/dev/null
+}
+
+# Совет перезайти под новым пользователем — печатается и сразу, и ещё раз при
+# выходе из меню, чтобы не потерялся за выводом последующих установок
+RELOGIN_HINT_USER=""
+ROOT_PROMPT_SHOWN=false
+
+# переключает весь дальнейший контекст скрипта на нового пользователя: всё, что
+# ставится дальше (алиасы, fastfetch, tmux, starship), должно лечь ЕМУ, а не в
+# /root, откуда оно исчезнет из виду сразу после перелогина
+switch_target_user() {
+    local user="$1" home
+    home="$(getent passwd "$user" | cut -d: -f6)"
+    if [ -z "$home" ] || [ ! -d "$home" ]; then
+        log_error "Не удалось определить домашний каталог ${user} — контекст не переключаю"
+        return 1
+    fi
+    TARGET_USER="$user"
+    TARGET_HOME="$home"
+    install_usfc_wrapper
+    invalidate_statuses
+    RELOGIN_HINT_USER="$user"
+    log_info "Дальнейшие настройки применяются к ${BOLD}${user}${NC} ${DIM}(${home})${NC}"
+}
+
+print_relogin_hint() {
+    [ -z "$RELOGIN_HINT_USER" ] && return 0
+    local ip
+    ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    echo ""
+    log_warn "Разлогинься и подключись уже под новым пользователем:"
+    echo -e "      ${BOLD}ssh ${RELOGIN_HINT_USER}@${ip:-<ip-сервера>}${NC}"
+    log_info "Дальше просто ${BOLD}usfc${NC} — sudo писать не нужно"
+}
+
+apply_newuser() {
+    if [ "$BULK_MODE" = true ]; then
+        log_warn "Создание пользователя требует ввода имени и пароля — пропущено в пакетном режиме."
+        log_warn "Настройте отдельно пунктом $(item_number newuser)."
+        return
+    fi
+    if [ "$TARGET_USER" != "root" ]; then
+        log_info "Скрипт уже работает от имени ${TARGET_USER} — отдельный пользователь не нужен"
+        if ! ask_yn "Всё равно создать ещё одного пользователя с sudo?" N; then return; fi
+    fi
+
+    # на совсем минимальных образах sudo может отсутствовать — без него
+    # «добавить в группу sudo» превратилось бы в бессмысленный жест
+    if ! command -v sudo &>/dev/null || ! getent group sudo &>/dev/null; then
+        log_info "sudo не установлен — ставлю (без него группа sudo ничего не даёт)"
+        ensure_apt_updated
+        run_logged "sudo" apt-get install -y sudo || return 1
+        refresh_pkg_cache
+    fi
+
+    # ── имя ───────────────────────────────────────────────────────────────────
+    local name="" attempt=0 existing=false
+    while [ "$attempt" -lt 3 ]; do
+        attempt=$((attempt + 1))
+        echo -en "  ${BOLD}Имя нового пользователя${NC} ${DIM}(латиница, начиная с буквы):${NC} "
+        read -r name </dev/tty
+        if [ -z "$name" ]; then
+            log_error "Пустое имя"; name=""; continue
+        fi
+        if [[ ! "$name" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+            log_error "Недопустимое имя «${name}» — только строчные латинские буквы, цифры, _ и -, начиная с буквы"
+            name=""; continue
+        fi
+        if id -u "$name" &>/dev/null; then
+            log_warn "Пользователь ${name} уже существует"
+            if ask_yn "Использовать его и просто добавить в группу sudo?" N; then
+                existing=true
+                break
+            fi
+            name=""; continue
+        fi
+        break
+    done
+    if [ -z "$name" ]; then
+        log_error "Имя так и не задано — пользователь не создан"
+        return 1
+    fi
+
+    # ── ключи из /root: без них новый пользователь просто не сможет зайти ─────
+    # решаем это ДО пароля: пустой пароль допустим, только если ключ реально есть
+    local key_ok=false
+    if [ "$existing" = false ]; then
+        useradd -m -s /bin/bash "$name" || { log_error "Не удалось создать пользователя"; return 1; }
+        log_success "Пользователь ${name} создан"
+    fi
+
+    ensure_ssh_dir "$name" "$(getent passwd "$name" | cut -d: -f6)" || {
+        log_error "Не удалось подготовить ~/.ssh для ${name}"; return 1; }
+    local auth_keys="$REPLY_AUTHKEYS"
+    [ -s "$auth_keys" ] && key_ok=true
+
+    local root_keys="/root/.ssh/authorized_keys" n_keys=0
+    if [ -s "$root_keys" ]; then
+        n_keys="$(grep -c '^ssh-\|^ecdsa-\|^sk-' "$root_keys" 2>/dev/null || echo 0)"
+        log_info "В /root/.ssh/authorized_keys найдено ключей: ${n_keys}"
+        log_warn "Если ты заходишь на сервер по ключу — без копирования ${name} не сможет войти вообще"
+        if ask_yn "Скопировать эти ключи для ${name}?" Y; then
+            local line copied=0
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                grep -qxF "$line" "$auth_keys" 2>/dev/null && continue
+                echo "$line" >> "$auth_keys"
+                copied=$((copied + 1))
+            done < "$root_keys"
+            log_success "Скопировано ключей: ${copied}"
+            [ -s "$auth_keys" ] && key_ok=true
+        fi
+    fi
+    if ask_yn "Добавить ещё один публичный ключ вручную?" N; then
+        add_pubkey_interactive "$auth_keys" && key_ok=true
+    fi
+    # права могли уехать после дозаписи от root
+    local gid; gid="$(id -g "$name" 2>/dev/null || echo "$name")"
+    chown "${name}:${gid}" "$auth_keys" 2>/dev/null
+    chmod 600 "$auth_keys" 2>/dev/null
+
+    # ── пароль ────────────────────────────────────────────────────────────────
+    local pw1 pw2 pw_set=false
+    attempt=0
+    while [ "$attempt" -lt 3 ]; do
+        attempt=$((attempt + 1))
+        echo -en "  ${BOLD}Пароль для ${name}${NC} ${DIM}(Enter — без пароля, вход только по ключу):${NC} "
+        read -rs pw1 </dev/tty; echo ""
+        if [ -z "$pw1" ]; then
+            if [ "$key_ok" = true ]; then
+                passwd -l "$name" >/dev/null 2>&1
+                log_success "Пароль не задан и заблокирован — вход только по SSH-ключу"
+                pw_set=true
+                break
+            fi
+            log_error "Ни пароля, ни ключей — так пользователь не сможет войти вообще. Задай пароль."
+            continue
+        fi
+        echo -en "  ${BOLD}Повтори пароль:${NC} "
+        read -rs pw2 </dev/tty; echo ""
+        if [ "$pw1" != "$pw2" ]; then
+            log_error "Пароли не совпали"
+            continue
+        fi
+        [ "${#pw1}" -lt 8 ] && log_warn "Пароль короче 8 символов — на сервере, смотрящем в интернет, это слабо"
+        if printf '%s:%s\n' "$name" "$pw1" | chpasswd; then
+            log_success "Пароль установлен"
+            pw_set=true
+        else
+            log_error "Не удалось установить пароль"
+        fi
+        break
+    done
+    unset pw1 pw2
+    if [ "$pw_set" = false ] && [ "$key_ok" = false ]; then
+        log_error "У ${name} нет ни пароля, ни ключа — зайти под ним будет невозможно"
+        log_warn "Задай пароль вручную: sudo passwd ${name}"
+    fi
+
+    # ── sudo ──────────────────────────────────────────────────────────────────
+    if usermod -aG sudo "$name"; then
+        log_success "Пользователь ${name} добавлен в группу sudo"
+    else
+        log_error "Не удалось добавить ${name} в группу sudo"
+        return 1
+    fi
+
+    invalidate_statuses
+    switch_target_user "$name"
+    print_relogin_hint
+}
+
 apply_cli() {
     local need_install=false p
     for p in eza bat fd-find ripgrep zoxide ncdu; do
-        dpkg -s "$p" &>/dev/null || need_install=true
+        pkg_installed "$p" || need_install=true
     done
     command -v starship &>/dev/null || need_install=true
 
     if [ "$need_install" = true ]; then
         if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu, starship?"; then
-            apt-get install -y eza bat fd-find ripgrep zoxide ncdu \
-                && log_success "CLI-утилиты установлены" || log_error "Установка не удалась"
+            ensure_apt_updated
+            run_logged "CLI-утилиты (eza, bat, fd-find, ripgrep, zoxide, ncdu)" \
+                apt-get install -y eza bat fd-find ripgrep zoxide ncdu
+            refresh_pkg_cache
             if ! command -v starship &>/dev/null; then
-                curl -sS https://starship.rs/install.sh | sh -s -- -y \
-                    && log_success "starship установлен" || log_error "Установка starship не удалась"
+                run_logged "starship" bash -c 'curl -sS https://starship.rs/install.sh | sh -s -- -y'
             fi
         fi
     else
@@ -372,53 +974,214 @@ EOF
 
 apply_basepkgs() {
     if ask_yn "Установить базовый набор пакетов (${BASE_PKGS})?"; then
+        ensure_apt_updated
         # shellcheck disable=SC2086
-        apt-get install -y $BASE_PKGS \
-            && log_success "Базовый набор установлен" || log_error "Установка не удалась"
+        run_logged "Базовый набор пакетов" apt-get install -y $BASE_PKGS
+        refresh_pkg_cache
     fi
 }
 
 apply_nginx() {
-    if dpkg -s nginx-full &>/dev/null; then
-        log_info "nginx уже установлен"
-    else
+    if ! pkg_installed nginx-full; then
         if ! ask_yn "Установить nginx-full?"; then return; fi
-        apt-get install -y nginx-full || { log_error "Установка не удалась"; return 1; }
-        log_success "nginx-full установлен"
+        # спрашиваем ДО установки: ответ решает, дать ли postinst поднять сервис
+        local autostart=false
+        resolve_autostart NGINX_AUTOSTART "Запустить nginx и включить автозапуск?" && autostart=true
+        ensure_apt_updated
+        with_no_service_start run_logged "nginx-full" apt-get install -y nginx-full || return 1
+        refresh_pkg_cache
+        apply_service_autostart nginx "$autostart"
+        return
     fi
-    if ! systemctl is-active nginx &>/dev/null; then
-        if ask_yn "Запустить nginx и включить автозапуск?"; then
-            systemctl enable --now nginx >/dev/null \
-                && log_success "nginx запущен и включён в автозапуск" || log_error "Не удалось запустить nginx"
+
+    log_info "nginx-full уже установлен"
+    local enabled active
+    enabled="$(systemctl is-enabled nginx 2>/dev/null)"
+    active="$(systemctl is-active nginx 2>/dev/null)"
+    if [ "$active" = "active" ]; then
+        log_success "nginx запущен ${DIM}(автозапуск: ${enabled:-?})${NC}"
+        if [ "$enabled" != "enabled" ] && ask_yn "Включить автозапуск nginx при загрузке?" N; then
+            systemctl enable nginx >/dev/null 2>&1 && log_success "Автозапуск включён"
         fi
+    elif ask_yn "nginx не запущен. Запустить и включить автозапуск?" N; then
+        apply_service_autostart nginx true
     else
-        log_success "nginx уже запущен"
+        log_info "Оставляю nginx выключенным"
     fi
+}
+
+apply_certbot() {
+    ensure_apt_updated
+    if ! pkg_installed certbot; then
+        if ! ask_yn "Установить certbot (Let's Encrypt)?"; then return; fi
+        run_logged "certbot" apt-get install -y certbot || return 1
+        refresh_pkg_cache
+    else
+        log_info "certbot уже установлен: $(certbot --version 2>&1 | head -n1)"
+    fi
+
+    # ── плагин nginx (HTTP-01) ────────────────────────────────────────────────
+    if pkg_installed python3-certbot-nginx; then
+        log_success "Плагин nginx уже установлен"
+    elif ! pkg_installed nginx-full; then
+        log_info "nginx не установлен — плагин nginx пропускаю (поставь nginx и вернись сюда)"
+    elif ask_yn "Установить плагин nginx (HTTP-01, обычные сертификаты)?"; then
+        run_logged "python3-certbot-nginx" apt-get install -y python3-certbot-nginx && refresh_pkg_cache
+    fi
+
+    # ── плагин Cloudflare (DNS-01) ────────────────────────────────────────────
+    local want_cf=false
+    if pkg_installed python3-certbot-dns-cloudflare; then
+        want_cf=true
+        log_success "Плагин Cloudflare уже установлен"
+    elif ask_yn "Установить плагин Cloudflare (DNS-01, нужен для wildcard-сертификатов)?" N; then
+        if run_logged "python3-certbot-dns-cloudflare" apt-get install -y python3-certbot-dns-cloudflare; then
+            refresh_pkg_cache
+            want_cf=true
+            # apt тянет python3-cloudflare 2.20.x — единственную версию в архиве.
+            # Она печатает большой WARNING про «апгрейд без пиннинга»: срабатывает
+            # в конструкторе клиента (CloudFlare/cloudflare.py), то есть при
+            # РЕАЛЬНОМ выпуске сертификата, а не при установке. Заглушить нельзя —
+            # warn_warning_2_20() сам делает simplefilter('always'), перебивая
+            # PYTHONWARNINGS и -W ignore. К apt-установке претензия не относится:
+            # версия закреплена зависимостью пакета (<< 3.0), это не pip-апгрейд.
+            # Предупреждаем заранее, чтобы баннер не выглядел поломкой.
+            if dpkg-query -W -f='${Version}' python3-cloudflare 2>/dev/null | grep -q '^2\.20'; then
+                log_warn "При выпуске сертификата certbot напечатает большой WARNING про"
+                log_warn "python-cloudflare 2.20. Это безвредно и не отключается: версия"
+                log_warn "закреплена пакетом (<< 3.0), на выпуск сертификатов не влияет."
+            fi
+        fi
+    fi
+
+    [ "$want_cf" = true ] && apply_cloudflare_credentials
+    apply_certbot_tls_assets
+}
+
+# Токен Cloudflare. Кладём в /root: certbot всегда запускается от root, а при более
+# открытых правах он сам ругается на небезопасный credentials-файл
+apply_cloudflare_credentials() {
+    if [ -s "$CF_CREDENTIALS" ]; then
+        log_success "Credentials-файл уже есть: ${CF_CREDENTIALS}"
+        if ! ask_yn "Перезаписать его новым токеном?" N; then return; fi
+    elif ! ask_yn "Создать ${CF_CREDENTIALS} с API-токеном Cloudflare?" N; then
+        log_warn "Без токена плагин Cloudflare работать НЕ будет — выпуск сертификатов упадёт"
+        log_warn "В меню этот пункт так и будет показывать «токен CF не задан»"
+        log_info "Создать вручную (права Zone:DNS:Edit):"
+        echo -e "      ${DIM}mkdir -p $(dirname "$CF_CREDENTIALS") && chmod 700 $(dirname "$CF_CREDENTIALS")${NC}"
+        echo -e "      ${DIM}echo 'dns_cloudflare_api_token = ТОКЕН' > ${CF_CREDENTIALS}${NC}"
+        echo -e "      ${DIM}chmod 600 ${CF_CREDENTIALS}${NC}"
+        cf_wildcard_hint
+        return
+    fi
+
+    echo -en "  ${BOLD}API-токен Cloudflare${NC} ${DIM}(права Zone:DNS:Edit, ввод скрыт):${NC} "
+    local token
+    read -rs token </dev/tty; echo ""
+    if [ -z "$token" ]; then
+        log_error "Пустой токен — файл не создан"
+        return 1
+    fi
+
+    install -d -m 700 "$(dirname "$CF_CREDENTIALS")" || { log_error "Не удалось создать каталог"; return 1; }
+    umask 077
+    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDENTIALS" || {
+        log_error "Не удалось записать ${CF_CREDENTIALS}"; return 1; }
+    chmod 600 "$CF_CREDENTIALS"
+    chown root:root "$CF_CREDENTIALS"
+    log_success "Credentials-файл создан: ${CF_CREDENTIALS} (600, root:root)"
+    cf_wildcard_hint
+}
+
+cf_wildcard_hint() {
+    log_info "Выпуск wildcard-сертификата:"
+    echo -e "      ${DIM}certbot certonly --dns-cloudflare \\\\${NC}"
+    echo -e "      ${DIM}  --dns-cloudflare-credentials ${CF_CREDENTIALS} \\\\${NC}"
+    echo -e "      ${DIM}  -d example.com -d \"*.example.com\"${NC}"
+}
+
+# ssl-dhparams.pem и options-ssl-nginx.conf создаёт только nginx-*installer* certbot'а.
+# При выпуске wildcard через `certbot certonly` (а это ровно то, ради чего ставят
+# DNS-01) их не появится — и типовой конфиг nginx, который на них ссылается, положит
+# сервер при старте. Оба файла уже лежат внутри пакета certbot: генерировать
+# dhparam через openssl не нужно, там та же стандартная группа ffdhe2048.
+apply_certbot_tls_assets() {
+    if ! pkg_installed nginx-full; then
+        return
+    fi
+    local want=false name src dst
+    for name in ssl-dhparams.pem options-ssl-nginx.conf; do
+        [ -f "/etc/letsencrypt/${name}" ] || want=true
+    done
+    if [ "$want" = false ]; then
+        log_success "TLS-заготовки в /etc/letsencrypt уже на месте"
+        return
+    fi
+    if ! ask_yn "Положить TLS-заготовки certbot (ssl-dhparams.pem, options-ssl-nginx.conf) в /etc/letsencrypt?" N; then
+        return
+    fi
+
+    install -d -m 755 /etc/letsencrypt
+    for name in ssl-dhparams.pem options-ssl-nginx.conf; do
+        dst="/etc/letsencrypt/${name}"
+        if [ -f "$dst" ]; then
+            log_info "${name} уже есть — не трогаю"
+            continue
+        fi
+        # путь внутри пакета ищем в рантайме: он менялся между версиями certbot,
+        # хардкодить его — напрашиваться на молчаливую поломку
+        src="$(find /usr/lib/python3/dist-packages /usr/lib/python3*/site-packages \
+                -name "$name" -type f 2>/dev/null | head -n1)"
+        if [ -z "$src" ]; then
+            log_warn "${name} не найден внутри пакетов certbot — пропускаю (не выдумываю содержимое)"
+            continue
+        fi
+        if install -m 644 "$src" "$dst"; then
+            log_success "${name} → ${dst}"
+        else
+            log_error "Не удалось скопировать ${name}"
+        fi
+    done
 }
 
 apply_docker() {
     if ! ask_yn "Установить Docker + Docker Compose (официальный репозиторий)?"; then return; fi
-    apt-get install -y ca-certificates curl || { log_error "Не удалось поставить зависимости"; return 1; }
+    # спрашиваем ДО установки — ответ решает, дать ли postinst поднять демон
+    local autostart=false
+    resolve_autostart DOCKER_AUTOSTART "Запустить Docker и включить автозапуск?" && autostart=true
+
+    ensure_apt_updated
+    run_logged "Зависимости Docker" apt-get install -y ca-certificates curl || return 1
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || { log_error "Не удалось скачать GPG-ключ Docker"; return 1; }
+    run_logged "GPG-ключ Docker" \
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
     chmod a+r /etc/apt/keyrings/docker.asc
     local codename
     codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" \
         > /etc/apt/sources.list.d/docker.list
-    apt-get update -qq
+    run_logged "Списки пакетов Docker" apt-get update -qq
     if ! apt-cache policy docker-ce-cli 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
         log_warn "У Docker пока нет пакетов под '${codename}' — переключаюсь на noble (24.04, совместимо)"
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
             > /etc/apt/sources.list.d/docker.list
-        apt-get update -qq
+        run_logged "Списки пакетов Docker (noble)" apt-get update -qq
     fi
-    apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
-        || { log_error "Установка Docker не удалась"; return 1; }
-    systemctl enable --now docker >/dev/null
-    usermod -aG docker "$TARGET_USER"
-    log_success "Docker установлен: $(docker --version)"
-    log_info "Пользователь ${TARGET_USER} добавлен в группу docker — перелогинься для применения без sudo"
+    with_no_service_start run_logged "Docker CE + Compose" \
+        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+    refresh_pkg_cache
+
+    apply_service_autostart docker "$autostart"
+
+    # под прямым root группа docker бессмысленна: root и так может всё,
+    # а usermod -aG docker root только путает вывод
+    if [ "$TARGET_USER" != "root" ]; then
+        usermod -aG docker "$TARGET_USER"
+        log_info "Пользователь ${TARGET_USER} добавлен в группу docker — перелогинься для работы без sudo"
+    else
+        log_info "Работаем от root — в группу docker никого не добавляю"
+    fi
+    log_success "Docker установлен: $(docker --version 2>/dev/null)"
 }
 
 apply_fastfetch() {
@@ -431,9 +1194,13 @@ apply_fastfetch() {
     fi
     if [ "$need_ppa" = true ]; then
         if ask_yn "Установить/обновить fastfetch (через PPA)?"; then
-            add-apt-repository -y ppa:zhangsongcui3371/fastfetch
-            apt-get update -qq
-            apt-get install -y fastfetch && log_success "fastfetch: $(fastfetch --version)" || log_error "Установка не удалась"
+            ensure_apt_updated
+            run_logged "PPA fastfetch" add-apt-repository -y ppa:zhangsongcui3371/fastfetch
+            run_logged "Списки пакетов PPA" apt-get update -qq
+            if run_logged "fastfetch" apt-get install -y fastfetch; then
+                refresh_pkg_cache
+                log_info "Версия: $(fastfetch --version 2>/dev/null)"
+            fi
         fi
     else
         log_success "fastfetch уже подходящей версии"
@@ -442,7 +1209,8 @@ apply_fastfetch() {
     # конфиг и автозапуск в .bashrc пишем сразу следом — не отдельным пунктом меню
     if ! command -v fastfetch &>/dev/null; then return; fi
 
-    sudo -u "$TARGET_USER" mkdir -p "${TARGET_HOME}/.config/fastfetch"
+    install -d -o "$TARGET_USER" -g "$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" \
+        -m 755 "${TARGET_HOME}/.config/fastfetch"
     if [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
         log_info "config.jsonc уже есть"
     elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
@@ -482,7 +1250,9 @@ EOF
 apply_tmux() {
     if ! command -v tmux &>/dev/null; then
         if ask_yn "Установить tmux?"; then
-            apt-get install -y tmux && log_success "tmux установлен" || { log_error "Установка не удалась"; return 1; }
+            ensure_apt_updated
+            run_logged "tmux" apt-get install -y tmux || return 1
+            refresh_pkg_cache
         else
             return
         fi
@@ -507,7 +1277,7 @@ EOF
 
 apply_dockerlog() {
     if ! command -v docker &>/dev/null; then
-        log_info "Docker не установлен — сначала установи Docker (пункт 5)"
+        log_info "Docker не установлен — сначала установи Docker (пункт $(item_number docker))"
         return
     fi
     [ -f /etc/docker/daemon.json ] && log_warn "daemon.json уже существует, будет дополнен (не перезаписан целиком)"
@@ -538,7 +1308,9 @@ PYEOF
 
 apply_fail2ban() {
     if ! ask_yn "Установить fail2ban?"; then return; fi
-    apt-get install -y fail2ban || { log_error "Установка не удалась"; return 1; }
+    ensure_apt_updated
+    run_logged "fail2ban" apt-get install -y fail2ban || return 1
+    refresh_pkg_cache
     cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
@@ -553,7 +1325,9 @@ EOF
 
 apply_unattended() {
     if ! ask_yn "Включить автообновление security-патчей?"; then return; fi
-    apt-get install -y unattended-upgrades || { log_error "Установка не удалась"; return 1; }
+    ensure_apt_updated
+    run_logged "unattended-upgrades" apt-get install -y unattended-upgrades || return 1
+    refresh_pkg_cache
     cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -603,7 +1377,8 @@ apply_zram() {
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
                 zram_percent="$(ask_value "Размер zram в % от RAM?" "$cur_percent")"
-                if apt-get install -y zram-tools; then
+                ensure_apt_updated
+                if run_logged "zram-tools" apt-get install -y zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
                     printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -624,7 +1399,8 @@ apply_zram() {
     elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
         local zram_percent
         zram_percent="$(ask_value "Размер zram в % от RAM?" "${ZRAM_BULK_PERCENT:-75}")"
-        if apt-get install -y zram-tools; then
+        ensure_apt_updated
+        if run_logged "zram-tools" apt-get install -y zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
             printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -701,17 +1477,59 @@ apply_zram() {
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
         log_success "earlyoom уже включён"
     elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
-        if apt-get install -y earlyoom; then
+        ensure_apt_updated
+        if run_logged "earlyoom" apt-get install -y earlyoom; then
             systemctl enable --now earlyoom >/dev/null
-            log_success "earlyoom установлен"
-        else
-            log_error "Установка earlyoom не удалась"
+            log_success "earlyoom включён"
         fi
+        refresh_pkg_cache
     fi
 
     echo ""
     log_info "Текущее состояние свопа:"
     swapon --show 2>/dev/null | sed 's/^/      /'
+}
+
+# ── Общая работа с ~/.ssh ─────────────────────────────────────────────────────
+# Специально без `sudo -u`: на голом root-образе (а это ровно наш сценарий, когда
+# пользователя ещё не создали) sudo может быть не установлен вообще, и такие
+# строки падали бы молча. install(1) умеет владельца и права сам, без подмены uid.
+REPLY_AUTHKEYS=''
+ensure_ssh_dir() {
+    local user="$1" home="$2" dir="${2}/.ssh" gid
+    gid="$(id -g "$user" 2>/dev/null)" || gid="$user"
+    install -d -o "$user" -g "$gid" -m 700 "$dir" || return 1
+    REPLY_AUTHKEYS="${dir}/authorized_keys"
+    if [ -f "$REPLY_AUTHKEYS" ]; then
+        chown "${user}:${gid}" "$REPLY_AUTHKEYS"
+        chmod 600 "$REPLY_AUTHKEYS"
+    else
+        install -o "$user" -g "$gid" -m 600 /dev/null "$REPLY_AUTHKEYS" || return 1
+    fi
+}
+
+# просит вставить публичный ключ и дописывает его в authorized_keys.
+# Возвращает 0, только если ключ реально добавлен (или уже был) — на это
+# опирается apply_newuser, решая, можно ли оставить пользователя без пароля
+add_pubkey_interactive() {
+    local auth_keys="$1" pubkey_line
+    echo -en "  ${BOLD}Вставь публичный ключ одной строкой:${NC} "
+    read -r pubkey_line </dev/tty
+    if [ -z "$pubkey_line" ]; then
+        log_info "Пусто — ключ не добавлен"
+        return 1
+    fi
+    if [[ ! "$pubkey_line" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-|sk-ssh-|sk-ecdsa-) ]]; then
+        log_error "Не похоже на публичный SSH-ключ — не добавляю"
+        return 1
+    fi
+    if grep -qF "$pubkey_line" "$auth_keys" 2>/dev/null; then
+        log_info "Такой ключ уже есть"
+        return 0
+    fi
+    echo "$pubkey_line" >> "$auth_keys"
+    log_success "Ключ добавлен"
+    return 0
 }
 
 apply_sshhardening() {
@@ -721,39 +1539,22 @@ apply_sshhardening() {
         return
     fi
     if [ "$BULK_MODE" = true ]; then
-        log_warn "SSH hardening требует явного подтверждения — пропущено в bulk-режиме. Настройте отдельно пунктом 11."
+        log_warn "SSH hardening требует явного подтверждения — пропущено в пакетном режиме. Настройте отдельно пунктом $(item_number sshhardening)."
         return
     fi
     if ! ask_yn "Настроить SSH hardening для ${TARGET_USER} (ключи вместо пароля, запрет root-логина)?" N; then return; fi
 
-    local SSH_DIR="${TARGET_HOME}/.ssh"
-    local AUTH_KEYS="${SSH_DIR}/authorized_keys"
-    sudo -u "$TARGET_USER" mkdir -p "$SSH_DIR"
-    chmod 700 "$SSH_DIR"
-    sudo -u "$TARGET_USER" touch "$AUTH_KEYS"
-    chmod 600 "$AUTH_KEYS"
-    chown -R "${TARGET_USER}:${TARGET_USER}" "$SSH_DIR"
+    ensure_ssh_dir "$TARGET_USER" "$TARGET_HOME" || { log_error "Не удалось подготовить ~/.ssh"; return 1; }
+    local AUTH_KEYS="$REPLY_AUTHKEYS"
 
     if [ -s "$AUTH_KEYS" ]; then
-        log_info "В authorized_keys уже есть $(grep -c '^ssh-\|^ecdsa-' "$AUTH_KEYS" 2>/dev/null || echo 0) ключ(ей)"
+        log_info "В authorized_keys уже есть $(grep -c '^ssh-\|^ecdsa-\|^sk-' "$AUTH_KEYS" 2>/dev/null || echo 0) ключ(ей)"
     else
         log_info "authorized_keys пока пуст"
     fi
 
     if ask_yn "Добавить новый публичный ключ (вставить содержимое .pub со своей машины)?"; then
-        echo -en "  ${BOLD}Вставь публичный ключ одной строкой:${NC} "
-        local pubkey_line
-        read -r pubkey_line </dev/tty
-        if [[ "$pubkey_line" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-) ]]; then
-            if grep -qF "$pubkey_line" "$AUTH_KEYS" 2>/dev/null; then
-                log_info "Такой ключ уже есть"
-            else
-                echo "$pubkey_line" >> "$AUTH_KEYS"
-                log_success "Ключ добавлен"
-            fi
-        else
-            log_error "Не похоже на публичный SSH-ключ — не добавляю"
-        fi
+        add_pubkey_interactive "$AUTH_KEYS"
     fi
 
     if [ ! -s "$AUTH_KEYS" ]; then
@@ -813,8 +1614,8 @@ EOF
         # отдельно сверяем через sshd -T, что PasswordAuthentication реально no
         # (например, без "Include .../sshd_config.d/*.conf" в базовом sshd_config
         # наш дроп-ин просто не подхватился бы, а ключевой вход при этом всё равно работал)
-        local pa
-        pa="$(sshd -T 2>/dev/null | awk '/^passwordauthentication /{print $2; exit}')"
+        refresh_sshd_config
+        local pa="$SSHD_PASSWORDAUTH"
         if [ "$pa" != "no" ]; then
             log_error "Вход по ключу работает, но sshd -T показывает passwordauthentication=${pa:-?} — конфиг не применился"
             log_error "Вероятная причина: в /etc/ssh/sshd_config нет 'Include /etc/ssh/sshd_config.d/*.conf'"
@@ -841,6 +1642,7 @@ EOF
         log_error "После рестарта sshd вход по ключу НЕ проходит — АВАРИЙНЫЙ ОТКАТ"
         rm -f /etc/ssh/sshd_config.d/10-hardening.conf
         systemctl restart ssh
+        refresh_sshd_config
         cleanup_test_key
         log_error "Конфиг откачен. Текущая сессия жива — ничего не сломано."
         return 1
@@ -855,11 +1657,13 @@ apply_ufw() {
     echo ""
     log_warn "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его"
     if [ "$BULK_MODE" = true ]; then
-        log_warn "UFW требует явного подтверждения — пропущено в bulk-режиме. Настройте отдельно пунктом 12."
+        log_warn "UFW требует явного подтверждения — пропущено в пакетном режиме. Настройте отдельно пунктом $(item_number ufw)."
         return
     fi
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
-    apt-get install -y ufw || { log_error "Установка UFW не удалась"; return 1; }
+    ensure_apt_updated
+    run_logged "UFW" apt-get install -y ufw || return 1
+    refresh_pkg_cache
     ufw allow "${SSH_PORT}"/tcp >/dev/null
     while read -r p; do
         [ -n "$p" ] && ufw allow "${p}"/tcp >/dev/null
@@ -914,14 +1718,16 @@ disable_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # Меню
 # ═══════════════════════════════════════════════════════════════
-ITEM_IDS=(basepkgs cli fastfetch tmux docker nginx dockerlog fail2ban unattended zram sshhardening ufw)
+ITEM_IDS=(newuser basepkgs cli fastfetch tmux docker nginx certbot dockerlog fail2ban unattended zram sshhardening ufw)
 ITEM_TITLES=(
+    "Пользователь + sudo"
     "Базовые пакеты"
     "CLI-утилиты + starship"
     "fastfetch"
     "tmux"
     "Docker + Compose"
     "nginx-full"
+    "Certbot + плагины"
     "Docker log rotation"
     "fail2ban"
     "unattended-upgrades"
@@ -929,15 +1735,53 @@ ITEM_TITLES=(
     "SSH hardening"
     "UFW firewall"
 )
-ITEM_SECTIONS=(база база база база сервисы сервисы защита защита защита защита защита защита)
+ITEM_SECTIONS=(система база база база база сервисы сервисы сервисы защита защита защита защита защита защита)
 DISABLE_SUPPORTED=(dockerlog fail2ban unattended zram ufw)
+
+# Буквы разделов. Раньше раскрытие B/S/P было зашито числами прямо в main()
+# ("B) valid+=(1 2 3 4)"), и любой новый пункт молча ломал его. Теперь это
+# единственный источник истины, а номера выводятся из ITEM_SECTIONS.
+SECTION_NAMES=(система база сервисы защита)
+SECTION_LETTERS=(C B S P)
+
+# item_number <id> → номер пункта в меню. Нужен сообщениям вида «настройте
+# отдельно пунктом N»: захардкоженные там числа разъезжались с меню при каждом
+# добавлении пункта, причём молча
+item_number() {
+    local id="${1:-}" i
+    for i in "${!ITEM_IDS[@]}"; do
+        [ "${ITEM_IDS[$i]}" = "$id" ] && { printf '%s' "$((i + 1))"; return 0; }
+    done
+    printf '?'
+    return 1
+}
+
+# expand_section_letter <буква> → номера пунктов этого раздела (через пробел)
+REPLY_SECTION_ITEMS=''
+expand_section_letter() {
+    local letter="${1:-}" i sec want=''
+    for i in "${!SECTION_LETTERS[@]}"; do
+        [ "${SECTION_LETTERS[$i]}" = "$letter" ] && { want="${SECTION_NAMES[$i]}"; break; }
+    done
+    REPLY_SECTION_ITEMS=''
+    [ -z "$want" ] && return 1
+    for i in "${!ITEM_SECTIONS[@]}"; do
+        sec="${ITEM_SECTIONS[$i]}"
+        [ "$sec" = "$want" ] && REPLY_SECTION_ITEMS="${REPLY_SECTION_ITEMS}${REPLY_SECTION_ITEMS:+ }$((i + 1))"
+    done
+    return 0
+}
 
 # Параллельно ITEM_IDS — команды отката для справочного экрана (R). Пусто там,
 # где пункт входит в DISABLE_SUPPORTED: для них show_rollback_reference() сама
 # генерирует единую строку вместо ручных команд, так что нумерация/маркеры
 # никогда не расходятся с реальным меню.
 ROLLBACK_NOTES=(
-"sudo apt purge micro certbot python3-certbot-nginx unzip htop bind9-dnsutils jq rsync
+"sudo deluser --remove-home <имя>          # удалить пользователя вместе с /home
+     sudo gpasswd -d <имя> sudo               # или просто отобрать sudo, оставив аккаунт
+     # СНАЧАЛА убедись, что остаётся хоть один способ попасть на сервер (root по ключу
+     # или другой sudo-пользователь) — иначе закроешь себе доступ насовсем"
+"sudo apt purge micro unzip htop bind9-dnsutils jq rsync
      (осторожно: curl/git/ca-certificates часто нужны другим программам — не удаляй не глядя)"
 "sudo apt purge eza bat fd-find ripgrep zoxide ncdu
      sudo rm -f \"\$(command -v starship)\"   # если ставился этим же пунктом"
@@ -955,6 +1799,10 @@ ROLLBACK_NOTES=(
      sudo apt purge nginx-full
      sudo rm -rf /etc/nginx
      # УДАЛЯЕТ конфиги сайтов в /etc/nginx — если уже настраивал поверх, забэкапь"
+"sudo apt purge certbot python3-certbot-nginx python3-certbot-dns-cloudflare
+     sudo rm -f ${CF_CREDENTIALS}
+     sudo rm -f /etc/letsencrypt/ssl-dhparams.pem /etc/letsencrypt/options-ssl-nginx.conf
+     # /etc/letsencrypt/live и archive НЕ трогай, если сертификаты ещё используются"
 ""
 ""
 ""
@@ -973,146 +1821,264 @@ item_supports_disable() {
 }
 
 # ── Адаптивная раскладка — один источник истины для ширины разделителей/рамок ──
-# возвращает не сырую ширину терминала, а уже за вычетом 2-пробельного отступа,
-# который hr()/box_line()/строки меню всегда добавляют слева — иначе рамка
+# ВАЖНО про соглашение в этом блоке: функции ниже пишут результат в глобальные
+# REPLY_*, а не в stdout. Это некрасиво, но принципиально: вызов через $(...) —
+# это fork, а на ОДНУ перерисовку меню их приходится под сотню. Раньше здесь ещё и
+# запускался python3 на каждую ячейку таблицы, что превращало отрисовку экрана
+# в 3-6 секунд на слабой VPS. Теперь весь layout считается в самом bash, без единого
+# внешнего процесса.
+#
+# TERM_W — не сырая ширина терминала, а уже за вычетом 2-пробельного отступа,
+# который hr()/box_line()/строки меню всегда добавляют слева: иначе рамка
 # оказывается на 2 колонки шире реального терминала, и на настоящем pty это
-# рвёт многобайтовые "─" переносом строки посреди символа
-term_width() {
+# рвёт многобайтовые "─" переносом строки посреди символа.
+TERM_W=78
+refresh_term_width() {
     local w
     w="$(tput cols 2>/dev/null)"
     [[ "$w" =~ ^[0-9]+$ ]] || w=80
     [ "$w" -lt 60 ] && w=60
     [ "$w" -gt 100 ] && w=100
-    echo "$((w - 2))"
+    TERM_W=$((w - 2))
 }
 
-# N штук "─" одной строкой. Специально не через "printf '%*s' | tr ' ' '─'" —
-# на боксах со сломанным/негенерированным locale (LANG=en_US.UTF-8 объявлен,
-# но сам locale не собран — нередкая история именно на свежих VPS-образах) tr
-# начинает работать побайтово и режет 3-байтовый UTF-8 "─" на мусорные байты.
-# printf с "%.0s" многобайтовый символ не трогает вообще — печатает его из
-# формат-строки как есть на каждой итерации, независимо от locale
+# N штук "─" одной строкой → REPLY_DASH, с мемоизацией: за один экран одни и те же
+# ширины запрашиваются десятки раз. Набирается посимвольным циклом в самом bash —
+# ни seq, ни tr, ни printf-с-подстановкой. Ноль форков и полная независимость от
+# locale: раньше tr на боксах с необобранным locale (LANG объявлен, но сам locale
+# не собран — нередкая история на свежих VPS-образах) работал побайтово и резал
+# 3-байтовый "─" на мусор.
+declare -A _DASH_CACHE
+REPLY_DASH=''
 repeat_dash() {
-    local n="$1"
-    printf -- '─%.0s' $(seq 1 "$n")
+    local n="${1:-0}"
+    [ "$n" -lt 0 ] && n=0
+    if [ -z "${_DASH_CACHE[$n]:-}" ]; then
+        local s='' i=0
+        while [ "$i" -lt "$n" ]; do s+='─'; i=$((i + 1)); done
+        _DASH_CACHE[$n]="$s"
+    fi
+    REPLY_DASH="${_DASH_CACHE[$n]}"
 }
 
 hr() {
-    local color="${1:-$DIM}" width
-    width="$(term_width)"
-    echo -e "  ${color}$(repeat_dash "$width")${NC}"
+    local color="${1:-$DIM}"
+    repeat_dash "$TERM_W"
+    echo -e "  ${color}${REPLY_DASH}${NC}"
 }
 
 # box_line color left mid right w1 w2 ... — одна строка рамки (┌─┬─┐ / ├─┼─┤ / └─┴─┘)
 box_line() {
     local color="$1" left="$2" mid="$3" right="$4"; shift 4
-    local out="$left" first=true w seg
+    local out="$left" first=true w
     for w in "$@"; do
-        seg="$(repeat_dash "$((w + 2))")"
+        repeat_dash "$((w + 2))"
         if [ "$first" = true ]; then
-            out="${out}${seg}"; first=false
+            out="${out}${REPLY_DASH}"; first=false
         else
-            out="${out}${mid}${seg}"
+            out="${out}${mid}${REPLY_DASH}"
         fi
     done
     echo -e "  ${color}${out}${right}${NC}"
 }
 
-pad_title() {
-    local s="$1" width="$2" len pad
-    len="$(python3 -c "import sys; print(len(sys.argv[1]))" "$s" 2>/dev/null || echo "${#s}")"
-    pad=$((width - len))
-    [ "$pad" -lt 1 ] && pad=1
-    printf '%s%*s' "$s" "$pad" ""
+# снимает цветовые коды → REPLY_PLAIN.
+# два разных вида "цветового кода" встречаются в этом файле: настоящий ESC-байт
+# (\x1b) — так выглядит вывод, прошедший через echo -e/printf %b (например,
+# результат status_* функций) — и буквальный 4-символьный текст "\033" — так
+# выглядит цвет, если переменную типа $BOLD (объявлена в '...', без раскрытия
+# escape-последовательностей) подставили в строку напрямую, минуя echo -e.
+# Оба варианта не несут видимой ширины и должны вырезаться одинаково.
+REPLY_PLAIN=''
+strip_ansi() {
+    local s="${1-}" out=''
+    while [[ "$s" == *$'\e['* ]]; do
+        out+="${s%%$'\e['*}"
+        s="${s#*$'\e['}"
+        # обрыв без завершающего "m" не должен зациклить нас на той же строке
+        if [[ "$s" == *m* ]]; then s="${s#*m}"; else s=''; fi
+    done
+    s="${out}${s}"; out=''
+    while [[ "$s" == *'\033['* ]]; do
+        out+="${s%%'\033['*}"
+        s="${s#*'\033['}"
+        if [[ "$s" == *m* ]]; then s="${s#*m}"; else s=''; fi
+    done
+    REPLY_PLAIN="${out}${s}"
 }
 
-# видимая (без ANSI-кодов) длина строки, Cyrillic-safe — общий счётчик для
-# паддинга/обрезки цветного текста (статусная колонка, рамка легенды)
+# видимая (без ANSI-кодов) длина строки в СИМВОЛАХ → REPLY_LEN. Cyrillic-safe:
+# общий счётчик для паддинга/обрезки цветного текста (статусная колонка, легенда)
+REPLY_LEN=0
 visible_len() {
-    local plain
-    # два разных вида "цветового кода" встречаются в этом файле: настоящий ESC-байт
-    # (\x1b) — так выглядит вывод, прошедший через echo -e/printf %b (например,
-    # результат status_* функций) — и буквальный 4-символьный текст "\033" — так
-    # выглядит цвет, если переменную типа $BOLD (объявлена в '...', без раскрытия
-    # escape-последовательностей) подставили в строку напрямую, минуя echo -e.
-    # Оба варианта не несут видимой ширины и должны вырезаться одинаково.
-    plain="$(printf '%s' "$1" | sed -E 's/\x1b\[[0-9;]*m//g; s/\\033\[[0-9;]*m//g')"
-    python3 -c "import sys; print(len(sys.argv[1]))" "$plain" 2>/dev/null || echo "${#plain}"
+    strip_ansi "${1-}"
+    if [ "$CHARLEN_NATIVE" = true ]; then
+        REPLY_LEN="${#REPLY_PLAIN}"
+    else
+        # locale не собран — ${#s} мерит байты. Континуационные байты UTF-8
+        # (10xxxxxx) собственной ширины не несут: выкидываем их, и на каждый
+        # символ остаётся ровно один ведущий байт — это и есть длина в символах
+        local lead="${REPLY_PLAIN//[$'\x80'-$'\xbf']/}"
+        REPLY_LEN="${#lead}"
+    fi
 }
 
-# обрезает цветную строку до width видимых символов, добавляя "…" если длиннее.
-# Предполагает, что вся строка обёрнута РОВНО в один цветовой код (так и есть
-# у всех status_* — один ${COLOR}...${NC} на всю строку)
+# дополняет строку пробелами до width → REPLY_PAD
+REPLY_PAD=''
+pad_title() {
+    local s="${1-}" width="${2:-0}" pad
+    visible_len "$s"
+    pad=$((width - REPLY_LEN))
+    # минимум 1 пробел паддинга — на этом держится расчёт idx_w в show_menu()
+    [ "$pad" -lt 1 ] && pad=1
+    printf -v REPLY_PAD '%s%*s' "$s" "$pad" ''
+}
+
+# ячейка сетки фиксированной ширины (цветной текст + добивка пробелами) → REPLY_CELL.
+# В отличие от pad_title() не форсирует минимум 1 пробел: ячейки стоят вплотную
+REPLY_CELL=''
+grid_cell() {
+    local content="${1-}" width="${2:-0}" cpad
+    visible_len "$content"
+    cpad=$((width - REPLY_LEN))
+    [ "$cpad" -lt 0 ] && cpad=0
+    printf -v REPLY_CELL '%s%*s' "$content" "$cpad" ''
+}
+
+# обрезает цветную строку до width видимых символов, добавляя "..." если длиннее,
+# → REPLY_TRUNC. Предполагает, что вся строка обёрнута РОВНО в один цветовой код
+# (так и есть у всех status_* — один ${COLOR}...${NC} на всю строку)
+REPLY_TRUNC=''
 truncate_colored() {
-    local text="$1" width="$2" plain color body
-    if [ "$(visible_len "$text")" -le "$width" ]; then
-        printf '%s' "$text"
+    local text="${1-}" width="${2:-0}"
+    visible_len "$text"
+    if [ "$REPLY_LEN" -le "$width" ]; then
+        REPLY_TRUNC="$text"
         return
     fi
-    plain="$(printf '%s' "$text" | sed -E 's/\x1b\[[0-9;]*m//g; s/\\033\[[0-9;]*m//g')"
-    # цветовой код в начале строки — в любом из двух видов (см. visible_len)
-    color="$(printf '%s' "$text" | grep -oE '^(\x1b\[[0-9;]*m|\\033\[[0-9;]*m)')"
-    body="$(python3 -c "
-import sys
-s, w = sys.argv[1], int(sys.argv[2])
-print(s[:max(w-3,0)] + '...')
-" "$plain" "$width")"
+    local plain="$REPLY_PLAIN" color='' body keep=$((width - 3))
+    [ "$keep" -lt 0 ] && keep=0
+    # цветовой код в начале строки — в любом из двух видов (см. strip_ansi)
+    if [[ "$text" == $'\e['* || "$text" == '\033['* ]] && [[ "$text" == *m* ]]; then
+        color="${text%%m*}m"
+    fi
+    if [ "$CHARLEN_NATIVE" = true ]; then
+        body="${plain:0:keep}"
+    else
+        # ${plain:i:1} здесь режет БАЙТЫ, а не символы. Идём вперёд и считаем
+        # только ведущие байты: континуационные (10xxxxxx) дописываем к текущему
+        # символу, не увеличивая счётчик. Останавливаемся ровно на начале
+        # символа номер keep+1 — то есть режем по символам, а не пополам
+        local i=0 n=0 ch
+        body=''
+        while [ "$i" -lt "${#plain}" ]; do
+            ch="${plain:i:1}"
+            case "$ch" in
+                [$'\x80'-$'\xbf']) ;;
+                *) [ "$n" -ge "$keep" ] && break; n=$((n + 1)) ;;
+            esac
+            body+="$ch"
+            i=$((i + 1))
+        done
+    fi
     # NC добавляем только если реально был цветовой код — иначе для обычного
     # текста (без цвета) это дописывает буквальный "\033[0m" как текст,
     # который потом портит и вид, и подсчёт длины в pad_title
     if [ -n "$color" ]; then
-        printf '%s%s%s' "$color" "$body" "$NC"
+        REPLY_TRUNC="${color}${body}...${NC}"
     else
-        printf '%s' "$body"
+        REPLY_TRUNC="${body}..."
     fi
 }
 
+# ── Кэш статусов ──────────────────────────────────────────────────────────────
+# status_* — самые дорогие функции в скрипте (dpkg, systemctl, sshd -T), а зовут их
+# и ради текста для меню, и ради кода возврата (process_item, фильтр pending в main).
+# Считаем всё разом и держим до ближайшего действия, которое реально что-то меняет.
+declare -A STATUS_TEXT STATUS_RC
+STATUS_DIRTY=true
+
+invalidate_statuses() { STATUS_DIRTY=true; }
+
+refresh_statuses() {
+    [ "$STATUS_DIRTY" = false ] && return 0
+    local id out rc
+    for id in "${ITEM_IDS[@]}"; do
+        out="$("status_${id}")"; rc=$?
+        STATUS_TEXT[$id]="$out"
+        STATUS_RC[$id]="$rc"
+    done
+    STATUS_DIRTY=false
+}
+
+# код возврата status_<id> из кэша — замена россыпи `status_"$id" >/dev/null; [ $? ... ]`
+item_applied() {
+    refresh_statuses
+    [ "${STATUS_RC[${1}]:-1}" -eq 0 ]
+}
+
+REPLY_COLOR=''
+section_color_for() {
+    case "${1:-}" in
+        система)  REPLY_COLOR="$YELLOW" ;;
+        база)     REPLY_COLOR="$CYAN" ;;
+        сервисы)  REPLY_COLOR="$BLUE" ;;
+        защита)   REPLY_COLOR="$MAGENTA" ;;
+        *)        REPLY_COLOR="$NC" ;;
+    esac
+}
+
 show_menu() {
+    refresh_term_width
+    refresh_statuses
     show_header
     echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
+    if [ "$TARGET_USER" = "root" ]; then
+        echo -e "  ${YELLOW}${BOLD}!${NC} ${YELLOW}Работа из-под root: часть настроек ляжет в /root и пропадёт после перелогина${NC}"
+    fi
     echo ""
 
-    # ширины колонок — фикс для #/Раздел/Пункт, Статус забирает остаток term_width()
+    # ширины колонок — фикс для #/Раздел/Пункт, Статус забирает остаток TERM_W
     # idx_w=3, не 2: pad_title всегда добавляет минимум 1 пробел-паддинга (см. её
     # реализацию), поэтому при ширине ровно "12" (2 символа) паддинг обнулялся бы
-    # и принудительно поднимался до 1, ломая выравнивание рамки именно на пунктах 10-12
-    local idx_w=3 section_w=10 title_w=26 status_w inner_w
-    inner_w="$(term_width)"
+    # и принудительно поднимался до 1, ломая выравнивание рамки именно на пунктах 10-14
+    local idx_w=3 section_w=10 title_w=26 status_w inner_w=$TERM_W
     # -7: 5 символов рамки (┌/│×3/┐ или их аналоги на разных строках) + 2 — паддинг
     # самой статусной колонки, которую эта формула вычисляет (её собственные "+2"
     # не должны компенсироваться дважды)
     status_w=$(( inner_w - (idx_w + 2) - (section_w + 2) - (title_w + 2) - 7 ))
-    # 6 — минимум, при котором рамка ещё точно влезает в нижнюю границу term_width()
+    # 6 — минимум, при котором рамка ещё точно влезает в нижнюю границу TERM_W
     # (60 сырых колонок терминала); при более узком клампе сама рамка вылезала бы
     # за пределы терминала независимо от длины текста статуса
     [ "$status_w" -lt 6 ] && status_w=6
 
+    local c_idx c_sec c_title c_status
     box_line "$DIM" '┌' '┬' '┐' "$idx_w" "$section_w" "$title_w" "$status_w"
+    pad_title "#"      "$idx_w";     c_idx="$REPLY_PAD"
+    pad_title "Раздел" "$section_w"; c_sec="$REPLY_PAD"
+    pad_title "Пункт"  "$title_w";   c_title="$REPLY_PAD"
+    pad_title "Статус" "$status_w";  c_status="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
-        "$(pad_title "#" "$idx_w")" "$(pad_title "Раздел" "$section_w")" \
-        "$(pad_title "Пункт" "$title_w")" "$(pad_title "Статус" "$status_w")"
+        "$c_idx" "$c_sec" "$c_title" "$c_status"
     box_line "$DIM" '├' '┼' '┤' "$idx_w" "$section_w" "$title_w" "$status_w"
 
     local i=1 id section section_color
     for id in "${ITEM_IDS[@]}"; do
-        local status_line status_len status_pad
+        local status_line status_pad
         section="${ITEM_SECTIONS[$((i-1))]}"
-        case "$section" in
-            база)     section_color="$CYAN" ;;
-            сервисы)  section_color="$BLUE" ;;
-            защита)   section_color="$MAGENTA" ;;
-        esac
-        status_line="$(status_"$id")"
+        section_color_for "$section"; section_color="$REPLY_COLOR"
         # длинный статус (например, большой список недостающих пакетов) обрезаем
-        # с "…" вместо того, чтобы дать ему вылезти за правую рамку — рамка должна
+        # с "..." вместо того, чтобы дать ему вылезти за правую рамку — рамка должна
         # оставаться ровной на любой строке
-        status_line="$(truncate_colored "$status_line" "$status_w")"
-        status_len="$(visible_len "$status_line")"
-        status_pad=$((status_w - status_len))
+        truncate_colored "${STATUS_TEXT[$id]:-}" "$status_w"; status_line="$REPLY_TRUNC"
+        visible_len "$status_line"
+        status_pad=$((status_w - REPLY_LEN))
         [ "$status_pad" -lt 0 ] && status_pad=0
+        pad_title "$i" "$idx_w";                          c_idx="$REPLY_PAD"
+        pad_title "$section" "$section_w";                c_sec="$REPLY_PAD"
+        pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w";  c_title="$REPLY_PAD"
         printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
-            "$(pad_title "$i" "$idx_w")" "$(pad_title "$section" "$section_w")" \
-            "$(pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w")" "$status_line" "$status_pad" ""
+            "$c_idx" "$c_sec" "$c_title" "$status_line" "$status_pad" ""
         i=$((i+1))
     done
     box_line "$DIM" '└' '┴' '┘' "$idx_w" "$section_w" "$title_w" "$status_w"
@@ -1122,31 +2088,34 @@ show_menu() {
     # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
     # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
     local legend_w=$((inner_w - 4)) line
-    local lbl_choice lbl_sections lbl_commands legend1 legend2 legend3 legend4
-    lbl_choice="$(pad_title "Выбор:" 10)"
-    lbl_sections="$(pad_title "Разделы:" 10)"
-    lbl_commands="$(pad_title "Команды:" 10)"
+    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend3 legend4
+    pad_title "Выбор:"   10; lbl_choice="$REPLY_PAD"
+    pad_title "Разделы:" 10; lbl_sections="$REPLY_PAD"
+    pad_title "Команды:" 10; lbl_commands="$REPLY_PAD"
+    pad_title ""         10; lbl_blank="$REPLY_PAD"
     legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
-    legend2="$(pad_title "" 10)${DIM}буквы разделов тоже можно сочетать (B,S); применённый пункт «защиты» — повторный выбор предложит отключить${NC}"
+    legend2="${lbl_blank}${DIM}буквы разделов тоже можно сочетать (B,S); применённый пункт «защиты» — повторный выбор предложит отключить${NC}"
 
-    # Разделы:/Команды: — сеткой в 4 равные колонки вместо инлайн-списка через
-    # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой
-    grid_cell() {
-        local content="$1" width="$2" clen cpad
-        clen="$(visible_len "$content")"
-        cpad=$((width - clen))
-        [ "$cpad" -lt 0 ] && cpad=0
-        printf '%s%*s' "$content" "$cpad" ""
-    }
-    local item_w=$(( (legend_w - 10) / 4 ))
-    legend3="${BOLD}${lbl_sections}${NC}$(grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}база${NC}" "$item_w")$(grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}" "$item_w")$(grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w")${BOLD}A${NC} всё"
-    legend4="${BOLD}${lbl_commands}${NC}$(grid_cell "${CYAN}${BOLD}H${NC} алиасы" "$item_w")$(grid_cell "${CYAN}${BOLD}R${NC} откат" "$item_w")$(grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w")${CYAN}${BOLD}Q${NC} выход"
+    # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
+    # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
+    # Делим на 5, а не на 4: разделов теперь четыре (C/B/S/P) плюс хвостовое «A всё»
+    local item_w=$(( (legend_w - 10) / 5 )) g1 g2 g3 g4
+    [ "$item_w" -lt 10 ] && item_w=10
+    grid_cell "${YELLOW}${BOLD}C${NC} ${YELLOW}система${NC}"  "$item_w"; g1="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}база${NC}"         "$item_w"; g2="$REPLY_CELL"
+    grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}"      "$item_w"; g3="$REPLY_CELL"
+    grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w"; g4="$REPLY_CELL"
+    legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} всё"
+    grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g1="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}R${NC} откат"   "$item_w"; g2="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g3="$REPLY_CELL"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${CYAN}${BOLD}Q${NC} выход"
     box_line "$DIM" '┌' '┬' '┐' "$legend_w"
     for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
-        local ltrunc llen lpad
-        ltrunc="$(truncate_colored "$line" "$legend_w")"
-        llen="$(visible_len "$ltrunc")"
-        lpad=$((legend_w - llen))
+        local ltrunc lpad
+        truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
+        visible_len "$ltrunc"
+        lpad=$((legend_w - REPLY_LEN))
         [ "$lpad" -lt 0 ] && lpad=0
         printf "  ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" "$ltrunc" "$lpad" ""
     done
@@ -1154,31 +2123,86 @@ show_menu() {
     echo ""
 }
 
+# process_item <номер> [позиция-в-пачке] [всего-в-пачке]
+# Два последних аргумента нужны только для шапки "[3/7]" в пакетном режиме.
+# Возвращает код возврата apply_*/disable_* — на нём строится итоговая сводка.
 process_item() {
-    local idx="$1"
-    local id="${ITEM_IDS[$((idx-1))]}"
+    local idx="$1" pos="${2:-}" total="${3:-}"
+    local id="${ITEM_IDS[$((idx-1))]}" title="${ITEM_TITLES[$((idx-1))]}" prefix=""
+    [ -n "$pos" ] && [ -n "$total" ] && prefix="${DIM}[${pos}/${total}]${NC} "
     echo ""
-    if item_supports_disable "$id"; then
-        status_"$id" >/dev/null
-        if [ $? -eq 0 ]; then
-            echo -e "  ${CYAN}${BOLD}→ Отключить: ${ITEM_TITLES[$((idx-1))]}${NC}"
-            hr
-            "disable_${id}"
-            return
-        fi
+    local rc=0
+    if item_supports_disable "$id" && item_applied "$id"; then
+        echo -e "  ${prefix}${CYAN}${BOLD}▸ Отключить: ${title}${NC}"
+        hr
+        "disable_${id}"; rc=$?
+    else
+        echo -e "  ${prefix}${CYAN}${BOLD}▸ ${title}${NC}"
+        hr
+        "apply_${id}"; rc=$?
     fi
-    echo -e "  ${CYAN}${BOLD}→ ${ITEM_TITLES[$((idx-1))]}${NC}"
-    hr
-    "apply_${id}"
+    # что-то могло измениться — статусы в кэше больше не заслуживают доверия
+    invalidate_statuses
+    return "$rc"
+}
+
+# ── Итоговая сводка пакетного прогона ─────────────────────────────────────────
+# Результат берём из РЕАЛЬНОГО состояния системы, а не из самоотчёта функций:
+# многие apply_* возвращают 0 и когда пользователь просто отказался.
+SUMMARY_TITLES=()
+SUMMARY_RESULTS=()
+SUMMARY_TIMES=()
+SUMMARY_FAILED=()
+
+summary_reset() { SUMMARY_TITLES=(); SUMMARY_RESULTS=(); SUMMARY_TIMES=(); SUMMARY_FAILED=(); }
+
+summary_record() {
+    local idx="$1" rc="$2" secs="$3"
+    local id="${ITEM_IDS[$((idx-1))]}" title="${ITEM_TITLES[$((idx-1))]}" result
+    if [ "$rc" -ne 0 ]; then
+        result="${RED}✗ ошибка${NC}"
+        SUMMARY_FAILED+=("$title")
+    elif "status_${id}" >/dev/null 2>&1; then
+        result="${GREEN}✓ готово${NC}"
+    else
+        result="${DIM}— пропущено${NC}"
+    fi
+    SUMMARY_TITLES+=("$title")
+    SUMMARY_RESULTS+=("$result")
+    SUMMARY_TIMES+=("${secs}s")
+}
+
+show_summary() {
+    [ "${#SUMMARY_TITLES[@]}" -eq 0 ] && return 0
+    refresh_term_width
+    echo ""
+    echo -e "  ${BOLD}Итоги прогона${NC}"
+    local name_w=26 res_w=14 time_w=6 i t r pad
+    box_line "$DIM" '┌' '┬' '┐' "$name_w" "$res_w" "$time_w"
+    for i in "${!SUMMARY_TITLES[@]}"; do
+        truncate_colored "${SUMMARY_TITLES[$i]}" "$name_w"; t="$REPLY_TRUNC"
+        pad_title "$t" "$name_w"; t="$REPLY_PAD"
+        truncate_colored "${SUMMARY_RESULTS[$i]}" "$res_w"; r="$REPLY_TRUNC"
+        visible_len "$r"; pad=$((res_w - REPLY_LEN)); [ "$pad" -lt 0 ] && pad=0
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}\n" \
+            "$t" "$r" "$pad" "" "${SUMMARY_TIMES[$i]}"
+    done
+    box_line "$DIM" '└' '┴' '┘' "$name_w" "$res_w" "$time_w"
+    if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
+        echo ""
+        for t in "${SUMMARY_FAILED[@]}"; do
+            log_warn "${t}: подробности в ${USFC_LOG}"
+        done
+    fi
 }
 
 show_aliases_help() {
+    refresh_term_width
     show_header
     echo -e "  ${BOLD}Алиасы${NC} ${DIM}(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)${NC}"
     echo ""
 
-    local col1=8 col2=30 col3 inner_w
-    inner_w="$(term_width)"
+    local col1=8 col2=30 col3 inner_w=$TERM_W
     # 6 = 4 бордюрных символа (│×3 + внешние) + 2 паддинга третьей колонки,
     # которую эта формула вычисляет (её собственные "+2" не должны
     # компенсироваться дважды) — тот же приём, что и в show_menu()
@@ -1198,26 +2222,29 @@ show_aliases_help() {
     )
 
     box_line "$DIM" '┌' '┬' '┐' "$col1" "$col2" "$col3"
-    local hdr3="Что делает" hdr3_len hdr3_pad
-    # col3 динамический (зависит от term_width()) и на узких терминалах может
+    local hdr3="Что делает" hdr3_pad h1 h2
+    # col3 динамический (зависит от TERM_W) и на узких терминалах может
     # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
-    hdr3_len="$(visible_len "$hdr3")"; hdr3_pad=$((col3 - hdr3_len)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
+    visible_len "$hdr3"; hdr3_pad=$((col3 - REPLY_LEN)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
+    pad_title "Алиас" "$col1";            h1="$REPLY_PAD"
+    pad_title "Реальная команда" "$col2"; h2="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
-        "$(pad_title "Алиас" "$col1")" "$(pad_title "Реальная команда" "$col2")" "$hdr3" "$hdr3_pad" ""
+        "$h1" "$h2" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
-    local row alias cmd desc cmd_t desc_t cmd_len cmd_pad desc_len desc_pad
+    local row alias cmd desc cmd_t desc_t cmd_pad desc_pad a_t
     for row in "${rows[@]}"; do
         IFS='|' read -r alias cmd desc <<< "$row"
-        cmd_t="$(truncate_colored "$cmd" "$col2")"
-        desc_t="$(truncate_colored "$desc" "$col3")"
+        truncate_colored "$cmd" "$col2";  cmd_t="$REPLY_TRUNC"
+        truncate_colored "$desc" "$col3"; desc_t="$REPLY_TRUNC"
         # руками, не через pad_title(): та форсирует минимум 1 пробел паддинга,
         # а truncate_colored() при обрезке всегда возвращает СТРОКУ РОВНО В width
         # символов — pad был бы 0, форс поднял бы его до 1, и рамка бы поехала
         # (та же схема, что уже используется для status_line/легенды в show_menu())
-        cmd_len="$(visible_len "$cmd_t")";   cmd_pad=$((col2 - cmd_len));  [ "$cmd_pad" -lt 0 ] && cmd_pad=0
-        desc_len="$(visible_len "$desc_t")"; desc_pad=$((col3 - desc_len)); [ "$desc_pad" -lt 0 ] && desc_pad=0
+        visible_len "$cmd_t";  cmd_pad=$((col2 - REPLY_LEN));  [ "$cmd_pad" -lt 0 ] && cmd_pad=0
+        visible_len "$desc_t"; desc_pad=$((col3 - REPLY_LEN)); [ "$desc_pad" -lt 0 ] && desc_pad=0
+        pad_title "$alias" "$col1"; a_t="$REPLY_PAD"
         printf "  ${DIM}│${NC} ${CYAN}%s${NC} ${DIM}│${NC} %s%*s ${DIM}│${NC} %s%*s ${DIM}│${NC}\n" \
-            "$(pad_title "$alias" "$col1")" \
+            "$a_t" \
             "$cmd_t" "$cmd_pad" "" \
             "$desc_t" "$desc_pad" ""
     done
@@ -1231,17 +2258,14 @@ show_aliases_help() {
 }
 
 show_rollback_reference() {
+    refresh_term_width
     show_header
     echo -e "  ${BOLD}Откат по пунктам${NC} ${DIM}— только справка, ни одна из этих команд не выполняется скриптом сама${NC}"
     echo ""
     local i=1 id section section_color note
     for id in "${ITEM_IDS[@]}"; do
         section="${ITEM_SECTIONS[$((i-1))]}"
-        case "$section" in
-            база)     section_color="$CYAN" ;;
-            сервисы)  section_color="$BLUE" ;;
-            защита)   section_color="$MAGENTA" ;;
-        esac
+        section_color_for "$section"; section_color="$REPLY_COLOR"
         echo -e "  ${section_color}${BOLD}[$i] ${ITEM_TITLES[$((i-1))]}${NC}"
         if item_supports_disable "$id"; then
             echo -e "     ${DIM}уже откатывается прямо в меню — выбери пункт [$i] ещё раз, скрипт сам увидит, что применено, и предложит отключить${NC}"
@@ -1269,7 +2293,55 @@ uninstall_self() {
     fi
 }
 
+show_usage() {
+    cat <<EOF
+usfc ${VERSION} — UbuntuServer Fast Configuration
+  https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration
+
+Использование: sudo usfc [опции]
+
+Без опций открывается интерактивное меню.
+
+Опции:
+  -h, --help       эта справка
+  -V, --version    версия и выход
+      --no-update  не проверять и не ставить обновления самого usfc
+      --verbose    показывать сырой вывод команд вместо спиннера
+
+Переменные окружения:
+  USFC_NO_UPDATE=1     то же, что --no-update
+  USFC_VERBOSE=1       то же, что --verbose
+  USFC_KEEP_LOCALE=1   не форсировать LC_ALL=C.UTF-8
+
+Лог всех выполненных команд: ${USFC_LOG}
+EOF
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -h|--help)    show_usage; exit 0 ;;
+            -V|--version) echo "$VERSION"; exit 0 ;;
+            --no-update)  USFC_NO_UPDATE=1 ;;
+            --verbose)    USFC_VERBOSE=1 ;;
+            *)
+                echo "Неизвестная опция: $1" >&2
+                echo "" >&2
+                show_usage >&2
+                exit 2
+                ;;
+        esac
+        shift
+    done
+}
+
 main() {
+    # curl за VERSION стартует ПЕРВЫМ и крутится в фоне, пока идёт вся локальная
+    # работа ниже — так проверка обновлений остаётся на каждом запуске, но
+    # перестаёт быть последовательной задержкой перед первым экраном
+    start_update_check
+    log_init
+
     show_header
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
     log_info "SSH-порт: ${SSH_PORT}"
@@ -1284,39 +2356,35 @@ main() {
     # source и без переподключения. USFC_RESOURCE гейтит fastfetch-автозапуск
     # (см. apply_fastfetch) — иначе баннер печатался бы второй раз при каждом
     # выходе из меню.
-    local BASHRC="${TARGET_HOME}/.bashrc" need_self_block=false
-    if [ "$TARGET_USER" != "root" ]; then
-        if grep -qF "# >>> vps-setup:self >>>" "$BASHRC" 2>/dev/null; then
-            if grep -qF "alias usfc='sudo usfc'" "$BASHRC" 2>/dev/null; then
-                sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$BASHRC"
-                need_self_block=true
-            fi
-        else
-            need_self_block=true
-        fi
-    fi
-    if [ "$need_self_block" = true ]; then
-        cat >> "$BASHRC" <<'EOF'
+    install_usfc_wrapper
 
-# >>> vps-setup:self >>>
-usfc() {
-    sudo /usr/local/bin/usfc "$@"
-    USFC_RESOURCE=1 source ~/.bashrc 2>/dev/null
-    unset USFC_RESOURCE
-}
-# <<< vps-setup:self <<<
-EOF
-        chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC" 2>/dev/null
-    fi
+    # apt-get update со старта убран: списки нужны только перед реальной установкой,
+    # и ensure_apt_updated возьмёт их сам, если они успели протухнуть. Просто открыть
+    # меню и посмотреть статусы теперь не стоит ни одного сетевого запроса.
+    refresh_pkg_cache
 
-    # apt update один раз за сессию — дальше все apt install по всему меню используют свежие списки,
-    # отдельного пункта "обновление системы" больше нет (apt upgrade — дело юзера, не скрипта)
-    apt-get update -qq 2>/dev/null
-
-    # check_for_update возвращает 0, если реально что-то показал (есть апдейт / сеть недоступна) —
-    # тогда стоит дать прочитать. Если 1 — всё тихо (последняя версия или локальная новее репозитория),
-    # сразу в меню без лишнего Enter.
+    # Версию сверяем при КАЖДОМ запуске — но curl уже крутится в фоне (см. main),
+    # пока считался кэш пакетов, так что ждать почти нечего.
     if check_for_update; then
+        pause
+    fi
+
+    # Голый root — самый частый способ получить VPS. Предлагаем завести нормального
+    # пользователя ДО того, как что-то поставится в /root и потеряется при перелогине.
+    if [ "$TARGET_USER" = "root" ] && [ "$ROOT_PROMPT_SHOWN" = false ]; then
+        ROOT_PROMPT_SHOWN=true
+        echo ""
+        log_warn "Скрипт запущен от имени root."
+        log_info "РЕКОМЕНДУЮ создать обычного пользователя с sudo: работать из-под root"
+        log_info "небезопасно, SSH hardening без отдельного пользователя не работает вообще,"
+        log_info "а алиасы/fastfetch/tmux сейчас лягут в /root и пропадут после перелогина."
+        echo ""
+        if ask_yn "Создать пользователя сейчас?" Y; then
+            apply_newuser
+            invalidate_statuses
+        else
+            log_info "Ок. Пункт 1 в меню доступен в любой момент."
+        fi
         pause
     fi
 
@@ -1338,20 +2406,19 @@ EOF
                 local tok upper i
                 for tok in "${nums[@]}"; do
                     [ -z "$tok" ] && continue
-                    upper="$(echo "$tok" | tr '[:lower:]' '[:upper:]')"
-                    case "$upper" in
-                        B) valid+=(1 2 3 4) ;;
-                        S) valid+=(5 6) ;;
-                        P) valid+=(7 8 9 10 11 12) ;;
-                        A) for ((i = 1; i <= ${#ITEM_IDS[@]}; i++)); do valid+=("$i"); done ;;
-                        *)
-                            if [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
-                                valid+=("$tok")
-                            else
-                                log_error "Нет пункта «${tok}»"
-                            fi
-                            ;;
-                    esac
+                    upper="${tok^^}"
+                    if [ "$upper" = "A" ]; then
+                        for ((i = 1; i <= ${#ITEM_IDS[@]}; i++)); do valid+=("$i"); done
+                    elif expand_section_letter "$upper"; then
+                        # номера раздела выводятся из ITEM_SECTIONS, а не зашиты числами —
+                        # добавление пункта больше не может разойтись с буквами
+                        # shellcheck disable=SC2206
+                        valid+=($REPLY_SECTION_ITEMS)
+                    elif [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
+                        valid+=("$tok")
+                    else
+                        log_error "Нет пункта «${tok}»"
+                    fi
                 done
 
                 # убрать дубликаты, сохраняя порядок (могут возникнуть при пересечении, например "3,B")
@@ -1365,7 +2432,7 @@ EOF
                 valid=("${dedup[@]}")
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта, буква раздела (B/S/P/A), можно сочетать через пробел/запятую, либо H, R, U, Q"
+                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо H, R, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
@@ -1374,11 +2441,14 @@ EOF
                 else
                     # несколько пунктов разом — сначала убираем то, что уже применено
                     # (иначе "B,S" при частично готовой системе будет зря переспрашивать про то, что и так стоит)
-                    local -a pending=() id
+                    local -a pending=() pending_ids=()
+                    local id
                     for n in "${valid[@]}"; do
                         id="${ITEM_IDS[$((n-1))]}"
-                        status_"$id" >/dev/null
-                        [ $? -ne 0 ] && pending+=("$n")
+                        if ! item_applied "$id"; then
+                            pending+=("$n")
+                            pending_ids+=("$id")
+                        fi
                     done
 
                     echo ""
@@ -1388,33 +2458,62 @@ EOF
                     else
                         log_info "Не применено из выбранного: ${pending[*]} (${#pending[@]} шт.)"
                         log_info "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу"
-                        # пункт 10 (zram) — единственное исключение: % под zram и МБ
-                        # резервного swap-файла спрашиваем один раз здесь, ДО BULK_MODE=true
-                        # (пока ask_value ещё реально интерактивна), а не молча дефолтим
-                        if printf '%s\n' "${pending[@]}" | grep -qx 10; then
-                            read_swap_state
-                            if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
-                                ZRAM_BULK_PERCENT="$(ask_value "Размер zram в % от RAM?" 75)"
-                            fi
-                            if [ "$SWAP_ACTIVE" != true ]; then
-                                SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
-                            fi
-                        fi
+
+                        # Всё, что нельзя молча задефолтить, спрашиваем ЗДЕСЬ — до
+                        # BULK_MODE=true, пока ask_yn/ask_value ещё интерактивны.
+                        # Сверяемся по id, а не по номеру пункта: номера меняются при
+                        # добавлении пунктов, id — нет.
+                        local pid
+                        for pid in "${pending_ids[@]}"; do
+                            case "$pid" in
+                                zram)
+                                    read_swap_state
+                                    if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
+                                        ZRAM_BULK_PERCENT="$(ask_value "Размер zram в % от RAM?" 75)"
+                                    fi
+                                    if [ "$SWAP_ACTIVE" != true ]; then
+                                        SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
+                                    fi
+                                    ;;
+                                nginx)
+                                    ask_yn "Запускать nginx после установки (и включать автозапуск)?" N \
+                                        && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
+                                    ;;
+                                docker)
+                                    ask_yn "Запускать Docker после установки (и включать автозапуск)?" N \
+                                        && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
+                                    ;;
+                            esac
+                        done
+
                         if ask_yn "Применить сразу?"; then
                             BULK_MODE=true
+                            summary_reset
+                            local pos=0 rc0 t0
                             for num in "${pending[@]}"; do
-                                process_item "$num"
+                                pos=$((pos + 1))
+                                now_s; t0="$REPLY_NOW"
+                                process_item "$num" "$pos" "${#pending[@]}"; rc0=$?
+                                now_s
+                                summary_record "$num" "$rc0" "$((REPLY_NOW - t0))"
                             done
                             BULK_MODE=false
+                            show_summary
                         fi
                         ZRAM_BULK_PERCENT=""
                         SWAP_BULK_MB=""
+                        # shellcheck disable=SC2034
+                        NGINX_AUTOSTART=""
+                        # shellcheck disable=SC2034
+                        DOCKER_AUTOSTART=""
                         pause
                     fi
                 fi
                 ;;
         esac
     done
+
+    print_relogin_hint
 
     if [ -f /var/run/reboot-required ]; then
         echo ""
@@ -1423,4 +2522,9 @@ EOF
     echo ""
 }
 
-main
+# USFC_SOURCE_ONLY=1 — загрузить функции, не запуская меню. Нужно тестам,
+# заодно защищает от случайного `source setup.sh`
+if [ -z "${USFC_SOURCE_ONLY:-}" ]; then
+    parse_args "$@"
+    main
+fi

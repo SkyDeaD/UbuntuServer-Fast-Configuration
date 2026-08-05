@@ -1,0 +1,59 @@
+name: lint
+
+# setup.sh раздаётся по сырой ссылке и обновляет сам себя при каждом запуске —
+# битый скрипт в main разъедется по всем серверам, где стоит usfc. Поэтому
+# синтаксис и линтер проверяются на каждый push, а не когда-нибудь потом.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Синтаксис (bash -n)
+        run: |
+          bash -n src/setup.sh
+          bash -n install.sh
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning src/setup.sh install.sh tests/*.sh
+
+      - name: Тесты раскладки во всех локалях
+        run: |
+          # Функции отрисовки меню переписаны с python3 на чистый bash — тест
+          # сверяет их со старыми реализациями и проверяет инварианты рамки.
+          # Прогоняем и с рабочей UTF-8-локалью, и с побайтовым фолбэком.
+          for cfg in "LANG=C.UTF-8" "LANG=en_US.UTF-8" \
+                     "USFC_KEEP_LOCALE=1 LANG=C" "USFC_KEEP_LOCALE=1 LANG=POSIX"; do
+            echo "── $cfg ──"
+            env $cfg bash tests/test_layout.sh src/setup.sh
+          done
+
+      - name: Массивы меню параллельны
+        run: |
+          # ITEM_TITLES/ITEM_SECTIONS/ROLLBACK_NOTES обязаны совпадать по длине
+          # с ITEM_IDS — разъехавшиеся индексы ломают и нумерацию, и раскраску,
+          # причём молча
+          USFC_SOURCE_ONLY=1 bash -c '
+            source src/setup.sh
+            n=${#ITEM_IDS[@]}
+            for name in ITEM_TITLES ITEM_SECTIONS ROLLBACK_NOTES; do
+              declare -n arr="$name"
+              if [ "${#arr[@]}" -ne "$n" ]; then
+                echo "$name: ${#arr[@]} элементов против ${n} в ITEM_IDS" >&2
+                exit 1
+              fi
+            done
+            for id in "${ITEM_IDS[@]}"; do
+              declare -F "status_${id}" >/dev/null || { echo "нет status_${id}" >&2; exit 1; }
+              declare -F "apply_${id}"  >/dev/null || { echo "нет apply_${id}"  >&2; exit 1; }
+            done
+            echo "меню согласовано: ${n} пунктов"
+          '
