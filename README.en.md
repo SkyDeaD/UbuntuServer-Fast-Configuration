@@ -48,7 +48,7 @@ Installs itself as the `usfc` command and opens the menu right away — no waiti
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping, and finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`) — per-item help: what each item does, its current status and how to roll it back. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`) — per-item help: what each item does, its current status and how to roll it back. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
 
 ### Running on a bare server (root only)
 
@@ -61,7 +61,7 @@ Plenty of hosts hand you a VPS with nothing but `root`. The script notices and *
   Создать пользователя сейчас? [Y/n]:
 ```
 
-It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, and offers to **copy the keys from `/root/.ssh/authorized_keys`** — without that the new user simply can't log in if you reach the server by key. An empty password is allowed: the account is then key-only.
+It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, and offers to **copy the keys from `/root/.ssh/authorized_keys`** — without that the new user simply can't log in if you reach the server by key. Passwords shorter than 8 characters are rejected: the server faces the internet, and brute-forcing runs around the clock. An empty password is allowed — the account is then key-only.
 
 The script then switches to the new user inside the running session, so aliases, fastfetch and tmux land in their home rather than `/root`. On exit it reminds you to reconnect as that user.
 
