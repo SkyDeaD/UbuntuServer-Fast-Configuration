@@ -63,6 +63,12 @@ BULK_MODE=false
 ZRAM_BULK_PERCENT=""
 SWAP_BULK_MB=""
 
+# Состояние свопа — заполняется read_swap_state(). Объявлены здесь, чтобы
+# обращение к ним до первого вызова не роняло скрипт из-за `set -u`
+ZRAM_ACTIVE=false; ZRAM_PRIO=""
+SWAP_ACTIVE=false; SWAP_PRIO=""; SWAP_PATH=""
+SWAP_TYPE=""; SWAP_SIZE_MB=0; SWAP_USED_MB=0
+
 # ═══════════════════════════════════════════════════════════════
 # Лог и запуск длинных команд
 # ═══════════════════════════════════════════════════════════════
@@ -112,17 +118,23 @@ now_s() {
 }
 
 RUN_LOGGED_PID=''
+CURSOR_HIDDEN=false
 # курсор возвращаем в любом случае — иначе Ctrl-C посреди установки оставит
-# пользователя в терминале без курсора
+# пользователя в терминале без курсора. Но только если мы его реально прятали:
+# безусловный tput cnorm подмешивал управляющие последовательности в вывод
+# даже при обычном выходе из меню, в том числе при перенаправлении в файл
 cleanup_spinner() {
     [ -n "$RUN_LOGGED_PID" ] && kill "$RUN_LOGGED_PID" 2>/dev/null
     RUN_LOGGED_PID=''
-    tput cnorm 2>/dev/null
+    if [ "$CURSOR_HIDDEN" = true ]; then
+        tput cnorm 2>/dev/null
+        CURSOR_HIDDEN=false
+    fi
 }
 
 _spin_wait() {
     local pid="$1" desc="$2" started="$3" i=0 frame
-    tput civis 2>/dev/null
+    tput civis 2>/dev/null && CURSOR_HIDDEN=true
     while kill -0 "$pid" 2>/dev/null; do
         frame="${SPINNER_FRAMES:$((i % SPINNER_N)):1}"
         now_s
@@ -130,7 +142,10 @@ _spin_wait() {
         i=$((i + 1))
         sleep 0.15
     done
-    tput cnorm 2>/dev/null
+    if [ "$CURSOR_HIDDEN" = true ]; then
+        tput cnorm 2>/dev/null
+        CURSOR_HIDDEN=false
+    fi
     printf '\r%*s\r' "$((TERM_W + 6))" ''
 }
 
@@ -226,16 +241,126 @@ ask_value() {
     echo "$reply"
 }
 
+# ── Шапка ─────────────────────────────────────────────────────────────────────
+LOGO_LINES=(
+'██╗   ██╗███████╗███████╗ ██████╗'
+'██║   ██║██╔════╝██╔════╝██╔════╝'
+'██║   ██║███████╗█████╗  ██║     '
+'██║   ██║╚════██║██╔══╝  ██║     '
+'╚██████╔╝███████║██║     ╚██████╗'
+' ╚═════╝ ╚══════╝╚═╝      ╚═════╝'
+)
+LOGO_W=33
+
+# Перелив голубой → синий по строкам логотипа. 256-цветные коды поддерживают
+# практически все современные терминалы, но если TERM не задан (cron, пайп) или
+# палитра беднее — молча откатываемся на ровный CYAN, а не сыпем мусором.
+LOGO_COLORS=()
+init_logo_colors() {
+    local ncolors i ramp=(51 45 39 33 27 21)
+    ncolors="$(tput colors 2>/dev/null)"
+    [[ "$ncolors" =~ ^[0-9]+$ ]] || ncolors=8
+    LOGO_COLORS=()
+    for i in "${!LOGO_LINES[@]}"; do
+        if [ "$ncolors" -ge 256 ]; then
+            LOGO_COLORS+=("\033[38;5;${ramp[$i]}m")
+        else
+            LOGO_COLORS+=("$CYAN")
+        fi
+    done
+}
+
+# МБ → «1.6 ГБ» / «512 МБ» без внешних процессов
+fmt_size_mb() {
+    local mb="${1:-0}"
+    if [ "$mb" -ge 1024 ]; then
+        printf '%d.%d ГБ' "$((mb / 1024))" "$(( (mb % 1024) * 10 / 1024 ))"
+    else
+        printf '%d МБ' "$mb"
+    fi
+}
+
+# сводка о машине справа от логотипа → массив HEADER_INFO.
+# Всё читается из /proc и /etc — шапка рисуется раз на экран, это дёшево.
+# ВАЖНО: /etc/os-release нельзя просто `source` — там есть переменная VERSION,
+# которая затрёт версию самого скрипта. Поэтому разбираем построчно.
+HEADER_INFO=()
+build_header_info() {
+    local host os ram_mb free_mb up_s up_txt k v
+    host="$(< /proc/sys/kernel/hostname)"
+    while IFS='=' read -r k v; do
+        [ "$k" = "PRETTY_NAME" ] || continue
+        v="${v%\"}"; v="${v#\"}"; os="$v"; break
+    done < /etc/os-release 2>/dev/null
+    ram_mb="$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$ram_mb" =~ ^[0-9]+$ ]] || ram_mb=0
+    free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
+    [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
+    up_s="$(< /proc/uptime)"; up_s="${up_s%%.*}"
+    [[ "$up_s" =~ ^[0-9]+$ ]] || up_s=0
+    if   [ "$up_s" -ge 86400 ]; then up_txt="$((up_s / 86400)) дн $(( (up_s % 86400) / 3600 )) ч"
+    elif [ "$up_s" -ge 3600 ];  then up_txt="$((up_s / 3600)) ч $(( (up_s % 3600) / 60 )) мин"
+    else                             up_txt="$((up_s / 60)) мин"
+    fi
+
+    HEADER_INFO=(
+        "${BOLD}${host}${NC}"
+        "${DIM}${os:-Linux}${NC}"
+        "${DIM}RAM${NC}    $(fmt_size_mb "$ram_mb")"
+        "${DIM}Диск${NC}   $(fmt_size_mb "$free_mb") свободно"
+        "${DIM}Uptime${NC} ${up_txt}"
+    )
+}
+
+# «применено 9 из 14 ██████░░░░» из уже посчитанного кэша статусов — бесплатно.
+# Пока кэш не построен (самый первый показ шапки), просто ничего не печатаем.
+REPLY_PROGRESS=''
+build_progress() {
+    REPLY_PROGRESS=''
+    [ "${#STATUS_RC[@]}" -eq 0 ] && return 0
+    local id done=0 total="${#ITEM_IDS[@]}" filled i bar=''
+    for id in "${ITEM_IDS[@]}"; do
+        [ "${STATUS_RC[$id]:-1}" -eq 0 ] && done=$((done + 1))
+    done
+    filled=$(( done * 10 / (total > 0 ? total : 1) ))
+    for ((i = 0; i < 10; i++)); do
+        if [ "$i" -lt "$filled" ]; then bar+='█'; else bar+='░'; fi
+    done
+    REPLY_PROGRESS="${DIM}применено${NC} ${BOLD}${done}${NC}${DIM} из ${total}${NC}  ${GREEN}${bar:0:filled}${NC}${DIM}${bar:filled}${NC}"
+}
+
 show_header() {
     clear 2>/dev/null || printf '\033[2J\033[H'
+    [ "${#LOGO_COLORS[@]}" -eq 0 ] && init_logo_colors
+
+    # сводку показываем, только если она реально помещается рядом с логотипом
+    local with_info=false
+    if [ "$TERM_W" -ge 70 ]; then
+        with_info=true
+        build_header_info
+    fi
+
     echo ""
-    echo -e "  ${CYAN}██╗   ██╗███████╗███████╗ ██████╗${NC}"
-    echo -e "  ${CYAN}██║   ██║██╔════╝██╔════╝██╔════╝${NC}"
-    echo -e "  ${CYAN}██║   ██║███████╗█████╗  ██║     ${NC}"
-    echo -e "  ${CYAN}██║   ██║╚════██║██╔══╝  ██║     ${NC}"
-    echo -e "  ${CYAN}╚██████╔╝███████║██║     ╚██████╗${NC}"
-    echo -e "  ${CYAN} ╚═════╝ ╚══════╝╚═╝      ╚═════╝${NC}"
-    echo -e "  ${BOLD}USFC${NC} ${DIM}v${VERSION} by SkyDeaD${NC}   ${DIM}UbuntuServer Fast Configuration${NC}"
+    local i line info
+    for i in "${!LOGO_LINES[@]}"; do
+        line="${LOGO_COLORS[$i]}${LOGO_LINES[$i]}${NC}"
+        info=""
+        [ "$with_info" = true ] && info="${HEADER_INFO[$i]:-}"
+        if [ -n "$info" ]; then
+            pad_title "${LOGO_LINES[$i]}" "$LOGO_W"
+            printf "  %b%s%b   %b\n" "${LOGO_COLORS[$i]}" "$REPLY_PAD" "$NC" "$info"
+        else
+            echo -e "  ${line}"
+        fi
+    done
+
+    build_progress
+    if [ -n "$REPLY_PROGRESS" ] && [ "$with_info" = true ]; then
+        pad_title "USFC v${VERSION} by SkyDeaD" 32
+        printf "  ${BOLD}%s${NC}  %b\n" "$REPLY_PAD" "$REPLY_PROGRESS"
+    else
+        echo -e "  ${BOLD}USFC${NC} ${DIM}v${VERSION} by SkyDeaD${NC}   ${DIM}UbuntuServer Fast Configuration${NC}"
+    fi
     hr "$CYAN"
 }
 
@@ -376,7 +501,10 @@ apply_service_autostart() {
 # Раньше каждая status_*-функция дёргала `dpkg -s` отдельно на каждый пакет —
 # около 25 запусков за одну перерисовку меню, и каждый из них перечитывает
 # /var/lib/dpkg/status целиком. Один снимок вместо этого.
-declare -A PKG_INSTALLED
+# Присваивание =() здесь обязательно, а не косметика: `declare -A x` БЕЗ него
+# оставляет переменную «необъявленной» с точки зрения set -u, и первое же
+# обращение ${#x[@]} роняет скрипт с «unbound variable». Проверено на bash 5.3.
+declare -A PKG_INSTALLED=()
 PKG_CACHE_READY=false
 refresh_pkg_cache() {
     local pkg state
@@ -391,6 +519,41 @@ refresh_pkg_cache() {
 pkg_installed() {
     [ "$PKG_CACHE_READY" = true ] || refresh_pkg_cache
     [ -n "${PKG_INSTALLED[${1}]:-}" ]
+}
+
+# ── apt и блокировка dpkg ─────────────────────────────────────────────────────
+# На свежезагруженной VPS apt-daily.timer поднимает unattended-upgrades, и тот
+# держит /var/lib/dpkg/lock-frontend минутами. По умолчанию apt НЕ ждёт вовсе
+# (DPkg::Lock::Timeout пуст, то есть 0) и падает мгновенно с кодом 100 —
+# «E: Could not get lock ... It is held by process N (unattended-upgr)».
+# Ирония в том, что unattended-upgrades включает сам usfc.
+#
+# Лечится нативно: apt умеет ждать сам, и оба вида блокировок (frontend и
+# archive) — ему, в отличие от нас, не нужно гадать про fuser/flock, которых
+# на минимальном образе может не оказаться.
+APT_LOCK_TIMEOUT="${USFC_APT_LOCK_TIMEOUT:-300}"
+apt_get() { apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" "$@"; }
+
+# Спиннер покажет растущий таймер, но не объяснит, ПОЧЕМУ установка «висит».
+# pgrep берём вместо fuser/lsof: procps есть всегда, psmisc и lsof — нет.
+APT_BUSY_WARNED=false
+warn_if_apt_busy() {
+    [ "$APT_BUSY_WARNED" = true ] && return 0
+    local holder=""
+    if pgrep -x unattended-upgr >/dev/null 2>&1; then
+        holder="unattended-upgrades"
+    elif pgrep -x apt-get >/dev/null 2>&1 || pgrep -x apt >/dev/null 2>&1; then
+        holder="другой apt"
+    elif pgrep -x dpkg >/dev/null 2>&1; then
+        holder="dpkg"
+    fi
+    [ -z "$holder" ] && return 0
+    APT_BUSY_WARNED=true
+    # Формулировка намеренно осторожная: мы видим лишь ЗАПУЩЕННЫЙ процесс, а не
+    # то, кто именно держит блокировку. Настоящего держателя назовёт сам apt в
+    # логе («Waiting for cache lock: ...»), гадать за него не будем
+    log_info "Сейчас работает ${BOLD}${holder}${NC} — он может держать блокировку dpkg"
+    log_info "Если так, подожду её освобождения до $((APT_LOCK_TIMEOUT / 60)) мин: для только что загруженного сервера это нормально"
 }
 
 # apt-get update больше не висит на старте каждого запуска: списки нужны только
@@ -416,7 +579,8 @@ ensure_apt_updated() {
         APT_UPDATED=true
         return 0
     fi
-    run_logged "Обновление списков пакетов apt" apt-get update -qq
+    warn_if_apt_busy
+    run_logged "Обновление списков пакетов apt" apt_get update -qq
     APT_UPDATED=true
     refresh_pkg_cache
 }
@@ -799,7 +963,7 @@ apply_newuser() {
     if ! command -v sudo &>/dev/null || ! getent group sudo &>/dev/null; then
         log_info "sudo не установлен — ставлю (без него группа sudo ничего не даёт)"
         ensure_apt_updated
-        run_logged "sudo" apt-get install -y sudo || return 1
+        run_logged "sudo" apt_get install -y sudo || return 1
         refresh_pkg_cache
     fi
 
@@ -931,7 +1095,7 @@ apply_cli() {
         if ask_yn "Установить eza, bat, fd-find, ripgrep, zoxide, ncdu, starship?"; then
             ensure_apt_updated
             run_logged "CLI-утилиты (eza, bat, fd-find, ripgrep, zoxide, ncdu)" \
-                apt-get install -y eza bat fd-find ripgrep zoxide ncdu
+                apt_get install -y eza bat fd-find ripgrep zoxide ncdu
             refresh_pkg_cache
             if ! command -v starship &>/dev/null; then
                 run_logged "starship" bash -c 'curl -sS https://starship.rs/install.sh | sh -s -- -y'
@@ -976,7 +1140,7 @@ apply_basepkgs() {
     if ask_yn "Установить базовый набор пакетов (${BASE_PKGS})?"; then
         ensure_apt_updated
         # shellcheck disable=SC2086
-        run_logged "Базовый набор пакетов" apt-get install -y $BASE_PKGS
+        run_logged "Базовый набор пакетов" apt_get install -y $BASE_PKGS
         refresh_pkg_cache
     fi
 }
@@ -988,7 +1152,7 @@ apply_nginx() {
         local autostart=false
         resolve_autostart NGINX_AUTOSTART "Запустить nginx и включить автозапуск?" && autostart=true
         ensure_apt_updated
-        with_no_service_start run_logged "nginx-full" apt-get install -y nginx-full || return 1
+        with_no_service_start run_logged "nginx-full" apt_get install -y nginx-full || return 1
         refresh_pkg_cache
         apply_service_autostart nginx "$autostart"
         return
@@ -1014,7 +1178,7 @@ apply_certbot() {
     ensure_apt_updated
     if ! pkg_installed certbot; then
         if ! ask_yn "Установить certbot (Let's Encrypt)?"; then return; fi
-        run_logged "certbot" apt-get install -y certbot || return 1
+        run_logged "certbot" apt_get install -y certbot || return 1
         refresh_pkg_cache
     else
         log_info "certbot уже установлен: $(certbot --version 2>&1 | head -n1)"
@@ -1026,7 +1190,7 @@ apply_certbot() {
     elif ! pkg_installed nginx-full; then
         log_info "nginx не установлен — плагин nginx пропускаю (поставь nginx и вернись сюда)"
     elif ask_yn "Установить плагин nginx (HTTP-01, обычные сертификаты)?"; then
-        run_logged "python3-certbot-nginx" apt-get install -y python3-certbot-nginx && refresh_pkg_cache
+        run_logged "python3-certbot-nginx" apt_get install -y python3-certbot-nginx && refresh_pkg_cache
     fi
 
     # ── плагин Cloudflare (DNS-01) ────────────────────────────────────────────
@@ -1035,7 +1199,7 @@ apply_certbot() {
         want_cf=true
         log_success "Плагин Cloudflare уже установлен"
     elif ask_yn "Установить плагин Cloudflare (DNS-01, нужен для wildcard-сертификатов)?" N; then
-        if run_logged "python3-certbot-dns-cloudflare" apt-get install -y python3-certbot-dns-cloudflare; then
+        if run_logged "python3-certbot-dns-cloudflare" apt_get install -y python3-certbot-dns-cloudflare; then
             refresh_pkg_cache
             want_cf=true
             # apt тянет python3-cloudflare 2.20.x — единственную версию в архиве.
@@ -1151,7 +1315,7 @@ apply_docker() {
     resolve_autostart DOCKER_AUTOSTART "Запустить Docker и включить автозапуск?" && autostart=true
 
     ensure_apt_updated
-    run_logged "Зависимости Docker" apt-get install -y ca-certificates curl || return 1
+    run_logged "Зависимости Docker" apt_get install -y ca-certificates curl || return 1
     install -m 0755 -d /etc/apt/keyrings
     run_logged "GPG-ключ Docker" \
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
@@ -1160,15 +1324,15 @@ apply_docker() {
     codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" \
         > /etc/apt/sources.list.d/docker.list
-    run_logged "Списки пакетов Docker" apt-get update -qq
+    run_logged "Списки пакетов Docker" apt_get update -qq
     if ! apt-cache policy docker-ce-cli 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
         log_warn "У Docker пока нет пакетов под '${codename}' — переключаюсь на noble (24.04, совместимо)"
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
             > /etc/apt/sources.list.d/docker.list
-        run_logged "Списки пакетов Docker (noble)" apt-get update -qq
+        run_logged "Списки пакетов Docker (noble)" apt_get update -qq
     fi
     with_no_service_start run_logged "Docker CE + Compose" \
-        apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
+        apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
     refresh_pkg_cache
 
     apply_service_autostart docker "$autostart"
@@ -1195,9 +1359,13 @@ apply_fastfetch() {
     if [ "$need_ppa" = true ]; then
         if ask_yn "Установить/обновить fastfetch (через PPA)?"; then
             ensure_apt_updated
-            run_logged "PPA fastfetch" add-apt-repository -y ppa:zhangsongcui3371/fastfetch
-            run_logged "Списки пакетов PPA" apt-get update -qq
-            if run_logged "fastfetch" apt-get install -y fastfetch; then
+            # -n (--no-update): add-apt-repository в конце сам дёргает apt update,
+            # но опцию DPkg::Lock::Timeout ему не передать — значит он споткнётся
+            # о ту же блокировку dpkg. Добавляем только репозиторий, а списки
+            # обновляем своим apt_get, у которого таймаут уже есть.
+            run_logged "PPA fastfetch" add-apt-repository -y -n ppa:zhangsongcui3371/fastfetch
+            run_logged "Списки пакетов PPA" apt_get update -qq
+            if run_logged "fastfetch" apt_get install -y fastfetch; then
                 refresh_pkg_cache
                 log_info "Версия: $(fastfetch --version 2>/dev/null)"
             fi
@@ -1251,7 +1419,7 @@ apply_tmux() {
     if ! command -v tmux &>/dev/null; then
         if ask_yn "Установить tmux?"; then
             ensure_apt_updated
-            run_logged "tmux" apt-get install -y tmux || return 1
+            run_logged "tmux" apt_get install -y tmux || return 1
             refresh_pkg_cache
         else
             return
@@ -1309,7 +1477,7 @@ PYEOF
 apply_fail2ban() {
     if ! ask_yn "Установить fail2ban?"; then return; fi
     ensure_apt_updated
-    run_logged "fail2ban" apt-get install -y fail2ban || return 1
+    run_logged "fail2ban" apt_get install -y fail2ban || return 1
     refresh_pkg_cache
     cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
@@ -1326,7 +1494,7 @@ EOF
 apply_unattended() {
     if ! ask_yn "Включить автообновление security-патчей?"; then return; fi
     ensure_apt_updated
-    run_logged "unattended-upgrades" apt-get install -y unattended-upgrades || return 1
+    run_logged "unattended-upgrades" apt_get install -y unattended-upgrades || return 1
     refresh_pkg_cache
     cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
 APT::Periodic::Update-Package-Lists "1";
@@ -1336,30 +1504,174 @@ EOF
     log_success "unattended-upgrades включён"
 }
 
-# suggest_swap_mb — предлагает размер резервного swap-файла: 10% свободного
-# места на /, зажатое в 512-4096 МБ. На тесном диске (мало свободного места)
-# не раздувает своп; на просторном — не ограничивается устаревшим 1GB
+# suggest_swap_mb [место_которое_освободится_МБ] — рекомендуемый размер
+# резервного swap-файла: min(RAM, свободно/4), зажатое в 512-4096 МБ.
+#
+# Почему так, а не «10% диска», как было раньше: своп здесь — резерв ПОД zram
+# (приоритет 10 против 100), то есть его роль определяется объёмом памяти,
+# а старая формула про RAM не знала вообще. Деление на 4 не даёт свопу съесть
+# тесный диск, кламп снизу спасает совсем маленькие машины.
+#
+# Аргумент нужен при ПЕРЕсоздании: место под текущим swap-файлом освободится,
+# и без этого слагаемого своп нельзя было бы увеличить даже когда диск позволяет.
 suggest_swap_mb() {
-    local free_mb suggested
+    local extra_mb="${1:-0}" free_mb ram_mb suggested
     free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
     [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
-    suggested=$(( free_mb * 10 / 100 ))
+    [[ "$extra_mb" =~ ^[0-9]+$ ]] || extra_mb=0
+    free_mb=$(( free_mb + extra_mb ))
+
+    ram_mb="$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$ram_mb" =~ ^[0-9]+$ ]] || ram_mb=1024
+
+    suggested=$(( free_mb / 4 ))
+    [ "$ram_mb" -lt "$suggested" ] && suggested="$ram_mb"
     [ "$suggested" -lt 512 ] && suggested=512
     [ "$suggested" -gt 4096 ] && suggested=4096
     echo "$suggested"
 }
 
+# swap_needs_resize <текущий_МБ> <рекомендуемый_МБ> — расходятся ли больше
+# чем на 10%. Ниже порога не пристаём: своп «примерно правильного» размера
+# трогать незачем, а лишний вопрос на каждом заходе в пункт раздражает
+swap_needs_resize() {
+    local cur="${1:-0}" want="${2:-0}" diff
+    [ "$want" -le 0 ] && return 1
+    diff=$(( cur > want ? cur - want : want - cur ))
+    [ $(( diff * 100 )) -gt $(( want * 10 )) ]
+}
+
 # читает текущее состояние zram/swap в глобальные переменные — общий
 # парсинг для apply_zram() и предзапроса значений перед bulk-режимом в main()
+# SWAP_TYPE/SWAP_SIZE_MB/SWAP_USED_MB нужны, чтобы решить, можно ли безопасно
+# пересоздать своп: раздел трогать нельзя, а занятое должно влезть обратно в RAM
 read_swap_state() {
-    ZRAM_ACTIVE=false; ZRAM_PRIO=""; SWAP_ACTIVE=false; SWAP_PRIO=""; SWAP_PATH=""
+    ZRAM_ACTIVE=false; ZRAM_PRIO=""
+    SWAP_ACTIVE=false; SWAP_PRIO=""; SWAP_PATH=""
+    SWAP_TYPE=""; SWAP_SIZE_MB=0; SWAP_USED_MB=0
     local n t s u p
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) ZRAM_ACTIVE=true; ZRAM_PRIO="$p" ;;
-            *)          SWAP_ACTIVE=true; SWAP_PRIO="$p"; SWAP_PATH="$n" ;;
+            *)
+                SWAP_ACTIVE=true; SWAP_PRIO="$p"; SWAP_PATH="$n"; SWAP_TYPE="$t"
+                SWAP_SIZE_MB="$(human_to_mb "$s")"
+                SWAP_USED_MB="$(human_to_mb "$u")"
+                ;;
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
+}
+
+# "1.9G" / "12.1M" / "512K" / "0B" → целые МБ. swapon --raw печатает именно так
+human_to_mb() {
+    local v="${1:-0}" num unit
+    num="${v%[BKMGTbkmgt]}"
+    unit="${v#"$num"}"
+    [[ "$num" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo 0; return; }
+    case "${unit^^}" in
+        G) awk -v n="$num" 'BEGIN{printf "%d", n*1024}' ;;
+        T) awk -v n="$num" 'BEGIN{printf "%d", n*1024*1024}' ;;
+        M) awk -v n="$num" 'BEGIN{printf "%d", n}' ;;
+        K) awk -v n="$num" 'BEGIN{printf "%d", n/1024}' ;;
+        *) awk -v n="$num" 'BEGIN{printf "%d", n/1048576}' ;;
+    esac
+}
+
+# create_swapfile <путь> <МБ> — выделяет файл и делает из него своп.
+# fallocate быстрее, но на btrfs даёт файл с дырами, непригодный для свопа —
+# тогда честно переписываем нулями через dd. Возвращает 0 только если своп
+# реально поднялся.
+create_swapfile() {
+    local path="$1" mb="$2"
+    rm -f "$path"
+    if ! fallocate -l "${mb}M" "$path" 2>/dev/null; then
+        log_info "fallocate не сработал — выделяю файл через dd (дольше)"
+        dd if=/dev/zero of="$path" bs=1M count="$mb" status=none 2>/dev/null || return 1
+    fi
+    chmod 600 "$path"
+    if ! mkswap "$path" >/dev/null 2>&1; then
+        log_info "mkswap не принял файл — переделываю через dd"
+        rm -f "$path"
+        dd if=/dev/zero of="$path" bs=1M count="$mb" status=none 2>/dev/null || return 1
+        chmod 600 "$path"
+        mkswap "$path" >/dev/null 2>&1 || return 1
+    fi
+    swapon "$path" 2>/dev/null || return 1
+    return 0
+}
+
+# ensure_fstab_swap <путь> — ровно одна запись с pri=10, без дублей.
+# Дубль опаснее, чем кажется: после ребута своп смонтируется дважды
+ensure_fstab_swap() {
+    local path="$1" esc
+    esc="$(printf '%s' "$path" | sed 's/[.[\*^$/]/\\&/g')"
+    if grep -qE "^${esc}\s" /etc/fstab 2>/dev/null; then
+        sed -i -E "s#^(${esc}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
+    else
+        echo "${path} none swap sw,pri=10 0 0" >> /etc/fstab
+    fi
+}
+
+# resize_swapfile <путь> <новый_МБ> — пересоздание уже работающего свопа.
+# Самая опасная операция в скрипте: между swapoff и swapon машина живёт без
+# резервной памяти, поэтому все проверки — ДО того, как что-то трогать.
+resize_swapfile() {
+    local path="$1" new_mb="$2" old_mb="$3" used_mb="$4"
+
+    if [ ! -f "$path" ]; then
+        log_error "${path} — не обычный файл, пересоздавать не буду"
+        return 1
+    fi
+
+    # swapoff выгружает занятые страницы обратно в RAM. Если они туда не
+    # влезают — получим OOM и убитые процессы, поэтому просто отказываемся
+    local avail_mb
+    avail_mb="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$avail_mb" =~ ^[0-9]+$ ]] || avail_mb=0
+    if [ "$used_mb" -gt 0 ] && [ "$used_mb" -ge $(( avail_mb - 200 )) ]; then
+        log_error "В свопе занято ${used_mb} МБ, а свободной памяти всего ${avail_mb} МБ"
+        log_error "Отключение свопа сейчас рискует уронить процессы — размер не меняю"
+        log_info "Освободи память (или перезагрузись) и вернись в этот пункт"
+        return 1
+    fi
+
+    # места должно хватить с учётом того, что старый файл освободится
+    local free_mb
+    free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
+    [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
+    if [ "$new_mb" -gt $(( free_mb + old_mb - 256 )) ]; then
+        log_error "Не хватит места: нужно ${new_mb} МБ, доступно ~$(( free_mb + old_mb )) МБ"
+        return 1
+    fi
+
+    log_info "Отключаю ${path} ${DIM}(занято ${used_mb} МБ, свободной памяти ${avail_mb} МБ)${NC}"
+    if ! swapoff "$path" 2>/dev/null; then
+        log_error "swapoff ${path} не удался — ничего не менял"
+        return 1
+    fi
+
+    if create_swapfile "$path" "$new_mb"; then
+        ensure_fstab_swap "$path"
+        swapoff "$path" 2>/dev/null
+        swapon -a 2>/dev/null           # поднимаем уже с приоритетом из fstab
+        log_success "swap пересоздан: ${new_mb} МБ, приоритет 10"
+        return 0
+    fi
+
+    # не получилось — машина сейчас без свопа, это надо исправить или хотя бы
+    # сказать вслух, а не оставить молча
+    log_error "Не удалось создать своп размером ${new_mb} МБ"
+    if create_swapfile "$path" "$old_mb"; then
+        ensure_fstab_swap "$path"
+        swapoff "$path" 2>/dev/null
+        swapon -a 2>/dev/null
+        log_warn "Вернул прежний размер ${old_mb} МБ — система со свопом"
+    else
+        log_error "ВНИМАНИЕ: своп сейчас ВЫКЛЮЧЕН. Подними вручную:"
+        echo -e "      ${BOLD}sudo fallocate -l ${old_mb}M ${path} && sudo chmod 600 ${path}${NC}"
+        echo -e "      ${BOLD}sudo mkswap ${path} && sudo swapon -a${NC}"
+    fi
+    return 1
 }
 
 apply_zram() {
@@ -1378,7 +1690,7 @@ apply_zram() {
                 [ -z "$cur_percent" ] && cur_percent=75
                 zram_percent="$(ask_value "Размер zram в % от RAM?" "$cur_percent")"
                 ensure_apt_updated
-                if run_logged "zram-tools" apt-get install -y zram-tools; then
+                if run_logged "zram-tools" apt_get install -y zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
                     printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -1400,7 +1712,7 @@ apply_zram() {
         local zram_percent
         zram_percent="$(ask_value "Размер zram в % от RAM?" "${ZRAM_BULK_PERCENT:-75}")"
         ensure_apt_updated
-        if run_logged "zram-tools" apt-get install -y zram-tools; then
+        if run_logged "zram-tools" apt_get install -y zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
             printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -1420,7 +1732,37 @@ apply_zram() {
 
     if [ "$swap_active" = true ]; then
         if [ "$swap_prio" = "10" ]; then
-            log_success "Резервный своп на диске (${swap_path}) уже настроен (приоритет 10) — пропускаю"
+            local sw_suggest
+            sw_suggest="$(suggest_swap_mb "$SWAP_SIZE_MB")"
+            log_success "Резервный своп: ${swap_path}, ${SWAP_SIZE_MB} МБ, приоритет 10 ${DIM}(занято ${SWAP_USED_MB} МБ)${NC}"
+
+            if [ "$SWAP_TYPE" != "file" ]; then
+                # раздел или LVM: менять его размер — это про parted/lvresize и
+                # риск для данных, такое не место в меню быстрой настройки
+                log_info "Тип свопа — ${SWAP_TYPE:-?}, размер разделов этот скрипт не меняет"
+            elif swap_needs_resize "$SWAP_SIZE_MB" "$sw_suggest"; then
+                log_info "Рекомендуемый размер для этой машины: ${BOLD}${sw_suggest} МБ${NC} ${DIM}(min(RAM, свободно/4))${NC}"
+                # В пакетном режиме ask_yn всегда вернёт дефолт N, поэтому
+                # согласием считаем сам факт того, что размер уже спросили
+                # заранее в main() — иначе предзаданное значение пропало бы зря
+                local want_resize=false
+                if [ "$BULK_MODE" = true ]; then
+                    [ -n "$SWAP_BULK_MB" ] && want_resize=true
+                elif ask_yn "Изменить размер swap-файла?" N; then
+                    want_resize=true
+                fi
+                if [ "$want_resize" = true ]; then
+                    local new_mb
+                    new_mb="$(ask_value "Размер swap-файла, МБ?" "${SWAP_BULK_MB:-$sw_suggest}")"
+                    if [ "$new_mb" -lt 64 ]; then
+                        log_error "Слишком мало (${new_mb} МБ) — размер не меняю"
+                    else
+                        resize_swapfile "$swap_path" "$new_mb" "$SWAP_SIZE_MB" "$SWAP_USED_MB"
+                    fi
+                fi
+            else
+                log_success "Размер близок к рекомендуемому (${sw_suggest} МБ) — оставляю как есть"
+            fi
         else
             log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)"
             if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?"; then
@@ -1445,16 +1787,14 @@ apply_zram() {
         if ask_yn "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?"; then
             local swap_mb
             swap_mb="$(ask_value "Размер swap-файла, МБ?" "${SWAP_BULK_MB:-$suggested_mb}")"
-            fallocate -l "${swap_mb}M" /swapfile
-            chmod 600 /swapfile
-            mkswap /swapfile >/dev/null
-            if grep -qE '^/swapfile\s' /etc/fstab 2>/dev/null; then
-                sed -i -E 's#^(/swapfile\s+none\s+swap\s+)sw([^,].*)?$#\1sw,pri=10\2#' /etc/fstab
+            if create_swapfile /swapfile "$swap_mb"; then
+                ensure_fstab_swap /swapfile
+                swapoff /swapfile 2>/dev/null
+                swapon -a 2>/dev/null       # поднимаем уже с приоритетом из fstab
+                log_success "swapfile создан (${swap_mb} МБ, приоритет 10)"
             else
-                echo "/swapfile none swap sw,pri=10 0 0" >> /etc/fstab
+                log_error "Не удалось создать /swapfile на ${swap_mb} МБ — подробности выше"
             fi
-            swapon -a
-            log_success "swapfile создан (${swap_mb} МБ, приоритет 10)"
         fi
     fi
 
@@ -1478,7 +1818,7 @@ apply_zram() {
         log_success "earlyoom уже включён"
     elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
         ensure_apt_updated
-        if run_logged "earlyoom" apt-get install -y earlyoom; then
+        if run_logged "earlyoom" apt_get install -y earlyoom; then
             systemctl enable --now earlyoom >/dev/null
             log_success "earlyoom включён"
         fi
@@ -1662,7 +2002,7 @@ apply_ufw() {
     fi
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
     ensure_apt_updated
-    run_logged "UFW" apt-get install -y ufw || return 1
+    run_logged "UFW" apt_get install -y ufw || return 1
     refresh_pkg_cache
     ufw allow "${SSH_PORT}"/tcp >/dev/null
     while read -r p; do
@@ -1848,7 +2188,7 @@ refresh_term_width() {
 # locale: раньше tr на боксах с необобранным locale (LANG объявлен, но сам locale
 # не собран — нередкая история на свежих VPS-образах) работал побайтово и резал
 # 3-байтовый "─" на мусор.
-declare -A _DASH_CACHE
+declare -A _DASH_CACHE=()
 REPLY_DASH=''
 repeat_dash() {
     local n="${1:-0}"
@@ -1995,7 +2335,7 @@ truncate_colored() {
 # status_* — самые дорогие функции в скрипте (dpkg, systemctl, sshd -T), а зовут их
 # и ради текста для меню, и ради кода возврата (process_item, фильтр pending в main).
 # Считаем всё разом и держим до ближайшего действия, которое реально что-то меняет.
-declare -A STATUS_TEXT STATUS_RC
+declare -A STATUS_TEXT=() STATUS_RC=()
 STATUS_DIRTY=true
 
 invalidate_statuses() { STATUS_DIRTY=true; }
@@ -2038,35 +2378,48 @@ show_menu() {
     fi
     echo ""
 
-    # ширины колонок — фикс для #/Раздел/Пункт, Статус забирает остаток TERM_W
+    # Колонки: # / Пункт / Статус. Отдельной колонки «Раздел» больше нет —
+    # название раздела печатается один раз строкой-подзаголовком, а не
+    # повторяется в каждой строке. Освободившиеся ~13 колонок уходят статусу:
+    # раньше списки недостающих пакетов обрезались на «eza, bat, fd-find, z...».
+    #
     # idx_w=3, не 2: pad_title всегда добавляет минимум 1 пробел-паддинга (см. её
     # реализацию), поэтому при ширине ровно "12" (2 символа) паддинг обнулялся бы
     # и принудительно поднимался до 1, ломая выравнивание рамки именно на пунктах 10-14
-    local idx_w=3 section_w=10 title_w=26 status_w inner_w=$TERM_W
-    # -7: 5 символов рамки (┌/│×3/┐ или их аналоги на разных строках) + 2 — паддинг
-    # самой статусной колонки, которую эта формула вычисляет (её собственные "+2"
-    # не должны компенсироваться дважды)
-    status_w=$(( inner_w - (idx_w + 2) - (section_w + 2) - (title_w + 2) - 7 ))
-    # 6 — минимум, при котором рамка ещё точно влезает в нижнюю границу TERM_W
-    # (60 сырых колонок терминала); при более узком клампе сама рамка вылезала бы
-    # за пределы терминала независимо от длины текста статуса
+    local idx_w=3 title_w=26 status_w inner_w=$TERM_W
+    # -10: 4 символа рамки (╭/│×2/╮ и аналоги) + по 2 паддинга на три колонки,
+    # минус собственные "+2" статусной колонки, которую эта формула и вычисляет
+    status_w=$(( inner_w - idx_w - title_w - 10 ))
+    # 6 — минимум, при котором рамка ещё влезает в нижнюю границу TERM_W
     [ "$status_w" -lt 6 ] && status_w=6
 
-    local c_idx c_sec c_title c_status
-    box_line "$DIM" '┌' '┬' '┐' "$idx_w" "$section_w" "$title_w" "$status_w"
-    pad_title "#"      "$idx_w";     c_idx="$REPLY_PAD"
-    pad_title "Раздел" "$section_w"; c_sec="$REPLY_PAD"
-    pad_title "Пункт"  "$title_w";   c_title="$REPLY_PAD"
-    pad_title "Статус" "$status_w";  c_status="$REPLY_PAD"
-    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
-        "$c_idx" "$c_sec" "$c_title" "$c_status"
-    box_line "$DIM" '├' '┼' '┤' "$idx_w" "$section_w" "$title_w" "$status_w"
+    local c_idx c_title c_status
+    box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$status_w"
+    pad_title "#"      "$idx_w";    c_idx="$REPLY_PAD"
+    pad_title "Пункт"  "$title_w";  c_title="$REPLY_PAD"
+    pad_title "Статус" "$status_w"; c_status="$REPLY_PAD"
+    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
+        "$c_idx" "$c_title" "$c_status"
+    box_line "$DIM" '├' '┼' '┤' "$idx_w" "$title_w" "$status_w"
 
-    local i=1 id section section_color
+    local i=1 id section section_color prev_section=""
     for id in "${ITEM_IDS[@]}"; do
         local status_line status_pad
         section="${ITEM_SECTIONS[$((i-1))]}"
         section_color_for "$section"; section_color="$REPLY_COLOR"
+
+        # сменился раздел — печатаем подзаголовок группы. Это обычная строка
+        # таблицы с пустыми "#" и "Статус", поэтому разделители колонок
+        # остаются на своих местах и рамка не едет
+        if [ "$section" != "$prev_section" ]; then
+            prev_section="$section"
+            pad_title "" "$idx_w";                        c_idx="$REPLY_PAD"
+            pad_title "● ${section^^}" "$title_w";        c_title="$REPLY_PAD"
+            pad_title "" "$status_w";                     c_status="$REPLY_PAD"
+            printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}${BOLD}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC}\n" \
+                "$c_idx" "$c_title" "$c_status"
+        fi
+
         # длинный статус (например, большой список недостающих пакетов) обрезаем
         # с "..." вместо того, чтобы дать ему вылезти за правую рамку — рамка должна
         # оставаться ровной на любой строке
@@ -2074,14 +2427,13 @@ show_menu() {
         visible_len "$status_line"
         status_pad=$((status_w - REPLY_LEN))
         [ "$status_pad" -lt 0 ] && status_pad=0
-        pad_title "$i" "$idx_w";                          c_idx="$REPLY_PAD"
-        pad_title "$section" "$section_w";                c_sec="$REPLY_PAD"
-        pad_title "${ITEM_TITLES[$((i-1))]}" "$title_w";  c_title="$REPLY_PAD"
-        printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
-            "$c_idx" "$c_sec" "$c_title" "$status_line" "$status_pad" ""
+        pad_title "$i" "$idx_w";                              c_idx="$REPLY_PAD"
+        pad_title "  ${ITEM_TITLES[$((i-1))]}" "$title_w";    c_title="$REPLY_PAD"
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+            "$c_idx" "$c_title" "$status_line" "$status_pad" ""
         i=$((i+1))
     done
-    box_line "$DIM" '└' '┴' '┘' "$idx_w" "$section_w" "$title_w" "$status_w"
+    box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$status_w"
 
     echo ""
     # legend_w = inner_w - 4: box_line/рамка сама добавляет 2 бордюрных символа
@@ -2110,7 +2462,7 @@ show_menu() {
     grid_cell "${CYAN}${BOLD}R${NC} откат"   "$item_w"; g2="$REPLY_CELL"
     grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g3="$REPLY_CELL"
     legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${CYAN}${BOLD}Q${NC} выход"
-    box_line "$DIM" '┌' '┬' '┐' "$legend_w"
+    box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
         local ltrunc lpad
         truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
@@ -2119,7 +2471,7 @@ show_menu() {
         [ "$lpad" -lt 0 ] && lpad=0
         printf "  ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" "$ltrunc" "$lpad" ""
     done
-    box_line "$DIM" '└' '┴' '┘' "$legend_w"
+    box_line "$DIM" '╰' '┴' '╯' "$legend_w"
     echo ""
 }
 
@@ -2178,7 +2530,7 @@ show_summary() {
     echo ""
     echo -e "  ${BOLD}Итоги прогона${NC}"
     local name_w=26 res_w=14 time_w=6 i t r pad
-    box_line "$DIM" '┌' '┬' '┐' "$name_w" "$res_w" "$time_w"
+    box_line "$DIM" '╭' '┬' '╮' "$name_w" "$res_w" "$time_w"
     for i in "${!SUMMARY_TITLES[@]}"; do
         truncate_colored "${SUMMARY_TITLES[$i]}" "$name_w"; t="$REPLY_TRUNC"
         pad_title "$t" "$name_w"; t="$REPLY_PAD"
@@ -2187,7 +2539,7 @@ show_summary() {
         printf "  ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}\n" \
             "$t" "$r" "$pad" "" "${SUMMARY_TIMES[$i]}"
     done
-    box_line "$DIM" '└' '┴' '┘' "$name_w" "$res_w" "$time_w"
+    box_line "$DIM" '╰' '┴' '╯' "$name_w" "$res_w" "$time_w"
     if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
         echo ""
         for t in "${SUMMARY_FAILED[@]}"; do
@@ -2221,7 +2573,7 @@ show_aliases_help() {
         "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само"
     )
 
-    box_line "$DIM" '┌' '┬' '┐' "$col1" "$col2" "$col3"
+    box_line "$DIM" '╭' '┬' '╮' "$col1" "$col2" "$col3"
     local hdr3="Что делает" hdr3_pad h1 h2
     # col3 динамический (зависит от TERM_W) и на узких терминалах может
     # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
@@ -2248,7 +2600,7 @@ show_aliases_help() {
             "$cmd_t" "$cmd_pad" "" \
             "$desc_t" "$desc_pad" ""
     done
-    box_line "$DIM" '└' '┴' '┘' "$col1" "$col2" "$col3"
+    box_line "$DIM" '╰' '┴' '╯' "$col1" "$col2" "$col3"
 
     echo ""
     log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
@@ -2309,9 +2661,12 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
       --verbose    показывать сырой вывод команд вместо спиннера
 
 Переменные окружения:
-  USFC_NO_UPDATE=1     то же, что --no-update
-  USFC_VERBOSE=1       то же, что --verbose
-  USFC_KEEP_LOCALE=1   не форсировать LC_ALL=C.UTF-8
+  USFC_NO_UPDATE=1          то же, что --no-update
+  USFC_VERBOSE=1            то же, что --verbose
+  USFC_KEEP_LOCALE=1        не форсировать LC_ALL=C.UTF-8
+  USFC_APT_LOCK_TIMEOUT=N   сколько секунд ждать освобождения блокировки dpkg
+                            (по умолчанию ${APT_LOCK_TIMEOUT}; на свежем сервере её
+                            держит unattended-upgrades)
 
 Лог всех выполненных команд: ${USFC_LOG}
 EOF
@@ -2473,6 +2828,15 @@ main() {
                                     fi
                                     if [ "$SWAP_ACTIVE" != true ]; then
                                         SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$(suggest_swap_mb)")"
+                                    elif [ "$SWAP_TYPE" = "file" ]; then
+                                        # своп есть, но размер мог разъехаться с рекомендацией —
+                                        # спрашиваем ЗДЕСЬ, пока ask_value ещё интерактивна
+                                        local sw_want
+                                        sw_want="$(suggest_swap_mb "$SWAP_SIZE_MB")"
+                                        if swap_needs_resize "$SWAP_SIZE_MB" "$sw_want"; then
+                                            log_info "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ"
+                                            SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$sw_want")"
+                                        fi
                                     fi
                                     ;;
                                 nginx)

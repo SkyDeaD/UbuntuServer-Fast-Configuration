@@ -76,6 +76,8 @@ usfc --no-update   # skip the usfc self-update check
 usfc --verbose     # raw command output instead of the spinner
 ```
 
+`USFC_APT_LOCK_TIMEOUT` (300 s by default) controls how long to wait for the dpkg lock. The wait is needed because on a freshly booted server `apt-daily.timer` starts `unattended-upgrades`, which holds `/var/lib/dpkg/lock-frontend` for minutes — without waiting, every install would fail instantly with `E: Could not get lock`.
+
 A full log of every command run is always written to `/var/log/usfc.log`, even when the screen only shows a spinner.
 
 Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
@@ -113,7 +115,7 @@ It also offers to drop `ssl-dhparams.pem` and `options-ssl-nginx.conf` into `/et
 
 **unattended-upgrades** — installs security updates on its own, no input needed from you.
 
-**ZRAM + swap + earlyoom** — zram (compressed memory living in RAM itself; how much % of RAM to give it is now asked at install time, 75% by default) plus a backup swap file on disk (its size is asked too — the script suggests something sensible based on free disk space, not a flat 1 GB for every server) at a lower priority, so it only kicks in once zram runs out. Plus `vm.swappiness=80`/`vm.vfs_cache_pressure=50`, and optionally `earlyoom` — protection against the whole server locking up when memory runs out.
+**ZRAM + swap + earlyoom** — zram (compressed memory living in RAM itself; how much % of RAM to give it is now asked at install time, 75% by default) plus a backup swap file on disk at a lower priority, so it only kicks in once zram runs out. Its size is asked, and the default is computed as **`min(RAM, free/4)`**, clamped to 512–4096 MB: the file is a backstop *under* zram, so it scales with memory, while dividing by 4 keeps it from eating a tight disk. If a swap file already exists, the script shows its current size next to the recommended one and offers to recreate it — but only when they differ by more than 10%, and only for files: it does not touch partition or LVM sizes. Plus `vm.swappiness=80`/`vm.vfs_cache_pressure=50`, and optionally `earlyoom` — protection against the whole server locking up when memory runs out.
 
 **SSH hardening** — switches login to key-only, disables password login and root login. The riskiest item in the menu, and the only one with a self-test before it applies anything: before disabling the password, it sets up a one-time key and actually verifies login with it — if that check fails, it automatically rolls back the config and leaves the password enabled.
 
