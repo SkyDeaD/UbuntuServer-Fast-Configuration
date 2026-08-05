@@ -9,39 +9,77 @@
 <p align="center"><b>🇷🇺 Русский</b> · <a href="MANUAL.en.md">🇬🇧 English</a></p>
 
 Если не хочется гонять чужой `curl | sudo bash` на своём сервере — вот те же
-12 пунктов меню [usfc](../README.md), но руками, командами. Порядок такой же,
+14 пунктов меню [usfc](../README.md), но руками, командами. Порядок такой же,
 как в самом меню, и это не случайно: раздел «защита» — последним, чтобы UFW
-увидел уже поднятые Docker/nginx (см. пункт 12).
+увидел уже поднятые Docker/nginx (см. пункт 14).
 
 ## Содержание
 
-- [1. Базовые пакеты](#1-базовые-пакеты)
-- [2. CLI-утилиты + starship](#2-cli-утилиты--starship)
-- [3. fastfetch](#3-fastfetch)
-- [4. tmux](#4-tmux)
-- [5. Docker + Compose](#5-docker--compose)
-- [6. nginx-full](#6-nginx-full)
-- [7. Docker log rotation](#7-docker-log-rotation)
-- [8. fail2ban](#8-fail2ban)
-- [9. unattended-upgrades](#9-unattended-upgrades)
-- [10. ZRAM + swap + earlyoom](#10-zram--swap--earlyoom)
-- [11. SSH hardening](#11-ssh-hardening)
-- [12. UFW firewall](#12-ufw-firewall)
+- [1. Пользователь + sudo](#1-пользователь--sudo)
+- [2. Базовые пакеты](#2-базовые-пакеты)
+- [3. CLI-утилиты + starship](#3-cli-утилиты--starship)
+- [4. fastfetch](#4-fastfetch)
+- [5. tmux](#5-tmux)
+- [6. Docker + Compose](#6-docker--compose)
+- [7. nginx-full](#7-nginx-full)
+- [8. Certbot + плагины](#8-certbot--плагины)
+- [9. Docker log rotation](#9-docker-log-rotation)
+- [10. fail2ban](#10-fail2ban)
+- [11. unattended-upgrades](#11-unattended-upgrades)
+- [12. ZRAM + swap + earlyoom](#12-zram--swap--earlyoom)
+- [13. SSH hardening](#13-ssh-hardening)
+- [14. UFW firewall](#14-ufw-firewall)
 
-## 1. Базовые пакеты
+## 1. Пользователь + sudo
+
+Нужен, только если сервер выдали с одним лишь `root` — типичная ситуация у VPS-хостеров.
+Работать дальше из-под root не стоит: SSH hardening (пункт 13) без отдельного
+пользователя не работает в принципе, а всё, что кладётся в домашний каталог
+(алиасы, fastfetch, tmux, starship), осядет в `/root` и исчезнет из виду, как
+только ты перезайдёшь под нормальным аккаунтом.
+
+```bash
+# создать пользователя с домашним каталогом и нормальным шеллом
+useradd -m -s /bin/bash admin
+passwd admin                      # или passwd -l admin — вход только по ключу
+
+# дать sudo
+usermod -aG sudo admin
+```
+
+Дальше — **самое важное и чаще всего забываемое**. Если ты заходишь на сервер по
+SSH-ключу, то ключ лежит в `/root/.ssh/authorized_keys`, а у нового пользователя
+его нет. Без копирования он не сможет войти вообще — и если после этого применить
+SSH hardening, доступ к серверу будет потерян:
+
+```bash
+install -d -o admin -g admin -m 700 /home/admin/.ssh
+install -o admin -g admin -m 600 /root/.ssh/authorized_keys /home/admin/.ssh/authorized_keys
+```
+
+Проверь, что вход работает, **не закрывая текущую сессию**:
+
+```bash
+ssh admin@<ip-сервера> 'id && sudo -n true && echo SUDO_OK'
+```
+
+Только после успешной проверки перезаходи под новым пользователем и продолжай
+с пункта 2.
+
+## 2. Базовые пакеты
 
 ```bash
 sudo apt update
-sudo apt install -y micro curl wget git nano certbot python3-certbot-nginx \
-    unzip htop bind9-dnsutils jq software-properties-common ca-certificates \
-    gnupg rsync
+sudo apt install -y micro curl wget git nano unzip htop bind9-dnsutils jq \
+    software-properties-common ca-certificates gnupg rsync
 ```
 
 `software-properties-common` нужен ради `add-apt-repository` — без него не
-встанет PPA для fastfetch (пункт 3). `bind9-dnsutils` — реальное имя пакета
-за виртуальным `dnsutils` в Ubuntu 26.04.
+встанет PPA для fastfetch (пункт 4). `bind9-dnsutils` — реальное имя пакета
+за виртуальным `dnsutils` в Ubuntu 26.04. `certbot` сюда больше не входит —
+он переехал в пункт 8.
 
-## 2. CLI-утилиты + starship
+## 3. CLI-утилиты + starship
 
 ```bash
 sudo apt install -y eza bat fd-find ripgrep zoxide ncdu
@@ -65,7 +103,7 @@ command -v starship &>/dev/null && eval "$(starship init bash)"
 
 `eza`/`bat` прекрасно работают и без алиасов: `eza --icons -la`, `batcat file.txt`.
 
-## 3. fastfetch
+## 4. fastfetch
 
 ```bash
 sudo add-apt-repository -y ppa:zhangsongcui3371/fastfetch
@@ -90,7 +128,7 @@ if [ -x "$(command -v fastfetch)" ]; then
 fi
 ```
 
-## 4. tmux
+## 5. tmux
 
 ```bash
 sudo apt install -y tmux
@@ -108,7 +146,7 @@ set -g status-right '%H:%M %d-%b-%y'
 setw -g automatic-rename on
 ```
 
-## 5. Docker + Compose
+## 6. Docker + Compose
 
 Официальный репозиторий Docker, не `docker.io` из репов Ubuntu — тот старый:
 
@@ -131,14 +169,96 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"   # перелогиньтесь, чтобы применилось без sudo
 ```
 
-## 6. nginx-full
+## 7. nginx-full
 
 ```bash
 sudo apt install -y nginx-full
-sudo systemctl enable --now nginx
+sudo systemctl enable --now nginx     # если нужно поднять прямо сейчас
 ```
 
-## 7. Docker log rotation
+Пакет поднимает сервис сам, из postinst. Если поднимать его пока не нужно —
+не «ставь и гаси» (nginx успеет занять `:80`, а на занятом порту установка ещё
+и ругнётся), а запрети старт на время установки штатным для Debian способом:
+
+```bash
+printf '#!/bin/sh\nexit 101\n' | sudo tee /usr/sbin/policy-rc.d >/dev/null
+sudo chmod +x /usr/sbin/policy-rc.d
+sudo apt install -y nginx-full
+sudo rm -f /usr/sbin/policy-rc.d      # ОБЯЗАТЕЛЬНО: иначе сломается старт
+                                      # сервисов при любой будущей установке
+sudo systemctl disable nginx
+```
+
+## 8. Certbot + плагины
+
+`certbot` вынесен из базовых пакетов в отдельный пункт: TLS — это сервис со
+своими плагинами и секретами, и нужен он не на каждом сервере.
+
+```bash
+apt-get install -y certbot
+
+# HTTP-01 — обычные сертификаты через уже поднятый nginx
+apt-get install -y python3-certbot-nginx
+
+# DNS-01 — без него не выпустить wildcard (*.example.com)
+apt-get install -y python3-certbot-dns-cloudflare
+```
+
+> **Про WARNING от python-cloudflare 2.20.** Плагин объявляет
+> `Depends: python3-cloudflare (<< 3.0)`, а в архиве Ubuntu 26.04 лежит ровно
+> одна подходящая версия — `2.20.0`, и баннер из неё Ubuntu не вырезала
+> (`/usr/lib/python3/dist-packages/CloudFlare/warning_2_20.py` на месте).
+>
+> Проверено на живой системе: баннер срабатывает в конструкторе клиента
+> (`CloudFlare/cloudflare.py`), то есть **при реальном выпуске сертификата**.
+> При `apt install`, `certbot --version` и `certbot plugins` его нет.
+>
+> Отключить его нельзя: `warn_warning_2_20()` сам вызывает
+> `warnings.simplefilter('always', PendingDeprecationWarning)` и перебивает
+> и `PYTHONWARNINGS=ignore`, и `python3 -W ignore` — проверял, не работает
+> ни то, ни другое. Но он безвреден: к установке из apt претензия не относится
+> (версия закреплена зависимостью пакета, а не выехала сама из `pip`), и на
+> выпуск сертификатов он не влияет. Патчить файлы дистрибутива ради тишины
+> не нужно.
+
+Cloudflare-плагину нужен API-токен. Токен должен иметь права **Zone:DNS:Edit**:
+
+```bash
+install -d -m 700 /root/.secrets/certbot
+umask 077
+echo 'dns_cloudflare_api_token = ТВОЙ_ТОКЕН' > /root/.secrets/certbot/cloudflare.ini
+chmod 600 /root/.secrets/certbot/cloudflare.ini
+```
+
+Права важны: при более открытых certbot сам откажется работать с файлом.
+Выпуск wildcard-сертификата:
+
+```bash
+certbot certonly --dns-cloudflare \
+  --dns-cloudflare-credentials /root/.secrets/certbot/cloudflare.ini \
+  -d example.com -d "*.example.com"
+```
+
+### TLS-заготовки для nginx
+
+`/etc/letsencrypt/ssl-dhparams.pem` и `/etc/letsencrypt/options-ssl-nginx.conf`
+создаёт только nginx-*installer* certbot'а (то есть `certbot --nginx`). При
+выпуске через `certbot certonly` — а это ровно то, ради чего ставят DNS-01, —
+они не появятся, и типовой конфиг nginx, который на них ссылается, положит
+сервер при старте.
+
+Генерировать `dhparam` через `openssl` не нужно: там та же стандартная группа
+ffdhe2048, что уже лежит внутри пакета certbot. Просто скопируй:
+
+```bash
+install -d -m 755 /etc/letsencrypt
+install -m 644 "$(find /usr/lib/python3/dist-packages -name ssl-dhparams.pem | head -1)" \
+    /etc/letsencrypt/ssl-dhparams.pem
+install -m 644 "$(find /usr/lib/python3/dist-packages -name options-ssl-nginx.conf | head -1)" \
+    /etc/letsencrypt/options-ssl-nginx.conf
+```
+
+## 9. Docker log rotation
 
 Ограничивает логи контейнеров (10 МБ на файл, максимум 3 файла), не
 перезаписывая остальной `daemon.json`, если он уже существует:
@@ -163,7 +283,7 @@ sudo mkdir -p /etc/docker
 sudo systemctl restart docker   # перезапустит ВСЕ контейнеры вместе с демоном
 ```
 
-## 8. fail2ban
+## 10. fail2ban
 
 Замените `22` на реальный SSH-порт сервера, если он у вас другой:
 
@@ -186,7 +306,7 @@ bantime = 1h
 sudo systemctl enable --now fail2ban
 ```
 
-## 9. unattended-upgrades
+## 11. unattended-upgrades
 
 ```bash
 sudo apt install -y unattended-upgrades
@@ -203,7 +323,7 @@ APT::Periodic::Unattended-Upgrade "1";
 sudo systemctl enable --now unattended-upgrades
 ```
 
-## 10. ZRAM + swap + earlyoom
+## 12. ZRAM + swap + earlyoom
 
 В скрипте и `PERCENT` для zram, и размер резервного swap-файла теперь
 спрашиваются интерактивно (zram — по умолчанию предлагает 75%, swap-файл —
@@ -251,7 +371,7 @@ sudo apt install -y earlyoom
 sudo systemctl enable --now earlyoom
 ```
 
-## 11. SSH hardening
+## 13. SSH hardening
 
 **Отдельное и самое важное предупреждение: делая это руками, вы теряете
 самопроверку, которую делает скрипт** (одноразовый ключ, реальный логин
@@ -316,7 +436,7 @@ sudo chmod 440 /etc/sudoers.d/ваш_пользователь
 sudo visudo -c   # проверить синтаксис ПОСЛЕ записи — важно не пропустить
 ```
 
-## 12. UFW firewall
+## 14. UFW firewall
 
 Сначала посмотрите, что реально слушает порты — иначе рискуете отрезать себе
 что-то уже работающее (VPN, прокси на нестандартном порту):

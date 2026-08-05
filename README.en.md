@@ -14,7 +14,7 @@
 
 <p align="center"><a href="README.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
-Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 12-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
+Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 14-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
 
 ## Requirements
 
@@ -35,7 +35,7 @@ Ubuntu 24.04 or 26.04, root access, outbound internet.
 curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash && source ~/.bashrc
 ```
 
-Installs itself as the `usfc` command, quietly runs `apt update`, and opens the menu. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
+Installs itself as the `usfc` command and opens the menu right away — no waiting: `apt update` no longer runs at startup, it's pulled in lazily and only before an actual install. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
 
 <div align="center">
 
@@ -48,7 +48,35 @@ Installs itself as the `usfc` command, quietly runs `apt update`, and opens the 
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). A batch of items asks once, then each runs through its own default answers without stopping, and finishes with a summary of what got installed, what failed, and what was skipped. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
+
+### Running on a bare server (root only)
+
+Plenty of hosts hand you a VPS with nothing but `root`. The script notices and **offers to create a regular sudo user first** (defaults to yes):
+
+```
+[!] Скрипт запущен от имени root.
+[i] РЕКОМЕНДУЮ создать обычного пользователя с sudo: ...
+
+  Создать пользователя сейчас? [Y/n]:
+```
+
+It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, and offers to **copy the keys from `/root/.ssh/authorized_keys`** — without that the new user simply can't log in if you reach the server by key. An empty password is allowed: the account is then key-only.
+
+The script then switches to the new user inside the running session, so aliases, fastfetch and tmux land in their home rather than `/root`. On exit it reminds you to reconnect as that user.
+
+Decline and nothing breaks: item **1 "Пользователь + sudo"** stays available in the menu. Like SSH hardening and UFW, it is skipped by `A` ("install everything") — a name and a password can't be silently defaulted.
+
+### Flags
+
+```bash
+usfc --help        # help
+usfc --version     # version
+usfc --no-update   # skip the usfc self-update check
+usfc --verbose     # raw command output instead of the spinner
+```
+
+A full log of every command run is always written to `/var/log/usfc.log`, even when the screen only shows a spinner.
 
 Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
 
@@ -57,7 +85,9 @@ Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, ite
 <details>
 <summary>Base, services, hardening — in order</summary>
 
-**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `certbot` + `python3-certbot-nginx`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. Deliberately item 1.
+**Пользователь + sudo (user + sudo)** — creates a regular sudo user, copies SSH keys over from `/root`, and points the rest of the setup at them. This is what you want when the server arrived with only `root`. See above.
+
+**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. `certbot` moved out into its own item (see below).
 
 **CLI tools + starship** — modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd`; `ncdu` for disk usage) plus the starship prompt — bundled together since it's all the same "what the terminal looks and feels like" layer. `.bashrc` aliases (`ls`/`ll`/`la`/`lt`/`cat`/`catp`/`scat`/`fd`) and the zoxide/starship `eval` lines are written by this same item, not a separate step later.
 
@@ -68,6 +98,14 @@ Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, ite
 **Docker + Compose** — CE + Compose plugin from the official Docker repo (not the `docker.io` package from Ubuntu's own repos — that one's stale).
 
 **nginx-full** — web server / reverse proxy.
+
+> **About nginx and Docker autostart.** Both packages start their service themselves, from postinst. The script asks about that **before** installing, and the default answer is **no** — you don't always want the server up right now. So that "don't start it" means exactly that, rather than "start it and immediately kill it" (nginx would grab `:80` in between), the install is wrapped in `policy-rc.d`. A deliberately disabled service counts as a finished state in the menu, not an unfinished one, so it stops nagging. Start it later with `sudo systemctl enable --now nginx`.
+
+**Certbot + plugins** — `certbot` itself, plus optionally the `nginx` plugin (HTTP-01, ordinary certificates) and the `dns-cloudflare` plugin (DNS-01, required for wildcards). For Cloudflare it offers to create `/root/.secrets/certbot/cloudflare.ini` with your API token (hidden input, mode `600`; the token needs `Zone:DNS:Edit`). Decline and the menu keeps showing `! токен CF не задан`, because the plugin is useless without that file.
+
+> **About the python-cloudflare 2.20 WARNING.** The plugin declares `Depends: python3-cloudflare (<< 3.0)`, and Ubuntu 26.04's archive carries exactly one matching version — `2.20.0` — with the banner left intact. Verified on a live system: it fires from the client constructor, i.e. **when a certificate is actually issued**, not at install time — `apt install`, `certbot --version` and `certbot plugins` stay quiet. It cannot be turned off: `warn_warning_2_20()` calls `warnings.simplefilter('always', ...)` itself, overriding both `PYTHONWARNINGS` and `python3 -W ignore`. It does not affect issuance — the version is pinned by the package's own dependency, not dragged in by `pip`. The script warns about it up front so the banner doesn't look like a failure.
+
+It also offers to drop `ssl-dhparams.pem` and `options-ssl-nginx.conf` into `/etc/letsencrypt/`. Only certbot's nginx *installer* creates those, and issuing a wildcard via `certbot certonly` never does — so a typical nginx config that references them takes the server down on start. Both files are copied out of the certbot package itself; nothing is generated or downloaded.
 
 **Docker log rotation** — caps container logs at 10 MB per file: without this, Docker's logs are unbounded by default and can eventually fill up the disk.
 
