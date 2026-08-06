@@ -166,6 +166,10 @@ sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"   # re-login for this to apply without sudo
+
+# To really turn Docker off you need BOTH units: while docker.socket is alive,
+# the daemon comes back on the first request to /var/run/docker.sock
+sudo systemctl disable --now docker.socket docker.service
 ```
 
 ## 7. nginx-full
