@@ -48,7 +48,9 @@ Installs itself as the `usfc` command and opens the menu right away — no waiti
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`) — per-item help: what each item does, its current status and how to roll it back. `H` — alias reference, `R` — rollback commands, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`, and `R` too) — per-item help and rollback: what each item does, its current status, how to switch it off and how to remove it entirely. `H` — alias reference, `U` — remove `usfc` itself.
+
+Items marked with `⇄` in the table switch off by picking them again: the script sees the setting is applied and offers the opposite action. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
 
 ### Running on a bare server (root only)
 
@@ -84,6 +86,8 @@ Color is disabled by the `NO_COLOR` variable (its value does not matter, only it
 
 Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
 
+What changed between versions — see [CHANGELOG.md](CHANGELOG.md).
+
 ## What each item does
 
 <details>
@@ -103,7 +107,9 @@ Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, ite
 
 **nginx-full** — web server / reverse proxy.
 
-> **About nginx and Docker autostart.** Both packages start their service themselves, from postinst. The script asks about that **before** installing, and the default answer is **no** — you don't always want the server up right now. So that "don't start it" means exactly that, rather than "start it and immediately kill it" (nginx would grab `:80` in between), the install is wrapped in `policy-rc.d`. A deliberately disabled service counts as a finished state in the menu, not an unfinished one, so it stops nagging. Start it later with `sudo systemctl enable --now nginx`.
+> **About nginx and Docker autostart.** Both packages start their service themselves, from postinst. The script asks about that **before** installing, and the default answer is **no** — you don't always want the server up right now. So that "don't start it" means exactly that, rather than "start it and immediately kill it" (nginx would grab `:80` in between), the install is wrapped in `policy-rc.d`. A deliberately disabled service counts as a finished state in the menu, not an unfinished one, so it stops nagging.
+>
+> **You can change your mind later.** On an installed system both items act as switches: they show the current state and offer the opposite — stop a running service, or start a stopped one along with its autostart. For Docker both units go down together, `docker.service` and `docker.socket`: without the second one the daemon comes back on the first request to the socket, and "autostart disabled" would be a lie.
 
 **Certbot + plugins** — `certbot` itself, plus optionally the `nginx` plugin (HTTP-01, ordinary certificates) and the `dns-cloudflare` plugin (DNS-01, required for wildcards). For Cloudflare it offers to create `/root/.secrets/certbot/cloudflare.ini` with your API token (hidden input, mode `600`; the token needs `Zone:DNS:Edit`). Decline and the menu keeps showing `! токен CF не задан`, because the plugin is useless without that file.
 
