@@ -547,18 +547,52 @@ resolve_autostart() {
     ask_yn "$2" N
 }
 
+# service_units <docker|nginx> → REPLY_UNITS, все юниты сервиса разом.
+#
+# Для Docker их два, и это не формальность: docker.service поднимается
+# СОКЕТ-АКТИВАЦИЕЙ. Пока docker.socket включён, «systemctl disable --now docker»
+# гасит только демона, а первое же обращение к /var/run/docker.sock поднимает
+# его обратно — и статус «автозапуск выкл.» оказывается враньём. Проверено:
+# после disable сокет оставался enabled/active.
+#
+# Порядок в массиве — это порядок остановки И порядок запуска, и он тоже важен:
+# сокет должен подниматься ПЕРВЫМ. Если сначала стартовать docker.service, тот
+# создаст /var/run/docker.sock сам, и docker.socket потом не сможет к нему
+# привязаться.
+REPLY_UNITS=()
+service_units() {
+    case "${1:-}" in
+        docker) REPLY_UNITS=(docker.socket docker.service) ;;
+        *)      REPLY_UNITS=("${1}") ;;
+    esac
+}
+
+# service_is_up <docker|nginx> — 0, если сервис работает ИЛИ поднимется сам:
+# при загрузке (enabled) или по обращению к сокету. «Выключен» — это когда
+# ни один из юнитов не активен и не включён.
+service_is_up() {
+    local u
+    service_units "$1"
+    for u in "${REPLY_UNITS[@]}"; do
+        systemctl is-active "$u" &>/dev/null && return 0
+        [ "$(systemctl is-enabled "$u" 2>/dev/null)" = "enabled" ] && return 0
+    done
+    return 1
+}
+
 apply_service_autostart() {
     local svc="$1" want="$2"
+    service_units "$svc"
     if [ "$want" = true ]; then
-        if systemctl enable --now "$svc" >/dev/null 2>&1; then
+        if systemctl enable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1; then
             log_success "${svc}: запущен, автозапуск включён"
         else
             log_error "Не удалось запустить ${svc} — подробности: journalctl -u ${svc}"
         fi
     else
-        systemctl disable --now "$svc" >/dev/null 2>&1
+        systemctl disable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1
         log_success "${svc}: установлен, но НЕ запущен (автозапуск выключен)"
-        log_info "Запустить позже: ${BOLD}sudo systemctl enable --now ${svc}${NC}"
+        log_info "Включить позже: пункт $(item_number "$svc") в меню"
     fi
 }
 
@@ -880,10 +914,17 @@ status_docker() {
     fi
     local ver
     ver="$(docker --version 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
-    if systemctl is-active docker &>/dev/null; then
+    if systemctl is-active docker.service &>/dev/null; then
         echo -e "${GREEN}✓ установлен (${ver})${NC}"; return 0
     fi
-    if [ "$(systemctl is-enabled docker 2>/dev/null)" = "disabled" ]; then
+    # Демон стоит, но сокет жив — Docker поднимется по первому обращению.
+    # Писать тут «автозапуск выкл.» нельзя: это ровно то состояние, в котором
+    # оставлял систему прежний «systemctl disable --now docker» (см. service_units)
+    if systemctl is-active docker.socket &>/dev/null \
+       || [ "$(systemctl is-enabled docker.socket 2>/dev/null)" = "enabled" ]; then
+        echo -e "${GREEN}✓ ${ver}, старт по запросу${NC}"; return 0
+    fi
+    if [ "$(systemctl is-enabled docker.service 2>/dev/null)" = "disabled" ]; then
         echo -e "${GREEN}✓ ${ver}, автозапуск выкл.${NC}"; return 0
     fi
     echo -e "${YELLOW}! ${ver}, не запущен${NC}"; return 1
@@ -1525,6 +1566,36 @@ apply_certbot_tls_assets() {
 }
 
 apply_docker() {
+    # Ветка «уже установлен» — как у apply_nginx. Без неё выбор этого пункта на
+    # системе с Docker уходил в полную переустановку: ключ, репозиторий, apt.
+    # Условие то же, что у status_docker, иначе меню и действие разойдутся
+    if command -v docker &>/dev/null; then
+        log_info "Docker уже установлен: $(docker --version 2>/dev/null)"
+        local enabled active
+        active="$(systemctl is-active docker.service 2>/dev/null)"
+        enabled="$(systemctl is-enabled docker.service 2>/dev/null)"
+        if [ "$active" = "active" ]; then
+            log_success "Docker запущен ${DIM}(автозапуск: ${enabled:-?})${NC}"
+            if [ "$enabled" != "enabled" ] && ask_yn "Включить автозапуск Docker при загрузке?" N; then
+                service_units docker
+                systemctl enable "${REPLY_UNITS[@]}" >/dev/null 2>&1 && log_success "Автозапуск включён"
+            fi
+        elif ask_yn "Docker не запущен. Запустить и включить автозапуск?" N; then
+            apply_service_autostart docker true
+        else
+            log_info "Оставляю Docker выключенным"
+        fi
+        # Docker мог приехать не отсюда (docker.io, ручная установка) — тогда
+        # группы у пользователя нет, и sudo требуется на каждый docker-вызов
+        if [ "$TARGET_USER" != "root" ] && ! id -nG "$TARGET_USER" 2>/dev/null | grep -qw docker; then
+            if ask_yn "Добавить ${TARGET_USER} в группу docker (работа без sudo)?" Y; then
+                usermod -aG docker "$TARGET_USER"
+                log_info "Готово — перелогинься, чтобы группа применилась"
+            fi
+        fi
+        return 0
+    fi
+
     if ! ask_yn "Установить Docker + Docker Compose (официальный репозиторий)?"; then return; fi
     # спрашиваем ДО установки — ответ решает, дать ли postinst поднять демон
     local autostart=false
@@ -2222,6 +2293,43 @@ apply_ufw() {
 # ═══════════════════════════════════════════════════════════════
 # DISABLE-функции — только для безопасно обратимых пунктов
 # ═══════════════════════════════════════════════════════════════
+# У пунктов «защиты» disable_* только выключает, и этого достаточно: их статус
+# после выключения становится «не применено», так что повторный выбор сам уходит
+# в apply_* и включает обратно.
+#
+# С nginx и Docker так нельзя. Их статус намеренно остаётся ЗЕЛЁНЫМ и для
+# сознательно выключенного сервиса — иначе режим A предлагал бы его при каждом
+# прогоне (это чинили в 2.6.0). Значит повторный выбор всегда приходит сюда,
+# и включать обратно приходится тоже здесь. Поэтому обе функции ниже —
+# переключатели: смотрят на текущее состояние и предлагают противоположное.
+disable_nginx() {
+    if service_is_up nginx; then
+        if ! ask_yn "Остановить nginx и убрать из автозапуска? Сайты на :80 и :443 перестанут отвечать" N; then
+            log_info "Оставляю nginx как есть"; return 0
+        fi
+        apply_service_autostart nginx false
+    else
+        if ! ask_yn "nginx выключен. Запустить и включить автозапуск?" Y; then
+            log_info "Оставляю nginx выключенным"; return 0
+        fi
+        apply_service_autostart nginx true
+    fi
+}
+
+disable_docker() {
+    if service_is_up docker; then
+        if ! ask_yn "Остановить Docker и убрать из автозапуска? Все запущенные контейнеры встанут" N; then
+            log_info "Оставляю Docker как есть"; return 0
+        fi
+        apply_service_autostart docker false
+    else
+        if ! ask_yn "Docker выключен. Запустить и включить автозапуск?" Y; then
+            log_info "Оставляю Docker выключенным"; return 0
+        fi
+        apply_service_autostart docker true
+    fi
+}
+
 disable_dockerlog() {
     if [ ! -f /etc/docker/daemon.json ]; then log_info "daemon.json нет — нечего отключать"; return; fi
     if ask_yn "Убрать лимиты логов из daemon.json?" N; then
@@ -2282,7 +2390,7 @@ ITEM_TITLES=(
     "UFW firewall"
 )
 ITEM_SECTIONS=(система база база база база сервисы сервисы сервисы защита защита защита защита защита защита)
-DISABLE_SUPPORTED=(dockerlog fail2ban unattended zram ufw)
+DISABLE_SUPPORTED=(docker nginx dockerlog fail2ban unattended zram ufw)
 
 # Буквы разделов. Раньше раскрытие B/S/P было зашито числами прямо в main()
 # ("B) valid+=(1 2 3 4)"), и любой новый пункт молча ломал его. Теперь это
@@ -2384,14 +2492,22 @@ docker.io из репозиториев Ubuntu — тот заметно ста�
 
 Автозапуск спрашивается ДО установки и по умолчанию выключен: сервер не всегда
 нужно поднимать прямо сейчас. Пользователь добавляется в группу docker, чтобы
-работать без sudo (нужен перелогин)."
+работать без sudo (нужен перелогин).
+
+Когда Docker уже стоит, этот же пункт работает выключателем: показывает
+текущее состояние и предлагает обратное — остановить работающий демон или
+поднять остановленный. Выключение снимает и docker.service, и docker.socket:
+без второго демон возвращается сам при первом обращении к сокету."
 
 "Веб-сервер и реверс-прокси, пакет nginx-full.
 
 Автозапуск спрашивается ДО установки, по умолчанию выключен. Чтобы «не
 запускать» означало именно это, а не «поднять и тут же погасить» (nginx успел
 бы занять :80), установка оборачивается в policy-rc.d. Намеренно выключенный
-сервис считается законченным состоянием и больше не переспрашивается."
+сервис считается законченным состоянием и больше не переспрашивается.
+
+Когда nginx уже стоит, этот же пункт работает выключателем: остановит
+работающий сервер или поднимет остановленный — смотря что сейчас."
 
 "Сам certbot плюс, по выбору, плагин nginx (HTTP-01, обычные сертификаты)
 и плагин dns-cloudflare (DNS-01 — без него не выпустить wildcard).
@@ -2449,10 +2565,12 @@ swap-файл уже есть и его размер расходится с р�
 прокси, его порт всё равно стоит проверить глазами перед включением."
 )
 
-# Параллельно ITEM_IDS — команды отката для справочного экрана (R). Пусто там,
-# где пункт входит в DISABLE_SUPPORTED: для них show_rollback_reference() сама
-# генерирует единую строку вместо ручных команд, так что нумерация/маркеры
-# никогда не расходятся с реальным меню.
+# Параллельно ITEM_IDS — команды «удалить совсем» для экрана справки. Скрипт
+# их не выполняет: apt purge может утащить за собой чужие зависимости, а
+# /var/lib/docker и /etc/nginx — это чьи-то данные.
+#
+# У ⇄-пунктов они тоже заполнены, и это осмысленно: выключить сервис и снести
+# пакет — разные вещи, и show_item_detail показывает оба способа сразу.
 ROLLBACK_NOTES=(
 "sudo deluser --remove-home <имя>          # удалить пользователя вместе с /home
      sudo gpasswd -d <имя> sudo               # или просто отобрать sudo, оставив аккаунт
@@ -2468,11 +2586,11 @@ ROLLBACK_NOTES=(
      sed -i '/# >>> vps-setup:fastfetch >>>/,/# <<< vps-setup:fastfetch <<</d' ~/.bashrc"
 "sudo apt purge tmux
      rm -f ~/.tmux.conf"
-"sudo systemctl stop docker
+"sudo systemctl disable --now docker.socket docker.service
      sudo apt purge docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
      sudo rm -rf /var/lib/docker /var/lib/containerd
      # УДАЛЯЕТ все контейнеры/образы/volume без возврата — сначала забэкапь данные"
-"sudo systemctl stop nginx
+"sudo systemctl disable --now nginx
      sudo apt purge nginx-full
      sudo rm -rf /etc/nginx
      # УДАЛЯЕТ конфиги сайтов в /etc/nginx — если уже настраивал поверх, забэкапь"
@@ -2480,15 +2598,26 @@ ROLLBACK_NOTES=(
      sudo rm -f ${CF_CREDENTIALS}
      sudo rm -f /etc/letsencrypt/ssl-dhparams.pem /etc/letsencrypt/options-ssl-nginx.conf
      # /etc/letsencrypt/live и archive НЕ трогай, если сертификаты ещё используются"
-""
-""
-""
-""
+"sudo rm -f /etc/docker/daemon.json      # если в файле больше ничего нет
+     sudo systemctl restart docker           # контейнеры при этом встанут и поднимутся заново"
+"sudo apt purge fail2ban
+     sudo rm -rf /etc/fail2ban
+     # заблокированные IP сбросятся вместе с базой в /var/lib/fail2ban"
+"sudo apt purge unattended-upgrades
+     sudo rm -f /etc/apt/apt.conf.d/20auto-upgrades
+     # security-обновления перестанут ставиться сами — придётся apt upgrade руками"
+"sudo apt purge zram-tools earlyoom
+     sudo swapoff /swapfile && sudo rm -f /swapfile
+     sudo sed -i '/^\\/swapfile /d' /etc/fstab
+     sudo rm -f /etc/sysctl.d/99-zram.conf && sudo sysctl --system
+     # снимать своп имеет смысл, только если памяти заведомо хватает"
 "sudo rm -f /etc/ssh/sshd_config.d/10-hardening.conf
      sudo systemctl restart ssh
      sudo rm -f /etc/sudoers.d/${TARGET_USER}
      # возвращает вход по паролю — убедись, что есть другой способ попасть на сервер"
-""
+"sudo ufw reset          # сбросить правила и выключить
+     sudo apt purge ufw      # снести совсем
+     # сервер останется без файрвола — открыты все порты, которые слушают сервисы"
 )
 
 item_supports_disable() {
@@ -2774,16 +2903,20 @@ show_menu() {
     # idx_w=3, не 2: pad_title всегда добавляет минимум 1 пробел-паддинга (см. её
     # реализацию), поэтому при ширине ровно "12" (2 символа) паддинг обнулялся бы
     # и принудительно поднимался до 1, ломая выравнивание рамки именно на пунктах 10-14
-    local idx_w=3 title_w=26 status_w inner_w=$TERM_W
+    local idx_w=3 title_w=26 status_w inner_w=$TERM_W name_w
     # -10: 4 символа рамки (╭/│×2/╮ и аналоги) + по 2 паддинга на три колонки,
     # минус собственные "+2" статусной колонки, которую эта формула и вычисляет
     status_w=$(( inner_w - idx_w - title_w - 10 ))
     # 6 — минимум, при котором рамка ещё влезает в нижнюю границу TERM_W
     [ "$status_w" -lt 6 ] && status_w=6
 
+    # последние 2 символа колонки «Пункт» отданы метке ⇄ — она стоит в своём
+    # столбике справа, а не приклеена к названию (иначе край рваный)
+    name_w=$(( title_w - 2 )); [ "$name_w" -lt 1 ] && name_w=1
+
     local c_idx c_title c_status
     box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$status_w"
-    pad_title "#"      "$idx_w";    c_idx="$REPLY_PAD"
+    printf -v c_idx "%${idx_w}s" "#"
     pad_title "Пункт"  "$title_w";  c_title="$REPLY_PAD"
     pad_title "Статус" "$status_w"; c_status="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
@@ -2801,7 +2934,7 @@ show_menu() {
         # остаются на своих местах и рамка не едет
         if [ "$section" != "$prev_section" ]; then
             prev_section="$section"
-            pad_title "" "$idx_w";                        c_idx="$REPLY_PAD"
+            printf -v c_idx "%${idx_w}s" ""
             pad_title "● ${section^^}" "$title_w";        c_title="$REPLY_PAD"
             pad_title "" "$status_w";                     c_status="$REPLY_PAD"
             printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}${BOLD}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC}\n" \
@@ -2820,13 +2953,15 @@ show_menu() {
         # «любой применённый пункт защиты», хотя SSH hardening — тоже защита,
         # но отключать его из меню нельзя. Метка избавляет от правила
         # с исключениями, которое всё равно не влезало в строку
-        local title_txt="  ${ITEM_TITLES[$((i-1))]}" t_pad
-        item_supports_disable "$id" && title_txt="${title_txt} ⇄"
-        truncate_colored "$title_txt" "$title_w"; c_title="$REPLY_TRUNC"
-        visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
-        pad_title "$i" "$idx_w"; c_idx="$REPLY_PAD"
-        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s${DIM}%*s${NC} ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
-            "$c_idx" "$c_title" "$t_pad" "" "$status_line" "$status_pad" ""
+        # mark занимает ровно 2 видимых символа в обоих случаях — за счёт этого
+        # name_w + mark = title_w, и рамка не едет ни на одной строке
+        local title_txt="  ${ITEM_TITLES[$((i-1))]}" t_pad mark='  '
+        item_supports_disable "$id" && mark=" ${CYAN}⇄${NC}"
+        truncate_colored "$title_txt" "$name_w"; c_title="$REPLY_TRUNC"
+        visible_len "$c_title"; t_pad=$((name_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
+        printf -v c_idx "%${idx_w}s" "$i"
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s%*s%b ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+            "$c_idx" "$c_title" "$t_pad" "" "$mark" "$status_line" "$status_pad" ""
         i=$((i+1))
     done
     box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$status_w"
@@ -2846,7 +2981,10 @@ show_menu() {
     # 120 колонок и обрезалась на «предложит откл...», да ещё и обещала то,
     # чего нет — отключать умеют не все пункты «защиты» (см. метку ⇄ в таблице)
     legend2="${lbl_blank}${DIM}буквы разделов можно сочетать: B,S${NC}"
-    legend2b="${lbl_blank}${DIM}${NC}${CYAN}⇄${NC}${DIM} — выбери такой пункт снова, чтобы отключить${NC}"
+    # Метка стоит не только у «защиты», и раньше это читалось как «остальное
+    # не откатывается». Откатывается всё, просто у остальных пунктов это
+    # apt purge — команды лежат на экране I, куда строка теперь и отправляет
+    legend2b="${lbl_blank}${CYAN}⇄${NC}${DIM} — выключается повторным выбором; удалить остальное — экран ${NC}${CYAN}${BOLD}I${NC}"
 
     # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
     # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
@@ -2860,11 +2998,14 @@ show_menu() {
     grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}"      "$item_w"; g3="$REPLY_CELL"
     grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w"; g4="$REPLY_CELL"
     legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} всё"
+    # Отдельного «R откат» здесь больше нет: R и I открывают один и тот же
+    # экран, и две клавиши в строке выглядели как два разных места.
+    # Саму клавишу R скрипт по-прежнему принимает — она у людей в пальцах
     grid_cell "${CYAN}${BOLD}I${NC} справка" "$item_w"; g1="$REPLY_CELL"
     grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g2="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}R${NC} откат"   "$item_w"; g3="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g4="$REPLY_CELL"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} выход"
+    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g3="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}Q${NC} выход"   "$item_w"; g4="$REPLY_CELL"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
         local ltrunc lpad
@@ -2888,7 +3029,13 @@ process_item() {
     echo ""
     local rc=0
     if item_supports_disable "$id" && item_applied "$id"; then
-        echo -e "  ${prefix}${CYAN}${BOLD}▸ Отключить: ${title}${NC}"
+        # У nginx и Docker disable_* — переключатель (см. комментарий там же),
+        # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
+        local verb="Отключить"
+        case "$id" in
+            nginx|docker) service_is_up "$id" || verb="Включить" ;;
+        esac
+        echo -e "  ${prefix}${CYAN}${BOLD}▸ ${verb}: ${title}${NC}"
         hr
         "disable_${id}"; rc=$?
     else
@@ -3021,7 +3168,7 @@ show_item_help() {
         refresh_term_width
         refresh_statuses
         show_header
-        echo -e "  ${BOLD}Справка по пунктам${NC} ${DIM}— что делает каждый пункт меню${NC}"
+        echo -e "  ${BOLD}Справка и откат по пунктам${NC} ${DIM}— что делает каждый пункт и как его отменить${NC}"
         echo ""
 
         # Та же рамка и та же арифметика ширин, что у show_menu — справка
@@ -3046,9 +3193,12 @@ show_item_help() {
             desc_w=$(( TERM_W - idx_w - title_w - st_w - 13 ))
         fi
 
+        # как и в меню: 2 последних символа колонки названий — под метку ⇄
+        local name_w=$(( title_w - 2 )); [ "$name_w" -lt 1 ] && name_w=1
+
         local c_idx c_title c_desc c_st
         box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$desc_w" "$st_w"
-        pad_title "#"          "$idx_w";   c_idx="$REPLY_PAD"
+        printf -v c_idx "%${idx_w}s" "#"
         pad_title "Пункт"      "$title_w"; c_title="$REPLY_PAD"
         pad_title "Что делает" "$desc_w";  c_desc="$REPLY_PAD"
         pad_title "Сейчас"     "$st_w";    c_st="$REPLY_PAD"
@@ -3069,22 +3219,23 @@ show_item_help() {
                 prev_section="$section"
                 truncate_colored "● ${section^^}" "$title_w"; c_title="$REPLY_TRUNC"
                 visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
-                pad_title "" "$idx_w";  c_idx="$REPLY_PAD"
+                printf -v c_idx "%${idx_w}s" ""
                 pad_title "" "$desc_w"; c_desc="$REPLY_PAD"
                 pad_title "" "$st_w";   c_st="$REPLY_PAD"
                 printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}${BOLD}%s${NC}%*s ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC}\n" \
                     "$c_idx" "$c_title" "$t_pad" "" "$c_desc" "$c_st"
             fi
-            local short st_pad desc_pad
+            local short st_pad desc_pad mark='  '
             truncate_colored "${ITEM_SHORT[$((i-1))]}" "$desc_w"; short="$REPLY_TRUNC"
             visible_len "$short"; desc_pad=$((desc_w - REPLY_LEN)); [ "$desc_pad" -lt 0 ] && desc_pad=0
-            truncate_colored "  ${ITEM_TITLES[$((i-1))]}" "$title_w"; c_title="$REPLY_TRUNC"
-            visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
+            item_supports_disable "$id" && mark=" ${CYAN}⇄${NC}"
+            truncate_colored "  ${ITEM_TITLES[$((i-1))]}" "$name_w"; c_title="$REPLY_TRUNC"
+            visible_len "$c_title"; t_pad=$((name_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
             status_marker "$id"
             visible_len "$REPLY_MARKER"; st_pad=$((st_w - REPLY_LEN)); [ "$st_pad" -lt 0 ] && st_pad=0
-            pad_title "$i" "$idx_w"; c_idx="$REPLY_PAD"
-            printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s%*s ${DIM}│${NC} ${DIM}%s${NC}%*s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
-                "$c_idx" "$c_title" "$t_pad" "" "$short" "$desc_pad" "" "$REPLY_MARKER" "$st_pad" ""
+            printf -v c_idx "%${idx_w}s" "$i"
+            printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s%*s%b ${DIM}│${NC} ${DIM}%s${NC}%*s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+                "$c_idx" "$c_title" "$t_pad" "" "$mark" "$short" "$desc_pad" "" "$REPLY_MARKER" "$st_pad" ""
             i=$((i+1))
         done
         box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$desc_w" "$st_w"
@@ -3105,7 +3256,7 @@ show_item_help() {
 
 # Подробности по одному пункту. Ничего не дублирует: описание берётся из
 # ITEM_FULL, текущее состояние — из кэша статусов, откат — из ROLLBACK_NOTES
-# (или из того же правила про повторный выбор, что показывает экран R).
+# (там же, где раньше жил отдельный экран R).
 show_item_detail() {
     local idx="$1"
     local i=$((idx - 1))
@@ -3124,34 +3275,16 @@ show_item_detail() {
     echo ""
     hr
     echo -e "  ${BOLD}Статус сейчас:${NC} ${STATUS_TEXT[$id]:-—}"
+    # Два способа отката показываются вместе, а не «или-или»: у ⇄-пунктов есть
+    # и переключатель в меню, и команды на удаление совсем. Раньше вторая
+    # половина у них просто не показывалась
     if item_supports_disable "$id"; then
-        echo -e "  ${BOLD}Откат:${NC} ${DIM}выбери пункт ${idx} в меню ещё раз — скрипт увидит, что применено, и предложит отключить${NC}"
-    elif [ -n "${ROLLBACK_NOTES[$i]}" ]; then
-        echo -e "  ${BOLD}Откат:${NC}"
+        echo -e "  ${BOLD}Выключить:${NC} ${DIM}выбери пункт ${idx} в меню ещё раз — скрипт предложит обратное${NC}"
+    fi
+    if [ -n "${ROLLBACK_NOTES[$i]}" ]; then
+        echo -e "  ${BOLD}Удалить совсем${NC} ${DIM}(вручную, скрипт этого не делает):${NC}"
         echo -e "     ${DIM}${ROLLBACK_NOTES[$i]}${NC}"
     fi
-    pause
-}
-
-show_rollback_reference() {
-    refresh_term_width
-    show_header
-    echo -e "  ${BOLD}Откат по пунктам${NC} ${DIM}— только справка, ни одна из этих команд не выполняется скриптом сама${NC}"
-    echo ""
-    local i=1 id section section_color note
-    for id in "${ITEM_IDS[@]}"; do
-        section="${ITEM_SECTIONS[$((i-1))]}"
-        section_color_for "$section"; section_color="$REPLY_COLOR"
-        echo -e "  ${section_color}${BOLD}[$i] ${ITEM_TITLES[$((i-1))]}${NC}"
-        if item_supports_disable "$id"; then
-            echo -e "     ${DIM}уже откатывается прямо в меню — выбери пункт [$i] ещё раз, скрипт сам увидит, что применено, и предложит отключить${NC}"
-        else
-            note="${ROLLBACK_NOTES[$((i-1))]}"
-            echo -e "     ${DIM}${note}${NC}"
-        fi
-        echo ""
-        i=$((i+1))
-    done
     pause
 }
 
@@ -3159,7 +3292,7 @@ uninstall_self() {
     echo ""
     log_warn "Это удаляет СЕБЯ (сам скрипт usfc) — /opt/vps-setup и команду usfc"
     log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
-    log_info "этим не трогается. Для этого есть пункт R (справка по откату)"
+    log_info "этим не трогается. Команды на удаление лежат на экране I (справка и откат)"
     if ask_yn "Точно удалить usfc из системы?" N; then
         rm -f /usr/local/bin/usfc
         rm -rf /opt/vps-setup
@@ -3279,7 +3412,9 @@ main() {
             [Hh]) show_aliases_help ;;
             # "?" как синоним I: привычнее для тех, кто ищет справку вслепую
             [Ii]|'?') show_item_help ;;
-            [Rr]) show_rollback_reference ;;
+            # R когда-то открывала отдельный экран отката. Теперь откат живёт
+            # в той же справке, но клавишу принимаем — она у людей в пальцах
+            [Rr]) show_item_help ;;
             [Uu]) uninstall_self; pause ;;
             *)
                 # номера и буквы разделов вперемешку через пробел/запятую:
@@ -3315,7 +3450,7 @@ main() {
                 valid=("${dedup[@]}")
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, R, U, Q"
+                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
@@ -3375,14 +3510,14 @@ main() {
                                 nginx)
                                     echo ""
                                     log_info "nginx — веб-сервер и реверс-прокси. Если сайты пока не настроены,"
-                                    log_info "поднимать его не обязательно — включится одной командой потом"
+                                    log_info "поднимать его не обязательно — включишь потом пунктом $(item_number nginx) в меню"
                                     ask_yn "Запускать nginx после установки (и включать автозапуск)?" N \
                                         && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
                                     ;;
                                 docker)
                                     echo ""
                                     log_info "Docker — запуск приложений в контейнерах. Если сейчас не нужен,"
-                                    log_info "можно не поднимать — потом включится одной командой"
+                                    log_info "можно не поднимать — включишь потом пунктом $(item_number docker) в меню"
                                     ask_yn "Запускать Docker после установки (и включать автозапуск)?" N \
                                         && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
                                     ;;
