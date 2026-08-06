@@ -906,9 +906,18 @@ status_certbot() {
     if [ "$has_nginx" = false ] && [ "$has_cf" = false ]; then
         echo -e "${YELLOW}! без плагинов${NC}"; return 1
     fi
+    # Отсутствие CF раньше было видно только по тому, чего в строке НЕТ, —
+    # зелёная галочка при этом читалась как «всё стоит». Пишем прямо.
+    # Цвет остаётся зелёным: wildcard нужен не всем, и делать пункт вечно
+    # жёлтым (а значит и вечно «не применённым» для режима A) было бы враньём
+    # в другую сторону.
     local plugins=""
     [ "$has_nginx" = true ] && plugins="nginx"
-    [ "$has_cf" = true ] && plugins="${plugins}${plugins:+,}CF"
+    if [ "$has_cf" = true ]; then
+        plugins="${plugins}${plugins:+, }CF"
+    else
+        plugins="${plugins}${plugins:+, }без CF"
+    fi
     echo -e "${GREEN}✓ certbot + ${plugins}${NC}"; return 0
 }
 
@@ -2817,10 +2826,18 @@ show_menu() {
         visible_len "$status_line"
         status_pad=$((status_w - REPLY_LEN))
         [ "$status_pad" -lt 0 ] && status_pad=0
-        pad_title "$i" "$idx_w";                              c_idx="$REPLY_PAD"
-        pad_title "  ${ITEM_TITLES[$((i-1))]}" "$title_w";    c_title="$REPLY_PAD"
-        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
-            "$c_idx" "$c_title" "$status_line" "$status_pad" ""
+        # Пункты, которые умеют отключаться повторным выбором, помечаем прямо
+        # здесь. Раньше про это была строка в легенде, и она врала: обещала
+        # «любой применённый пункт защиты», хотя SSH hardening — тоже защита,
+        # но отключать его из меню нельзя. Метка избавляет от правила
+        # с исключениями, которое всё равно не влезало в строку
+        local title_txt="  ${ITEM_TITLES[$((i-1))]}" t_pad
+        item_supports_disable "$id" && title_txt="${title_txt} ⇄"
+        truncate_colored "$title_txt" "$title_w"; c_title="$REPLY_TRUNC"
+        visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
+        pad_title "$i" "$idx_w"; c_idx="$REPLY_PAD"
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %s${DIM}%*s${NC} ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" \
+            "$c_idx" "$c_title" "$t_pad" "" "$status_line" "$status_pad" ""
         i=$((i+1))
     done
     box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$status_w"
@@ -2830,13 +2847,17 @@ show_menu() {
     # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
     # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
     local legend_w=$((inner_w - 4)) line
-    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend3 legend4
+    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend2b legend3 legend4
     pad_title "Выбор:"   10; lbl_choice="$REPLY_PAD"
     pad_title "Разделы:" 10; lbl_sections="$REPLY_PAD"
     pad_title "Команды:" 10; lbl_commands="$REPLY_PAD"
     pad_title ""         10; lbl_blank="$REPLY_PAD"
     legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
-    legend2="${lbl_blank}${DIM}буквы разделов тоже можно сочетать (B,S); применённый пункт «защиты» — повторный выбор предложит отключить${NC}"
+    # Две короткие строки вместо одной длинной: прежняя не влезала даже в
+    # 120 колонок и обрезалась на «предложит откл...», да ещё и обещала то,
+    # чего нет — отключать умеют не все пункты «защиты» (см. метку ⇄ в таблице)
+    legend2="${lbl_blank}${DIM}буквы разделов можно сочетать: B,S${NC}"
+    legend2b="${lbl_blank}${DIM}${NC}${CYAN}⇄${NC}${DIM} — выбери такой пункт снова, чтобы отключить${NC}"
 
     # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
     # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
@@ -2856,7 +2877,7 @@ show_menu() {
     grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g4="$REPLY_CELL"
     legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} выход"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
-    for line in "$legend1" "$legend2" "$legend3" "$legend4"; do
+    for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
         local ltrunc lpad
         truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
         visible_len "$ltrunc"

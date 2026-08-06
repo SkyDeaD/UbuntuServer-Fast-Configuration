@@ -295,6 +295,22 @@ done
 # второй источник истины, который разъедется с первым. Вместо этого есть
 # tests/test_help_widths.sh — он гоняет саму show_item_help и меряет её вывод.
 
+# ── метка ⇄ стоит ровно у тех пунктов, что умеют отключаться ────────────────
+# Раньше об этом была строка в легенде, и она врала: обещала «любой применённый
+# пункт защиты», хотя SSH hardening — тоже защита, но отключаться не умеет.
+# Метка не должна разъехаться с DISABLE_SUPPORTED.
+for id in "${ITEM_IDS[@]}"; do
+    in_list=false
+    for d in "${DISABLE_SUPPORTED[@]}"; do [ "$d" = "$id" ] && in_list=true; done
+    if item_supports_disable "$id"; then got=true; else got=false; fi
+    check "item_supports_disable($id)" "$got" "$in_list"
+done
+# и сама функция отключения обязана существовать у каждого помеченного
+for d in "${DISABLE_SUPPORTED[@]}"; do
+    if declare -F "disable_${d}" >/dev/null; then got=есть; else got=нет; fi
+    check "disable_${d} определена" "$got" "есть"
+done
+
 # ── status_marker: маркер берётся из STATUS_TEXT, а не выдумывается ─────────
 for pair in "✓ установлено:0:✓" "○ не установлен:1:○" "! конфига нет:1:!" "— (нужен Docker):1:—"; do
     txt="${pair%%:*}"; rest="${pair#*:}"; rc="${rest%%:*}"; want="${rest##*:}"
