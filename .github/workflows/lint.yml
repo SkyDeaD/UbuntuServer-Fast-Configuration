@@ -36,7 +36,7 @@ jobs:
             env $cfg bash tests/test_layout.sh src/setup.sh
           done
 
-      - name: Рамка экрана справки на всех ширинах
+      - name: Рамки и выравнивание колонок на всех ширинах
         run: bash tests/test_help_widths.sh src/setup.sh
 
       - name: Массивы меню параллельны

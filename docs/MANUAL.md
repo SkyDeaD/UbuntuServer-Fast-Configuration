@@ -167,6 +167,10 @@ sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"   # перелогиньтесь, чтобы применилось без sudo
+
+# Выключить Docker насовсем нужно ОБОИМИ юнитами: пока жив docker.socket,
+# демон поднимается сам при первом обращении к /var/run/docker.sock
+sudo systemctl disable --now docker.socket docker.service
 ```
 
 ## 7. nginx-full
