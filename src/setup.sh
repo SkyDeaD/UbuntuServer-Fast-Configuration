@@ -217,10 +217,6 @@ run_logged() {
     printf '\n--- %s $ %s\n' "$(date '+%F %T')" "$*" >> "$USFC_LOG"
 
     local rc elapsed started
-    # Предупреждаем ДО начала ожидания, а не после. Раньше проверка жила внутри
-    # ensure_apt_updated и не срабатывала вовсе, если списки пакетов были свежими:
-    # обновление пропускалось, а установка потом молча висела на блокировке.
-    case "${1:-}" in apt_get|apt-get) warn_if_apt_busy ;; esac
     now_s; started="$REPLY_NOW"
     # stdin у команды всегда /dev/null: это заведомо неинтерактивные вызовы, а без
     # закрытого stdin фоновый apt способен вычитать ввод, предназначенный
@@ -642,27 +638,12 @@ show_pkg_report() {
 APT_LOCK_TIMEOUT="${USFC_APT_LOCK_TIMEOUT:-300}"
 apt_get() { apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" "$@"; }
 
-# Спиннер покажет растущий таймер, но не объяснит, ПОЧЕМУ установка «висит».
-# pgrep берём вместо fuser/lsof: procps есть всегда, psmisc и lsof — нет.
-APT_BUSY_WARNED=false
-warn_if_apt_busy() {
-    [ "$APT_BUSY_WARNED" = true ] && return 0
-    local holder=""
-    if pgrep -x unattended-upgr >/dev/null 2>&1; then
-        holder="unattended-upgrades"
-    elif pgrep -x apt-get >/dev/null 2>&1 || pgrep -x apt >/dev/null 2>&1; then
-        holder="другой apt"
-    elif pgrep -x dpkg >/dev/null 2>&1; then
-        holder="dpkg"
-    fi
-    [ -z "$holder" ] && return 0
-    APT_BUSY_WARNED=true
-    # Формулировка намеренно осторожная: мы видим лишь ЗАПУЩЕННЫЙ процесс, а не
-    # то, кто именно держит блокировку. Настоящего держателя назовёт сам apt в
-    # логе («Waiting for cache lock: ...»), гадать за него не будем
-    log_info "Сейчас работает ${BOLD}${holder}${NC} — он может держать блокировку dpkg"
-    log_info "Если так, подожду её освобождения до $((APT_LOCK_TIMEOUT / 60)) мин: для только что загруженного сервера это нормально"
-}
+# Отдельного предупреждения «пакетный менеджер занят» здесь больше нет. Оно
+# гадало по pgrep и срабатывало от одного факта, что unattended-upgrades
+# запущен, — даже когда ставить было нечего и ждать не пришлось ни секунды.
+# Настоящую причину задержки сообщает спиннер: он читает её из вывода самого
+# apt («Waiting for cache lock: ... held by process N») и говорит только тогда,
+# когда ожидание реально происходит.
 
 # apt-get update больше не висит на старте каждого запуска: списки нужны только
 # перед реальной установкой, и только если они успели протухнуть. Открыть меню
@@ -690,6 +671,26 @@ ensure_apt_updated() {
     run_logged "Обновление списков пакетов apt" apt_get update -qq
     APT_UPDATED=true
     refresh_pkg_cache
+}
+
+# ensure_pkg <описание> <пакет...> — ставит только то, чего ещё нет.
+# Раньше apt install звался безусловно: на уже установленном пакете это no-op,
+# но перед ним успевал сходить по сети apt update. Пункт «UFW» на сервере, где
+# ufw уже стоит, из-за этого выглядел так, будто чего-то ждёт от пакетного
+# менеджера, хотя ставить было нечего.
+ensure_pkg() {
+    local desc="$1"; shift
+    # имя намеренно уникальное: shellcheck сводит одноимённые локальные
+    # переменные разных функций в одну и ругается на смену типа
+    local p to_install=()
+    for p in "$@"; do
+        pkg_installed "$p" || to_install+=("$p")
+    done
+    [ "${#to_install[@]}" -eq 0 ] && return 0
+    ensure_apt_updated
+    run_logged "$desc" apt_get install -y "${to_install[@]}" || return 1
+    refresh_pkg_cache
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -1109,9 +1110,7 @@ apply_newuser() {
     # «добавить в группу sudo» превратилось бы в бессмысленный жест
     if ! command -v sudo &>/dev/null || ! getent group sudo &>/dev/null; then
         log_info "sudo не установлен — ставлю (без него группа sudo ничего не даёт)"
-        ensure_apt_updated
-        run_logged "sudo" apt_get install -y sudo || return 1
-        refresh_pkg_cache
+        ensure_pkg "sudo" sudo || return 1
     fi
 
     # ── имя ───────────────────────────────────────────────────────────────────
@@ -1531,8 +1530,7 @@ apply_docker() {
     local autostart=false
     resolve_autostart DOCKER_AUTOSTART "Запустить Docker и включить автозапуск?" && autostart=true
 
-    ensure_apt_updated
-    run_logged "Зависимости Docker" apt_get install -y ca-certificates curl || return 1
+    ensure_pkg "Зависимости Docker" ca-certificates curl || return 1
     install -m 0755 -d /etc/apt/keyrings
     run_logged "GPG-ключ Docker" \
         curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
@@ -1693,9 +1691,7 @@ PYEOF
 
 apply_fail2ban() {
     if ! ask_yn "Установить fail2ban?"; then return; fi
-    ensure_apt_updated
-    run_logged "fail2ban" apt_get install -y fail2ban || return 1
-    refresh_pkg_cache
+    ensure_pkg "fail2ban" fail2ban || return 1
     cat > /etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
@@ -1710,9 +1706,7 @@ EOF
 
 apply_unattended() {
     if ! ask_yn "Включить автообновление security-патчей?"; then return; fi
-    ensure_apt_updated
-    run_logged "unattended-upgrades" apt_get install -y unattended-upgrades || return 1
-    refresh_pkg_cache
+    ensure_pkg "unattended-upgrades" unattended-upgrades || return 1
     cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
@@ -1906,8 +1900,7 @@ apply_zram() {
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
                 zram_percent="$(ask_value "Размер zram в % от RAM?" "$cur_percent")"
-                ensure_apt_updated
-                if run_logged "zram-tools" apt_get install -y zram-tools; then
+                if ensure_pkg "zram-tools" zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
                     printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -1928,8 +1921,7 @@ apply_zram() {
     elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
         local zram_percent
         zram_percent="$(ask_value "Размер zram в % от RAM?" "${ZRAM_BULK_PERCENT:-75}")"
-        ensure_apt_updated
-        if run_logged "zram-tools" apt_get install -y zram-tools; then
+        if ensure_pkg "zram-tools" zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
             printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
@@ -2034,8 +2026,7 @@ apply_zram() {
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
         log_success "earlyoom уже включён"
     elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
-        ensure_apt_updated
-        if run_logged "earlyoom" apt_get install -y earlyoom; then
+        if ensure_pkg "earlyoom" earlyoom; then
             systemctl enable --now earlyoom >/dev/null
             log_success "earlyoom включён"
         fi
@@ -2218,9 +2209,7 @@ apply_ufw() {
         return
     fi
     if ! ask_yn "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" N; then return; fi
-    ensure_apt_updated
-    run_logged "UFW" apt_get install -y ufw || return 1
-    refresh_pkg_cache
+    ensure_pkg "UFW" ufw || return 1
     ufw allow "${SSH_PORT}"/tcp >/dev/null
     while read -r p; do
         [ -n "$p" ] && ufw allow "${p}"/tcp >/dev/null
