@@ -378,6 +378,29 @@ for id in "${DISABLE_SUPPORTED[@]}"; do
     CHECKED=$((CHECKED + 1))
 done
 
+# ── права на cloudflare.ini ─────────────────────────────────────────────────
+# Порог тот же, что у certbot: он смотрит ТОЛЬКО биты «остальных»
+# (filesystem.has_world_permissions), группа его не волнует. Если разойтись,
+# меню начнёт пугать там, где сам certbot молчит.
+cf_tmp="$(mktemp)"
+# shellcheck disable=SC2034  # читается внутри cf_creds_world_readable из setup.sh
+CF_CREDENTIALS="$cf_tmp"
+echo "dns_cloudflare_api_token = x" > "$cf_tmp"
+for pair in "600:безопасно" "640:безопасно" "660:безопасно" "400:безопасно" \
+            "644:опасно" "604:опасно" "606:опасно" "666:опасно"; do
+    mode="${pair%%:*}"; want="${pair##*:}"
+    chmod "$mode" "$cf_tmp"
+    if cf_creds_world_readable; then got=опасно; else got=безопасно; fi
+    check "cf_creds_world_readable(${mode})" "$got" "$want"
+done
+# пустой или отсутствующий файл — это «токена нет», а не «права плохие»
+: > "$cf_tmp"; chmod 644 "$cf_tmp"
+if cf_creds_world_readable; then got=опасно; else got=безопасно; fi
+check "cf_creds_world_readable(пустой файл)" "$got" "безопасно"
+rm -f "$cf_tmp"
+if cf_creds_world_readable; then got=опасно; else got=безопасно; fi
+check "cf_creds_world_readable(файла нет)" "$got" "безопасно"
+
 # ── запрет `| grep -q` под set -o pipefail ──────────────────────────────────
 # grep -q выходит на первом совпадении, продюсер получает SIGPIPE и умирает с
 # кодом 141, а pipefail делает 141 статусом всего пайплайна. Условие становится
