@@ -963,6 +963,13 @@ status_certbot() {
     if [ "$has_cf" = true ] && [ ! -s "$CF_CREDENTIALS" ]; then
         echo -e "${YELLOW}! токен CF не задан${NC}"; return 1
     fi
+    # Файл на месте, но читается кем угодно — по сути тот же «не готово»:
+    # certbot будет ругаться в лог, а токен от DNS-зоны лежит открытым.
+    # Возврат 1 не косметика: пункт снова считается неприменённым, попадает
+    # в режим A и в повторном прогоне права чинятся
+    if [ "$has_cf" = true ] && cf_creds_world_readable; then
+        echo -e "${YELLOW}! права токена CF: ${REPLY_CF_MODE}${NC}"; return 1
+    fi
     if [ "$has_nginx" = false ] && [ "$has_cf" = false ]; then
         echo -e "${YELLOW}! без плагинов${NC}"; return 1
     fi
@@ -1488,6 +1495,19 @@ apply_cloudflare_credentials() {
 
     if [ -s "$CF_CREDENTIALS" ]; then
         log_success "Credentials-файл уже есть: ${CF_CREDENTIALS}"
+        # Права проверяем и чиним ЗДЕСЬ. Сами мы кладём файл с 600, но он мог
+        # приехать не от нас: создан руками по подсказке ниже, восстановлен из
+        # бэкапа, скопирован. Раньше эта ветка молча рапортовала успех, и файл
+        # с чужими правами так и жил с зелёной галочкой в меню
+        if cf_creds_world_readable; then
+            log_warn "Права ${CF_CREDENTIALS}: ${REPLY_CF_MODE} — токен читает кто угодно"
+            if ask_yn "Починить права на 600 (root:root)?" Y; then
+                chmod 600 "$CF_CREDENTIALS" && chown root:root "$CF_CREDENTIALS" \
+                    && log_success "Права исправлены: $(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root"
+            else
+                log_info "Оставляю как есть — certbot будет писать «Unsafe permissions» в лог"
+            fi
+        fi
         if ! ask_yn "Перезаписать его новым токеном?" N; then return; fi
     elif ! ask_yn "Создать ${CF_CREDENTIALS} с API-токеном Cloudflare?" N; then
         log_warn "Без токена плагин Cloudflare работать НЕ будет — выпуск сертификатов упадёт"
@@ -1523,13 +1543,33 @@ cf_write_credentials() {
     local token="$1"
     [ -z "$token" ] && { log_error "Пустой токен — файл не создан"; return 1; }
     install -d -m 700 "$(dirname "$CF_CREDENTIALS")" || { log_error "Не удалось создать каталог"; return 1; }
-    umask 077
+    # Файл заводим ПУСТЫМ и сразу с нужными правами, а токен пишем уже в него.
+    # Раньше здесь стоял `umask 077` перед перенаправлением: он, во-первых,
+    # не восстанавливался и утекал на весь остаток прогона (все конфиги,
+    # которые пункты 9-14 писали после certbot, получали 600 вместо 644),
+    # во-вторых, оставлял окно между созданием файла и chmod.
+    install -m 600 -o root -g root /dev/null "$CF_CREDENTIALS" || {
+        log_error "Не удалось создать ${CF_CREDENTIALS}"; return 1; }
     printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDENTIALS" || {
         log_error "Не удалось записать ${CF_CREDENTIALS}"; return 1; }
-    chmod 600 "$CF_CREDENTIALS"
-    chown root:root "$CF_CREDENTIALS"
-    log_success "Credentials-файл создан: ${CF_CREDENTIALS} (600, root:root)"
+    log_success "Credentials-файл создан: ${CF_CREDENTIALS} ($(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root)"
     cf_wildcard_hint
+}
+
+# Права на credentials-файл так, как их понимает сам certbot: он смотрит ТОЛЬКО
+# биты «остальных» (filesystem.has_world_permissions) и на них лишь ругается
+# в лог, не отказываясь выпускать сертификат. Поэтому проверяем ровно то же —
+# иначе меню начнёт пугать там, где сам certbot молчит.
+#
+# Режим кладём в REPLY_CF_MODE, чтобы вызывающий не делал второй stat: функция
+# дёргается из status_certbot, а это горячий путь отрисовки меню.
+REPLY_CF_MODE=''
+cf_creds_world_readable() {
+    REPLY_CF_MODE=''
+    [ -s "$CF_CREDENTIALS" ] || return 1
+    REPLY_CF_MODE="$(stat -c %a "$CF_CREDENTIALS" 2>/dev/null)" || return 1
+    [ -n "$REPLY_CF_MODE" ] || return 1
+    [ $(( 8#${REPLY_CF_MODE: -1} & 7 )) -ne 0 ]
 }
 
 cf_wildcard_hint() {
