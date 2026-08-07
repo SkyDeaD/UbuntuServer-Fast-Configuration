@@ -20,12 +20,30 @@ if [ -z "${BASH_VERSINFO:-}" ] || [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
     exit 1
 fi
 
+# ═══════════════════════════════════════════════════════════════
+# ЛОВУШКА: `... | grep -q` под set -o pipefail
+# ═══════════════════════════════════════════════════════════════
+# grep -q выходит на ПЕРВОМ совпадении и закрывает канал. Продюсер (locale -a,
+# apt-cache, ufw status) получает SIGPIPE и умирает с кодом 141, а pipefail
+# делает 141 статусом ВСЕГО пайплайна. Условие `if producer | grep -q ...`
+# оказывается ложным ровно тогда, когда совпадение НАШЛОСЬ, а вывод длинный —
+# то есть на настоящем сервере, но не в коротком тесте.
+#
+# Именно на этом гонялся фолбэк Docker: проверка «есть ли пакеты под наш
+# codename» была ложной ВСЕГДА, и на каждой машине печаталось «У Docker пока
+# нет пакетов под 'noble' — переключаюсь на noble».
+#
+# Поэтому в условиях grep идёт БЕЗ -q, с выводом в /dev/null: обычный grep
+# дочитывает ввод до конца, SIGPIPE не возникает. Проверено обоими способами.
+# Регрессия на это есть в tests/test_layout.sh — она запрещает `| grep -q`
+# во всём файле.
+
 # C.UTF-8 встроена в glibc и не требует locale-gen — в отличие от ru_RU.UTF-8/en_US.UTF-8,
 # которые на свежих VPS-образах часто объявлены, но не собраны. Именно из-за такого
 # полусломанного locale раньше приходилось считать длину строк через python3: ${#s} мерил
 # байты вместо символов, а tr резал многобайтовый "─" на мусор. Фиксируем окружение один
 # раз здесь — и вся отрисовка живёт на чистом bash.
-if [ -z "${USFC_KEEP_LOCALE:-}" ] && locale -a 2>/dev/null | grep -qiE '^C\.utf-?8$'; then
+if [ -z "${USFC_KEEP_LOCALE:-}" ] && locale -a 2>/dev/null | grep -iE '^C\.utf-?8$' >/dev/null; then
     export LC_ALL=C.UTF-8
     export LANG=C.UTF-8
 fi
@@ -1057,7 +1075,7 @@ status_sshhardening() {
 }
 
 status_ufw() {
-    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep "Status: active" >/dev/null; then
         echo -e "${GREEN}✓ включён${NC}"; return 0
     else
         echo -e "${DIM}○ выключен${NC}"; return 1
@@ -1442,7 +1460,7 @@ apply_certbot() {
             # PYTHONWARNINGS и -W ignore. К apt-установке претензия не относится:
             # версия закреплена зависимостью пакета (<< 3.0), это не pip-апгрейд.
             # Предупреждаем заранее, чтобы баннер не выглядел поломкой.
-            if dpkg-query -W -f='${Version}' python3-cloudflare 2>/dev/null | grep -q '^2\.20'; then
+            if dpkg-query -W -f='${Version}' python3-cloudflare 2>/dev/null | grep '^2\.20' >/dev/null; then
                 log_warn "При выпуске сертификата certbot напечатает большой WARNING про"
                 log_warn "python-cloudflare 2.20. Это безвредно и не отключается: версия"
                 log_warn "закреплена пакетом (<< 3.0), на выпуск сертификатов не влияет."
@@ -1587,7 +1605,7 @@ apply_docker() {
         fi
         # Docker мог приехать не отсюда (docker.io, ручная установка) — тогда
         # группы у пользователя нет, и sudo требуется на каждый docker-вызов
-        if [ "$TARGET_USER" != "root" ] && ! id -nG "$TARGET_USER" 2>/dev/null | grep -qw docker; then
+        if [ "$TARGET_USER" != "root" ] && ! id -nG "$TARGET_USER" 2>/dev/null | grep -w docker >/dev/null; then
             if ask_yn "Добавить ${TARGET_USER} в группу docker (работа без sudo)?" Y; then
                 usermod -aG docker "$TARGET_USER"
                 log_info "Готово — перелогинься, чтобы группа применилась"
@@ -1611,7 +1629,17 @@ apply_docker() {
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" \
         > /etc/apt/sources.list.d/docker.list
     run_logged "Списки пакетов Docker" apt_get update -qq
-    if ! apt-cache policy docker-ce-cli 2>/dev/null | grep -q 'Candidate:.*[0-9]'; then
+    # grep БЕЗ -q — иначе SIGPIPE и вечно ложное условие, см. блок про ловушку
+    # в начале файла. Здесь это и вскрылось: фолбэк срабатывал на каждой машине
+    if ! apt-cache policy docker-ce-cli 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
+        # Падать на noble некуда: это и есть та версия, на которую переключаются.
+        # Раньше сюда приезжали все подряд и читали «нет пакетов под 'noble' —
+        # переключаюсь на noble»
+        if [ "$codename" = "noble" ]; then
+            log_error "Репозиторий Docker не отдал пакеты для noble — переключаться некуда"
+            log_info "Проверь сеть и ${USFC_LOG}; вручную: ${BOLD}apt-cache policy docker-ce-cli${NC}"
+            return 1
+        fi
         log_warn "У Docker пока нет пакетов под '${codename}' — переключаюсь на noble (24.04, совместимо)"
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
             > /etc/apt/sources.list.d/docker.list
@@ -1979,7 +2007,7 @@ apply_zram() {
                         sleep 2
                         systemctl start zramswap
                     fi
-                    if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep -q '^/dev/zram'; then
+                    if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
                         log_success "zram перенастроен (${zram_percent}% RAM)"
                     else
                         log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
@@ -2000,7 +2028,7 @@ apply_zram() {
                 sleep 2
                 systemctl start zramswap
             fi
-            if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep -q '^/dev/zram'; then
+            if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
                 log_success "zram-tools установлен и настроен (${zram_percent}% RAM)"
             else
                 log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
@@ -2054,7 +2082,7 @@ apply_zram() {
                 # sed молча не найдёт строку, если своп в fstab указан через
                 # UUID=/LABEL=, а не путём (типично для разделов) — тогда без
                 # этой проверки log_success был бы враньём
-                if swapon --show --noheadings --raw 2>/dev/null | awk -v p="$swap_path" '$1==p {print $5}' | grep -q '^10$'; then
+                if swapon --show --noheadings --raw 2>/dev/null | awk -v p="$swap_path" '$1==p {print $5}' | grep '^10$' >/dev/null; then
                     log_success "Приоритет исправлен"
                 else
                     log_error "Не удалось исправить приоритет ${swap_path} — возможно, в /etc/fstab он указан через UUID=/LABEL=, а не путём. Поправьте вручную: pri=10 в опциях монтирования"
@@ -2089,8 +2117,22 @@ apply_zram() {
         [ "$cur_sw" != "60" ] || [ "$cur_vfs" != "100" ] && sysctl_default=N
         if ask_yn "Применить рекомендованные значения sysctl?" "$sysctl_default"; then
             printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' > /etc/sysctl.d/99-zram.conf
-            sysctl --system >/dev/null
-            log_success "sysctl применён"
+            sysctl --system >/dev/null 2>&1
+            # Не верим на слово: перечитываем /proc. Раньше здесь безусловно
+            # печаталось «sysctl применён» сразу под строкой со СТАРЫМИ числами —
+            # и это читалось как «рекомендуется, но не сделано». Теперь видно
+            # результат, а если файл кто-то переопределяет — видно и это
+            local new_sw new_vfs
+            new_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
+            new_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
+            if [ "$new_sw" = "80" ] && [ "$new_vfs" = "50" ]; then
+                log_success "sysctl применён: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}"
+            else
+                log_warn "sysctl не применился: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}"
+                log_info "Что-то перебивает /etc/sysctl.d/99-zram.conf — смотри ${BOLD}sysctl --system${NC}"
+            fi
+        else
+            log_info "Оставляю sysctl как есть (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})"
         fi
     fi
 
@@ -2194,7 +2236,7 @@ apply_sshhardening() {
     ssh_selftest() {
         ssh -i "$TEST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -p "$SSH_PORT" \
-            "${TARGET_USER}@127.0.0.1" 'echo VPS_SETUP_KEY_OK' 2>/dev/null | grep -q VPS_SETUP_KEY_OK
+            "${TARGET_USER}@127.0.0.1" 'echo VPS_SETUP_KEY_OK' 2>/dev/null | grep VPS_SETUP_KEY_OK >/dev/null
     }
     cleanup_test_key() {
         grep -vF "$TEST_PUB" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp" 2>/dev/null && mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
