@@ -128,6 +128,15 @@ run_logged() {
     local desc="${1:-Выполнение}"; shift
     [ "$#" -eq 0 ] && return 0
 
+    # Сухой прогон. Перехват стоит именно здесь, а не в каждой apply_-функции:
+    # через run_logged проходят все длительные внешние команды — apt, curl,
+    # add-apt-repository. Размазывать проверку по три десятка мест значило бы
+    # однажды забыть одно из них, причём молча
+    if [ "$USFC_DRY_RUN" = true ]; then
+        printf '  %b[сухой прогон]%b %s\n' "$DIM" "$NC" "$*"
+        return 0
+    fi
+
     local offset
     offset="$(stat -c %s "$USFC_LOG" 2>/dev/null)" || offset=0
     [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
