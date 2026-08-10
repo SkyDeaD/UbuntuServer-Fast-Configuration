@@ -75,9 +75,12 @@ audit_memory() {
 
 # ── Упавшие юниты ─────────────────────────────────────────────────────────────
 audit_units() {
-    local failed n
+    local failed n=0
     failed="$(systemctl list-units --state=failed --no-legend --plain 2>/dev/null | awk '{print $1}')"
-    n="$(printf '%s' "$failed" | grep -c . 2>/dev/null || echo 0)"
+    # НЕ через `grep -c . || echo 0`: на пустом вводе grep печатает 0 И выходит
+    # с кодом 1, поэтому || дописывает второй ноль. Получается «0\n0», и
+    # дальше [ -eq ] падает с «integer expected»
+    [ -n "$failed" ] && n="$(printf '%s\n' "$failed" | wc -l | tr -d ' ')"
     if [ "$n" -eq 0 ]; then
         _audit_line ok "Упавших systemd-юнитов нет"
     else
@@ -205,7 +208,9 @@ show_audit() {
 
     echo ""
     hr
-    printf '  %bИтог:%b %b%d в норме%b   %b%d замечаний%b   %b%d важных%b\n' \
+    # «3 замечаний» и «1 важных» — согласование по-русски требует трёх форм.
+    # Двоеточие обходит проблему и читается не хуже
+    printf '  %bИтог:%b  в норме: %b%d%b   замечаний: %b%d%b   важных: %b%d%b\n' \
         "$BOLD" "$NC" "$GREEN" "$AUDIT_OK" "$NC" "$YELLOW" "$AUDIT_WARN" "$NC" "$RED" "$AUDIT_CRIT" "$NC"
     echo ""
     return 0
