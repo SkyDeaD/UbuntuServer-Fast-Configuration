@@ -57,14 +57,19 @@ require_supported_os() {
     esac
     echo ""
     if ! command -v apt-get >/dev/null 2>&1; then
-        log_error "usfc рассчитан на Ubuntu и Debian, а здесь ${OS_PRETTY:-неизвестная система}"
-        log_info "apt-get не найден — ставить пакеты нечем, прекращаю"
+        log_error_t "usfc рассчитан на Ubuntu и Debian, а здесь ${OS_PRETTY:-неизвестная система}" \
+                    "usfc targets Ubuntu and Debian; this is ${OS_PRETTY:-an unknown system}"
+        log_info_t "apt-get не найден — ставить пакеты нечем, прекращаю" \
+                   "apt-get not found — nothing to install packages with, stopping"
         return 1
     fi
-    log_warn "Система ${OS_PRETTY:-?} ${DIM}(ID=${OS_ID:-?})${NC} не проверялась"
-    log_info "usfc рассчитан на Ubuntu и Debian. apt на месте, так что многое"
-    log_info "скорее всего сработает, но ручаться за это я не могу"
-    ask_yn "Продолжить на свой риск?" N
+    log_warn_t "Система ${OS_PRETTY:-?} ${DIM}(ID=${OS_ID:-?})${NC} не проверялась" \
+               "System ${OS_PRETTY:-?} ${DIM}(ID=${OS_ID:-?})${NC} is untested"
+    log_info_t "usfc рассчитан на Ubuntu и Debian. apt на месте, так что многое" \
+               "usfc targets Ubuntu and Debian. apt is present, so most things"
+    log_info_t "скорее всего сработает, но ручаться за это я не могу" \
+               "will probably work, but nothing here is guaranteed"
+    ask_yn_t "Продолжить на свой риск?" "Continue at your own risk?" N
 }
 
 # Определяем сразу при загрузке: OS_* читают и шапка, и пункты меню, а стоит

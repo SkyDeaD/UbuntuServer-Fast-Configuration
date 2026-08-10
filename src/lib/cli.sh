@@ -30,6 +30,7 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
   -V, --version         версия и выход
       --no-update       не проверять и не ставить обновления самого usfc
       --verbose         показывать сырой вывод команд вместо спиннера
+      --lang ru|en      язык интерфейса (по умолчанию ru)
 
 Неинтерактивный запуск (для cloud-init, Ansible, скриптов развёртывания):
       --apply <что>     применить пункты и выйти, без меню
@@ -62,6 +63,7 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
 Переменные окружения:
   USFC_NO_UPDATE=1          то же, что --no-update
   USFC_VERBOSE=1            то же, что --verbose
+  USFC_LANG=en              то же, что --lang en
   USFC_REPO_RAW_BASE=URL    откуда качать обновления и модули
   USFC_KEEP_LOCALE=1        не форсировать LC_ALL=C.UTF-8
   NO_COLOR=1                вывод без цвета (цвет отключается сам, если
@@ -89,6 +91,10 @@ parse_args() {
             -V|--version) echo "$VERSION"; exit 0 ;;
             --no-update)  USFC_NO_UPDATE=1 ;;
             --verbose)    USFC_VERBOSE=1 ;;
+            --lang)
+                [ -n "${2:-}" ] || { echo "--lang требует ru или en" >&2; exit 2; }
+                USFC_LANG="$2"; shift ;;
+            --lang=*)     USFC_LANG="${1#*=}" ;;
             --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1 ;;
             --list)       USFC_LIST_ONLY=true ;;
             --audit)      USFC_ACTION=audit ;;

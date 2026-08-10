@@ -106,6 +106,9 @@ main() {
     # Проверяем ДО того, как что-то делать: раньше на чужой системе скрипт
     # доходил до середины и падал на apt (сам detect_os отработал при загрузке)
     require_supported_os || exit 1
+    # --lang разбирается уже после загрузки модулей, поэтому нормализуем
+    # значение здесь ещё раз: «--lang de» не должен молча ломать вывод
+    case "$USFC_LANG" in ru|en) ;; *) log_warn "Неизвестный язык «${USFC_LANG}», беру ru"; USFC_LANG=ru ;; esac
     dry_run_enable
 
     if [ "$USFC_LIST_ONLY" = true ]; then
