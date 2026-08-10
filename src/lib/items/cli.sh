@@ -13,7 +13,9 @@ if os_is_ubuntu || os_version_at_least 13; then
 fi
 # ── Пункт меню: CLI-утилиты + starship ─────────────────────────────────────────
 usfc_item cli база "CLI-утилиты + starship" \
-    "современные замены ls/cat/find + промпт"
+    "современные замены ls/cat/find + промпт" \
+    "CLI tools + starship" \
+    "modern ls/cat/find replacements plus a prompt"
 
 usfc_item_full cli "Современные замены классических утилит: eza вместо ls с иконками, bat вместо
 cat с подсветкой, fd вместо find, ripgrep для поиска по содержимому, zoxide —
@@ -21,11 +23,21 @@ cat с подсветкой, fd вместо find, ripgrep для поиска �
 
 Всё вместе, потому что это один и тот же слой «как выглядит и ощущается
 терминал». Алиасы в .bashrc и eval-строки для zoxide/starship пишутся сразу
-этим же пунктом. Список алиасов — на экране H."
+этим же пунктом. Список алиасов — на экране H." \
+"Modern replacements for the classic tools: eza instead of ls with icons, bat
+instead of cat with syntax highlighting, fd instead of find, ripgrep for
+searching file contents, zoxide as a smarter cd, ncdu for finding what ate
+the disk. Plus the starship prompt.
+
+All in one item, because this is a single layer: how the terminal looks and
+feels. Aliases in .bashrc and the eval lines for zoxide/starship are written
+by the same item. The alias list is on screen H."
 
 
 usfc_item_rollback cli "sudo apt purge eza bat fd-find ripgrep zoxide ncdu
-     sudo rm -f \"\$(command -v starship)\"   # если ставился этим же пунктом"
+     sudo rm -f \"\$(command -v starship)\"   # если ставился этим же пунктом" \
+"sudo apt purge eza bat fd-find ripgrep zoxide ncdu
+     sudo rm -f \"\$(command -v starship)\"   # if it was installed by this item"
 
 status_cli() {
     local c missing=""
@@ -36,12 +48,12 @@ status_cli() {
     done
     command -v starship &>/dev/null || missing="${missing}${missing:+, }starship"
     if [ -n "$missing" ]; then
-        echo -e "${DIM}○ не хватает: ${missing}${NC}"; return 1
+        st "$DIM" "○ не хватает: ${missing}" "○ missing: ${missing}"; return 1
     fi
     if ! grep -qF "# >>> vps-setup:cli >>>" "${TARGET_HOME}/.bashrc" 2>/dev/null; then
-        echo -e "${YELLOW}! всё стоит, алиасов в .bashrc нет${NC}"; return 1
+        st "$YELLOW" "! всё стоит, алиасов в .bashrc нет" "! all installed, no aliases in .bashrc"; return 1
     fi
-    echo -e "${GREEN}✓ установлено${NC}"; return 0
+    st "$GREEN" "✓ установлено" "✓ installed"; return 0
 }
 
 apply_cli() {
@@ -52,7 +64,7 @@ apply_cli() {
     command -v starship &>/dev/null || need_install=true
 
     if [ "$need_install" = true ]; then
-        if ask_yn "Установить ${CLI_PKGS// /, }, starship?"; then
+        if ask_yn_t "Установить ${CLI_PKGS// /, }, starship?" "Install ${CLI_PKGS// /, }, starship?"; then
             ensure_apt_updated
             # shellcheck disable=SC2086
             snapshot_pkgs $CLI_PKGS
@@ -66,7 +78,8 @@ apply_cli() {
             show_pkg_report $CLI_PKGS
         fi
     else
-        log_success "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены"
+        log_success_t "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены" \
+"eza/bat/fd/ripgrep/zoxide/ncdu/starship are already installed"
     fi
 
     # Алиасы и промпт пишем сразу следом — не отдельным пунктом меню, но
@@ -77,12 +90,14 @@ apply_cli() {
     # один пакет поставился, а другой нет.
     if ! command -v eza &>/dev/null && ! command -v batcat &>/dev/null \
        && ! command -v fdfind &>/dev/null; then
-        log_warn "CLI-утилиты не установлены — алиасы в .bashrc не пишу"
+        log_warn_t "CLI-утилиты не установлены — алиасы в .bashrc не пишу" \
+"CLI tools are not installed — not writing aliases to .bashrc"
         return
     fi
     local BASHRC="${TARGET_HOME}/.bashrc"
     if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
-        log_info "Алиасы CLI-утилит в .bashrc уже есть"
+        log_info_t "Алиасы CLI-утилит в .bashrc уже есть" \
+"CLI aliases are already in .bashrc"
         return
     fi
     {
@@ -106,5 +121,6 @@ apply_cli() {
         echo "# <<< vps-setup:cli <<<"
     } | append_file "$BASHRC"
     chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
-    log_success "Алиасы добавлены в .bashrc"
+    log_success_t "Алиасы добавлены в .bashrc" \
+"Aliases added to .bashrc"
 }

@@ -6,9 +6,13 @@ show_menu() {
     refresh_term_width
     refresh_statuses
     show_header
-    echo -e "  ${DIM}Пользователь:${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}SSH-порт:${NC} ${BOLD}${SSH_PORT}${NC}"
+    t "Пользователь:" "User:";   local _lu="$REPLY_T"
+    t "SSH-порт:"     "SSH port:"; local _lp="$REPLY_T"
+    echo -e "  ${DIM}${_lu}${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}${_lp}${NC} ${BOLD}${SSH_PORT}${NC}"
     if [ "$TARGET_USER" = "root" ]; then
-        echo -e "  ${YELLOW}${BOLD}!${NC} ${YELLOW}Работа из-под root: часть настроек ляжет в /root и пропадёт после перелогина${NC}"
+        t "Работа из-под root: часть настроек ляжет в /root и пропадёт после перелогина" \
+          "Running as root: some settings land in /root and vanish after you re-login"
+        echo -e "  ${YELLOW}${BOLD}!${NC} ${YELLOW}${REPLY_T}${NC}"
     fi
     echo ""
 
@@ -34,8 +38,8 @@ show_menu() {
     local c_idx c_title c_status
     box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$status_w"
     printf -v c_idx "%${idx_w}s" "#"
-    pad_title "Пункт"  "$title_w";  c_title="$REPLY_PAD"
-    pad_title "Статус" "$status_w"; c_status="$REPLY_PAD"
+    t "Пункт" "Item"; pad_title "$REPLY_T" "$title_w";  c_title="$REPLY_PAD"
+    t "Статус" "Status"; pad_title "$REPLY_T" "$status_w"; c_status="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
         "$c_idx" "$c_title" "$c_status"
     box_line "$DIM" '├' '┼' '┤' "$idx_w" "$title_w" "$status_w"
@@ -52,7 +56,8 @@ show_menu() {
         if [ "$section" != "$prev_section" ]; then
             prev_section="$section"
             printf -v c_idx "%${idx_w}s" ""
-            pad_title "● ${section^^}" "$title_w";        c_title="$REPLY_PAD"
+            section_label "$section"; local _sec="$REPLY_T"
+            pad_title "● ${_sec^^}" "$title_w";           c_title="$REPLY_PAD"
             pad_title "" "$status_w";                     c_status="$REPLY_PAD"
             printf "  ${DIM}│${NC} %s ${DIM}│${NC} ${section_color}${BOLD}%s${NC} ${DIM}│${NC} %s ${DIM}│${NC}\n" \
                 "$c_idx" "$c_title" "$c_status"
@@ -89,43 +94,81 @@ show_menu() {
     # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
     local legend_w=$((inner_w - 4)) line
     local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend2b legend3 legend4
-    pad_title "Выбор:"   10; lbl_choice="$REPLY_PAD"
-    pad_title "Разделы:" 10; lbl_sections="$REPLY_PAD"
-    pad_title "Команды:" 10; lbl_commands="$REPLY_PAD"
+    t "Выбор:" "Choose:";     pad_title "$REPLY_T" 10; lbl_choice="$REPLY_PAD"
+    t "Разделы:" "Sections:"; pad_title "$REPLY_T" 10; lbl_sections="$REPLY_PAD"
+    t "Команды:" "Keys:";     pad_title "$REPLY_T" 10; lbl_commands="$REPLY_PAD"
     pad_title ""         10; lbl_blank="$REPLY_PAD"
-    legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} — один или несколько пунктов сразу"
+    t "— один или несколько пунктов сразу" "— one item or several at once"
+    legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} ${REPLY_T}"
     # Две короткие строки вместо одной длинной: прежняя не влезала даже в
     # 120 колонок и обрезалась на «предложит откл...», да ещё и обещала то,
     # чего нет — отключать умеют не все пункты «защиты» (см. метку ⇄ в таблице)
-    legend2="${lbl_blank}${DIM}буквы разделов можно сочетать: B,S${NC}"
+    t "буквы разделов можно сочетать: B,S" "section letters can be combined: B,S"
+    legend2="${lbl_blank}${DIM}${REPLY_T}${NC}"
     # Метка стоит не только у «защиты», и раньше это читалось как «остальное
     # не откатывается». Откатывается всё, просто у остальных пунктов это
     # apt purge — команды лежат на экране I, куда строка теперь и отправляет
-    legend2b="${lbl_blank}${CYAN}⇄${NC}${DIM} — выключается повторным выбором; удалить остальное — экран ${NC}${CYAN}${BOLD}I${NC}"
+    t "— выключается повторным выбором; удалить остальное — экран" \
+      "— toggles off when picked again; how to remove the rest — screen"
+    legend2b="${lbl_blank}${CYAN}⇄${NC}${DIM} ${REPLY_T} ${NC}${CYAN}${BOLD}I${NC}"
 
     # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
     # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
     # Делим на 5, а не на 4: разделов теперь четыре (C/B/S/P) плюс хвостовое «A всё»
     # Делим на 6: четыре раздела (C/B/S/P) плюс хвостовое «A всё», а в строке
     # команд теперь пять пунктов вместо четырёх — добавилась справка I
-    local item_w=$(( (legend_w - 10) / 6 )) g1 g2 g3 g4
-    [ "$item_w" -lt 10 ] && item_w=10
-    grid_cell "${YELLOW}${BOLD}C${NC} ${YELLOW}система${NC}"  "$item_w"; g1="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}база${NC}"         "$item_w"; g2="$REPLY_CELL"
-    grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}сервисы${NC}"      "$item_w"; g3="$REPLY_CELL"
-    grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}защита${NC}" "$item_w"; g4="$REPLY_CELL"
-    legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} всё"
+    # Ширина ячейки считается ПО СОДЕРЖИМОМУ, а не константой. Раньше здесь
+    # стояло (legend_w-10)/6, и на русском это давало 10 — ровно столько,
+    # сколько занимает самое длинное «S сервисы». По-английски «P security»
+    # занимает те же 10, но без остатка на пробел, и ячейки слипались:
+    # «S servicesP securityA all». Считаем максимум и добавляем разделитель.
+    local item_w=0 _lbl g1 g2 g3 g4
+    for _lbl in "C $(section_label система; printf '%s' "$REPLY_T")" \
+                "B $(section_label база;    printf '%s' "$REPLY_T")" \
+                "S $(section_label сервисы; printf '%s' "$REPLY_T")" \
+                "P $(section_label защита;  printf '%s' "$REPLY_T")" \
+                "I $(t "справка" "help";    printf '%s' "$REPLY_T")" \
+                "H $(t "алиасы" "aliases";  printf '%s' "$REPLY_T")" \
+                "D $(t "аудит" "audit";     printf '%s' "$REPLY_T")" \
+                "U $(t "удалить" "remove";  printf '%s' "$REPLY_T")"; do
+        visible_len "$_lbl"
+        [ "$REPLY_LEN" -gt "$item_w" ] && item_w="$REPLY_LEN"
+    done
+    # +1 — ровно один пробел-разделитель. Не +2: на русском самое длинное
+    # «C система» занимает 9, и +1 даёт прежние 10 символов, то есть вывод
+    # по-русски не меняется ни на знак.
+    #
+    # Зажимать ширину сверху под legend_w НЕЛЬЗЯ: на 58 колонках это ужимало
+    # ячейку ниже содержимого, и вместо аккуратной обрезки строки получалось
+    # «C системаB база» — слипшиеся ячейки. Длинную строку и так обрежет
+    # truncate_colored ниже, как это было всегда.
+    item_w=$((item_w + 1))
+    # На широком терминале ячейки растягиваются, как и раньше: прежняя формула
+    # (legend_w-10)/6 давала 14 при 100 колонках и 17 при 120, и строка
+    # выглядела сеткой, а не кучкой слева. Берём наибольшее из двух — так
+    # русский вывод совпадает с прежним на любой ширине, а английский
+    # не слипается там, где содержимое шире пропорции.
+    local _prop=$(( (legend_w - 10) / 6 ))
+    [ "$_prop" -gt "$item_w" ] && item_w="$_prop"
+    [ "$item_w" -lt 8 ] && item_w=8
+    section_label система; grid_cell "${YELLOW}${BOLD}C${NC} ${YELLOW}${REPLY_T}${NC}" "$item_w"; g1="$REPLY_CELL"
+    section_label база;    grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}${REPLY_T}${NC}" "$item_w"; g2="$REPLY_CELL"
+    section_label сервисы; grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}${REPLY_T}${NC}" "$item_w"; g3="$REPLY_CELL"
+    section_label защита;  grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}${REPLY_T}${NC}" "$item_w"; g4="$REPLY_CELL"
+    t "всё" "all"
+    legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} ${REPLY_T}"
     # Отдельного «R откат» здесь больше нет: R и I открывают один и тот же
     # экран, и две клавиши в строке выглядели как два разных места.
     # Саму клавишу R скрипт по-прежнему принимает — она у людей в пальцах
     # A под аудит не годится: она уже занята под «применить всё». Берём D
     # (диагностика) — и раскладка становится симметричной строке разделов:
     # четыре ячейки плюс хвост
-    grid_cell "${CYAN}${BOLD}I${NC} справка" "$item_w"; g1="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g2="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}D${NC} аудит"   "$item_w"; g3="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g4="$REPLY_CELL"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} выход"
+    t "справка" "help";   grid_cell "${CYAN}${BOLD}I${NC} ${REPLY_T}" "$item_w"; g1="$REPLY_CELL"
+    t "алиасы" "aliases"; grid_cell "${CYAN}${BOLD}H${NC} ${REPLY_T}" "$item_w"; g2="$REPLY_CELL"
+    t "аудит" "audit";    grid_cell "${CYAN}${BOLD}D${NC} ${REPLY_T}" "$item_w"; g3="$REPLY_CELL"
+    t "удалить" "remove"; grid_cell "${CYAN}${BOLD}U${NC} ${REPLY_T}" "$item_w"; g4="$REPLY_CELL"
+    t "выход" "quit"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} ${REPLY_T}"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
         local ltrunc lpad
@@ -198,7 +241,8 @@ show_summary() {
     [ "${#SUMMARY_TITLES[@]}" -eq 0 ] && return 0
     refresh_term_width
     echo ""
-    echo -e "  ${BOLD}Итоги прогона${NC}"
+    t "Итоги прогона" "Run summary"
+    echo -e "  ${BOLD}${REPLY_T}${NC}"
     local name_w=26 res_w=14 time_w=6 i t r pad
     box_line "$DIM" '╭' '┬' '╮' "$name_w" "$res_w" "$time_w"
     for i in "${!SUMMARY_TITLES[@]}"; do
@@ -213,7 +257,7 @@ show_summary() {
     if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
         echo ""
         for t in "${SUMMARY_FAILED[@]}"; do
-            log_warn "${t}: подробности в ${USFC_LOG}"
+            log_warn_t "${t}: подробности в ${USFC_LOG}" "${t}: details in ${USFC_LOG}"
         done
     fi
 }

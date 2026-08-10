@@ -83,12 +83,14 @@ create_swapfile() {
     local path="$1" mb="$2"
     rm -f "$path"
     if ! fallocate -l "${mb}M" "$path" 2>/dev/null; then
-        log_info "fallocate не сработал — выделяю файл через dd (дольше)"
+        log_info_t "fallocate не сработал — выделяю файл через dd (дольше)" \
+"fallocate did not work — allocating with dd instead (slower)"
         dd if=/dev/zero of="$path" bs=1M count="$mb" status=none 2>/dev/null || return 1
     fi
     chmod 600 "$path"
     if ! mkswap "$path" >/dev/null 2>&1; then
-        log_info "mkswap не принял файл — переделываю через dd"
+        log_info_t "mkswap не принял файл — переделываю через dd" \
+"mkswap rejected the file — redoing it with dd"
         rm -f "$path"
         dd if=/dev/zero of="$path" bs=1M count="$mb" status=none 2>/dev/null || return 1
         chmod 600 "$path"
@@ -117,7 +119,8 @@ resize_swapfile() {
     local path="$1" new_mb="$2" old_mb="$3" used_mb="$4"
 
     if [ ! -f "$path" ]; then
-        log_error "${path} — не обычный файл, пересоздавать не буду"
+        log_error_t "${path} — не обычный файл, пересоздавать не буду" \
+"${path} is not a regular file — refusing to recreate it"
         return 1
     fi
 
@@ -127,9 +130,12 @@ resize_swapfile() {
     avail_mb="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
     [[ "$avail_mb" =~ ^[0-9]+$ ]] || avail_mb=0
     if [ "$used_mb" -gt 0 ] && [ "$used_mb" -ge $(( avail_mb - 200 )) ]; then
-        log_error "В свопе занято ${used_mb} МБ, а свободной памяти всего ${avail_mb} МБ"
-        log_error "Отключение свопа сейчас рискует уронить процессы — размер не меняю"
-        log_info "Освободи память (или перезагрузись) и вернись в этот пункт"
+        log_error_t "В свопе занято ${used_mb} МБ, а свободной памяти всего ${avail_mb} МБ" \
+"Swap holds ${used_mb} MB while only ${avail_mb} MB of memory is free"
+        log_error_t "Отключение свопа сейчас рискует уронить процессы — размер не меняю" \
+"Turning swap off now risks killing processes — leaving the size alone"
+        log_info_t "Освободи память (или перезагрузись) и вернись в этот пункт" \
+"Free some memory (or reboot) and come back to this item"
         return 1
     fi
 
@@ -138,13 +144,16 @@ resize_swapfile() {
     free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
     [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
     if [ "$new_mb" -gt $(( free_mb + old_mb - 256 )) ]; then
-        log_error "Не хватит места: нужно ${new_mb} МБ, доступно ~$(( free_mb + old_mb )) МБ"
+        log_error_t "Не хватит места: нужно ${new_mb} МБ, доступно ~$(( free_mb + old_mb )) МБ" \
+"Not enough space: ${new_mb} MB needed, about $(( free_mb + old_mb )) MB available"
         return 1
     fi
 
-    log_info "Отключаю ${path} ${DIM}(занято ${used_mb} МБ, свободной памяти ${avail_mb} МБ)${NC}"
+    log_info_t "Отключаю ${path} ${DIM}(занято ${used_mb} МБ, свободной памяти ${avail_mb} МБ)${NC}" \
+"Turning off ${path} ${DIM}(${used_mb} MB used, ${avail_mb} MB memory free)${NC}"
     if ! swapoff "$path" 2>/dev/null; then
-        log_error "swapoff ${path} не удался — ничего не менял"
+        log_error_t "swapoff ${path} не удался — ничего не менял" \
+"swapoff ${path} failed — nothing was changed"
         return 1
     fi
 
@@ -152,20 +161,24 @@ resize_swapfile() {
         ensure_fstab_swap "$path"
         swapoff "$path" 2>/dev/null
         swapon -a 2>/dev/null           # поднимаем уже с приоритетом из fstab
-        log_success "swap пересоздан: ${new_mb} МБ, приоритет 10"
+        log_success_t "swap пересоздан: ${new_mb} МБ, приоритет 10" \
+"swap recreated: ${new_mb} MB, priority 10"
         return 0
     fi
 
     # не получилось — машина сейчас без свопа, это надо исправить или хотя бы
     # сказать вслух, а не оставить молча
-    log_error "Не удалось создать своп размером ${new_mb} МБ"
+    log_error_t "Не удалось создать своп размером ${new_mb} МБ" \
+"Could not create a ${new_mb} MB swap file"
     if create_swapfile "$path" "$old_mb"; then
         ensure_fstab_swap "$path"
         swapoff "$path" 2>/dev/null
         swapon -a 2>/dev/null
-        log_warn "Вернул прежний размер ${old_mb} МБ — система со свопом"
+        log_warn_t "Вернул прежний размер ${old_mb} МБ — система со свопом" \
+"Restored the previous size ${old_mb} MB — the system has swap again"
     else
-        log_error "ВНИМАНИЕ: своп сейчас ВЫКЛЮЧЕН. Подними вручную:"
+        log_error_t "ВНИМАНИЕ: своп сейчас ВЫКЛЮЧЕН. Подними вручную:" \
+"WARNING: swap is currently OFF. Bring it back by hand:"
         echo -e "      ${BOLD}sudo fallocate -l ${old_mb}M ${path} && sudo chmod 600 ${path}${NC}"
         echo -e "      ${BOLD}sudo mkswap ${path} && sudo swapon -a${NC}"
     fi

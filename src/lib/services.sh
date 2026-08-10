@@ -96,21 +96,27 @@ apply_service_autostart() {
     service_units "$svc"
     if [ "$USFC_DRY_RUN" = true ]; then
         if [ "$want" = true ]; then
-            log_info "[сухой прогон] systemctl enable --now ${REPLY_UNITS[*]}"
+            log_info_t "[сухой прогон] systemctl enable --now ${REPLY_UNITS[*]}" \
+"[dry run] systemctl enable --now ${REPLY_UNITS[*]}"
         else
-            log_info "[сухой прогон] systemctl disable --now ${REPLY_UNITS[*]}"
+            log_info_t "[сухой прогон] systemctl disable --now ${REPLY_UNITS[*]}" \
+"[dry run] systemctl disable --now ${REPLY_UNITS[*]}"
         fi
         return 0
     fi
     if [ "$want" = true ]; then
         if systemctl enable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1; then
-            log_success "${svc}: запущен, автозапуск включён"
+            log_success_t "${svc}: запущен, автозапуск включён" \
+"${svc}: started, autostart enabled"
         else
-            log_error "Не удалось запустить ${svc} — подробности: journalctl -u ${svc}"
+            log_error_t "Не удалось запустить ${svc} — подробности: journalctl -u ${svc}" \
+"Could not start ${svc} — details: journalctl -u ${svc}"
         fi
     else
         systemctl disable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1
-        log_success "${svc}: установлен, но НЕ запущен (автозапуск выключен)"
-        log_info "Включить позже: пункт $(item_number "$svc") в меню"
+        log_success_t "${svc}: установлен, но НЕ запущен (автозапуск выключен)" \
+"${svc}: installed but NOT running (autostart disabled)"
+        log_info_t "Включить позже: пункт $(item_number "$svc") в меню" \
+               "Enable it later: menu item $(item_number "$svc")"
     fi
 }

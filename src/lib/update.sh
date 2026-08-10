@@ -74,23 +74,27 @@ install_update() {
 
     # хвост прерванной попытки нам не нужен
     rm -rf "$stage"
-    mkdir -p "$stage/lib" || { log_error "Не удалось создать ${stage}"; return 1; }
+    mkdir -p "$stage/lib" || { log_error_t "Не удалось создать ${stage}" \
+"Could not create ${stage}"; return 1; }
 
     # Манифест берём СКАЧАННЫЙ, а не свой: список модулей в новой версии может
     # отличаться. Выковыривать его регуляркой из кода (как делает MTProxyL)
     # значит однажды разойтись с реальностью
     if ! usfc_fetch_to "MODULES" "${stage}/MODULES" || ! usfc_parse_manifest "${stage}/MODULES"; then
-        log_error "Не удалось получить список модулей — остаюсь на ${VERSION}"
+        log_error_t "Не удалось получить список модулей — остаюсь на ${VERSION}" \
+"Could not fetch the module list — staying on ${VERSION}"
         rm -rf "$stage"; return 1
     fi
 
     if ! usfc_fetch_to "setup.sh" "${stage}/setup.sh"; then
-        log_error "Не удалось скачать setup.sh — остаюсь на ${VERSION}"
+        log_error_t "Не удалось скачать setup.sh — остаюсь на ${VERSION}" \
+"Could not download setup.sh — staying on ${VERSION}"
         rm -rf "$stage"; return 1
     fi
 
     local total="${#REPLY_MANIFEST[@]}" i=0 m
-    log_info "Скачиваю модули (${total} шт.)"
+    log_info_t "Скачиваю модули (${total} шт.)" \
+"Downloading modules (${total})"
     for m in "${REPLY_MANIFEST[@]}"; do
         i=$((i + 1))
         printf '  %s[%2d/%2d]%s %s' "$DIM" "$i" "$total" "$NC" "$m"
@@ -98,15 +102,18 @@ install_update() {
             printf ' %b✓%b\n' "$GREEN" "$NC"
         else
             printf ' %b✗%b\n' "$RED" "$NC"
-            log_error "Модуль ${m} не скачался или не прошёл проверку синтаксиса"
-            log_info "Ничего не меняю: установка ${VERSION} осталась как была"
+            log_error_t "Модуль ${m} не скачался или не прошёл проверку синтаксиса" \
+"Module ${m} failed to download or failed the syntax check"
+            log_info_t "Ничего не меняю: установка ${VERSION} осталась как была" \
+"Changing nothing: the ${VERSION} install is untouched"
             rm -rf "$stage"
             return 1
         fi
     done
 
     printf '%s' "$new_version" > "${stage}/VERSION" || {
-        log_error "Не удалось записать версию"; rm -rf "$stage"; return 1; }
+        log_error_t "Не удалось записать версию" \
+"Could not write the version file"; rm -rf "$stage"; return 1; }
 
     # ── Точка невозврата: дальше только переименования ────────────────────
     # Всё скачано и проверено. mv в пределах одной ФС атомарен на каждый файл,
@@ -114,7 +121,8 @@ install_update() {
     # смешанная, схлопнуто до нескольких системных вызовов.
     local old_lib="${USFC_ROOT}/lib.old.$$"
     if [ -d "$live_lib" ] && ! mv "$live_lib" "$old_lib"; then
-        log_error "Не удалось освободить ${live_lib} — остаюсь на ${VERSION}"
+        log_error_t "Не удалось освободить ${live_lib} — остаюсь на ${VERSION}" \
+"Could not move ${live_lib} aside — staying on ${VERSION}"
         rm -rf "$stage"; return 1
     fi
     mv "${stage}/lib" "$live_lib"
@@ -128,7 +136,8 @@ install_update() {
 
 check_for_update() {
     if [ -n "${USFC_NO_UPDATE:-}" ]; then
-        log_info "Проверка обновлений отключена (--no-update)"
+        log_info_t "Проверка обновлений отключена (--no-update)" \
+"Update check disabled (--no-update)"
         return 1
     fi
 
@@ -141,7 +150,8 @@ check_for_update() {
     fi
 
     if [ -z "$remote_version" ]; then
-        log_warn "Не удалось проверить обновления (нет сети или файла VERSION в репо)"
+        log_warn_t "Не удалось проверить обновления (нет сети или файла VERSION в репо)" \
+"Could not check for updates (no network, or no VERSION file in the repo)"
         return 0
     fi
 
@@ -157,14 +167,17 @@ check_for_update() {
         # станем — молча откатить себя хуже, чем ничего не сделать. Но и молчать
         # тут нельзя: ровно это молчание сделало бы невидимой перенумерацию
         # релизов (в репозитории номер стал бы ниже, а на экране — «всё свежее»).
-        log_info "В репозитории ${remote_version}, у вас ${VERSION} — обновляться некуда"
+        log_info_t "В репозитории ${remote_version}, у вас ${VERSION} — обновляться некуда" \
+"Repository has ${remote_version}, you have ${VERSION} — nothing to update to"
         return 1
     fi
 
-    log_info "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}"
-    if ask_yn "Обновить usfc до ${remote_version} сейчас?"; then
+    log_info_t "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}" \
+"New version available: ${BOLD}${remote_version}${NC} ${DIM}(you have ${VERSION})${NC}"
+    if ask_yn_t "Обновить usfc до ${remote_version} сейчас?" "Update usfc to ${remote_version} now?"; then
         if install_update "$remote_version"; then
-            log_success "Обновлено до ${remote_version}, перезапускаю..."
+            log_success_t "Обновлено до ${remote_version}, перезапускаю..." \
+"Updated to ${remote_version}, restarting..."
             exec "$SCRIPT_PATH"
         fi
     fi

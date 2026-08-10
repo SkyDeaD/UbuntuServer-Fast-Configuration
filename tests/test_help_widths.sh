@@ -36,7 +36,12 @@ render() {
 
 fail=0
 
+# Английский и русский дают разную длину строк, и рамка едет там, где
+# по-русски всё влезало. Поэтому обе раскладки меряются одним и тем же тестом.
+LANGS="${USFC_TEST_LANGS:-ru en}"
+
 # ── 1. ширина рамки ───────────────────────────────────────────────────────────
+for USFC_LANG in $LANGS; do
 for screen in menu help; do
     for tw in 58 78 98 118; do
         # shellcheck disable=SC2034  # читается внутри функций отрисовки
@@ -55,12 +60,13 @@ for screen in menu help; do
             esac
         done < <(render "$screen")
         if [ "$bad" -eq 0 ]; then
-            printf '%-5s TERM_W=%-4s рамка ровная\n' "$screen" "$tw"
+            printf '%-2s %-5s TERM_W=%-4s рамка ровная\n' "$USFC_LANG" "$screen" "$tw"
         else
-            printf '%-5s TERM_W=%-4s КРИВЫХ СТРОК %s\n' "$screen" "$tw" "$bad"
+            printf '%-2s %-5s TERM_W=%-4s КРИВЫХ СТРОК %s\n' "$USFC_LANG" "$screen" "$tw" "$bad"
             fail=1
         fi
     done
+done
 done
 
 # ── 2. выравнивание колонок ───────────────────────────────────────────────────
@@ -74,6 +80,7 @@ uniq_count() {
     printf '%s' "$c"
 }
 
+for USFC_LANG in $LANGS; do
 for screen in menu help; do
     for tw in 58 78 98 118; do
         # shellcheck disable=SC2034
@@ -111,13 +118,14 @@ for screen in menu help; do
         n_idx="$(uniq_count "$idx_ends")"
         n_mark="$(uniq_count "$mark_cols")"
         if [ "$n_idx" -eq 1 ] && [ "$n_mark" -eq 1 ]; then
-            printf '%-5s TERM_W=%-4s номера и ⇄ выровнены\n' "$screen" "$tw"
+            printf '%-2s %-5s TERM_W=%-4s номера и ⇄ выровнены\n' "$USFC_LANG" "$screen" "$tw"
         else
-            [ "$n_idx" -ne 1 ] && printf '%-5s TERM_W=%-4s номера вразнобой:%s\n' "$screen" "$tw" "$idx_ends"
-            [ "$n_mark" -ne 1 ] && printf '%-5s TERM_W=%-4s метка ⇄ вразнобой:%s\n' "$screen" "$tw" "$mark_cols"
+            [ "$n_idx" -ne 1 ] && printf '%-2s %-5s TERM_W=%-4s номера вразнобой:%s\n' "$USFC_LANG" "$screen" "$tw" "$idx_ends"
+            [ "$n_mark" -ne 1 ] && printf '%-2s %-5s TERM_W=%-4s метка ⇄ вразнобой:%s\n' "$USFC_LANG" "$screen" "$tw" "$mark_cols"
             fail=1
         fi
     done
+done
 done
 
 exit "$fail"

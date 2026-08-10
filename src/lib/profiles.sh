@@ -22,13 +22,16 @@ declare -A USFC_PROFILES=(
 profile_list() {
     local name
     echo ""
-    log_info "Готовые профили:"
+    log_info_t "Готовые профили:" \
+"Available profiles:"
     for name in minimal web dockerhost secure; do
         printf '    %b%-8s%b %s\n' "$BOLD" "$name" "$NC" "${USFC_PROFILES[$name]}"
     done
     echo ""
-    log_info "Пункты можно перечислить и вручную: ${BOLD}--apply docker,nginx,ufw${NC}"
-    log_info "Все id: ${DIM}${ITEM_IDS[*]}${NC}"
+    log_info_t "Пункты можно перечислить и вручную: ${BOLD}--apply docker,nginx,ufw${NC}" \
+"Items can also be listed by hand: ${BOLD}--apply docker,nginx,ufw${NC}"
+    log_info_t "Все id: ${DIM}${ITEM_IDS[*]}${NC}" \
+"All ids: ${DIM}${ITEM_IDS[*]}${NC}"
 }
 
 # resolve_items <спецификация> → REPLY_ITEM_NUMS (номера пунктов).
@@ -62,7 +65,8 @@ resolve_items() {
         [ -z "$tok" ] && continue
         if [[ "$tok" =~ ^[0-9]+$ ]]; then
             if [ "$tok" -lt 1 ] || [ "$tok" -gt "${#ITEM_IDS[@]}" ]; then
-                log_error "Нет пункта с номером ${tok} (всего ${#ITEM_IDS[@]})"
+                log_error_t "Нет пункта с номером ${tok} (всего ${#ITEM_IDS[@]})" \
+"No item number ${tok} (there are ${#ITEM_IDS[@]})"
                 return 1
             fi
             REPLY_ITEM_NUMS+=("$tok")
@@ -73,9 +77,12 @@ resolve_items() {
             [ "${ITEM_IDS[$i]}" = "$tok" ] && { num=$((i + 1)); break; }
         done
         if [ -z "$num" ]; then
-            log_error "Неизвестный пункт или профиль: ${tok}"
-            log_info "Доступные id: ${ITEM_IDS[*]}"
-            log_info "Профили: ${!USFC_PROFILES[*]}"
+            log_error_t "Неизвестный пункт или профиль: ${tok}" \
+"Unknown item or profile: ${tok}"
+            log_info_t "Доступные id: ${ITEM_IDS[*]}" \
+"Available ids: ${ITEM_IDS[*]}"
+            log_info_t "Профили: ${!USFC_PROFILES[*]}" \
+"Profiles: ${!USFC_PROFILES[*]}"
             return 1
         fi
         REPLY_ITEM_NUMS+=("$num")
@@ -93,7 +100,8 @@ resolve_items() {
     done
     REPLY_ITEM_NUMS=("${uniq[@]}")
 
-    [ "${#REPLY_ITEM_NUMS[@]}" -gt 0 ] || { log_error "Пустой список пунктов"; return 1; }
+    [ "${#REPLY_ITEM_NUMS[@]}" -gt 0 ] || { log_error_t "Пустой список пунктов" \
+"Empty item list"; return 1; }
     return 0
 }
 
@@ -103,7 +111,8 @@ resolve_items() {
 load_config() {
     local file="$1" line key val
     if [ ! -r "$file" ]; then
-        log_error "Конфиг не читается: ${file}"
+        log_error_t "Конфиг не читается: ${file}" \
+"Cannot read config: ${file}"
         return 1
     fi
     while IFS= read -r line || [ -n "$line" ]; do
@@ -123,7 +132,8 @@ load_config() {
             CERTBOT_CF)        CERTBOT_CF_BULK="$val" ;;
             CF_TOKEN)          CF_TOKEN_BULK="$val" ;;
             *)
-                log_warn "Непонятный ключ в ${file}: ${key}"
+                log_warn_t "Непонятный ключ в ${file}: ${key}" \
+"Unknown key in ${file}: ${key}"
                 ;;
         esac
     done < "$file"

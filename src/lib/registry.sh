@@ -22,14 +22,33 @@ ITEM_FULL=()
 ROLLBACK_NOTES=()
 DISABLE_SUPPORTED=()
 
-# usfc_item <id> <раздел> <название> <короткое описание>
+# usfc_item <id> <раздел> <название> <краткое> [англ. название] [англ. краткое]
+# Английские варианты необязательны: пока их нет, показывается русский —
+# это лучше пустой ячейки в таблице, и видно, что ещё не переведено.
 usfc_item() {
     ITEM_IDS+=("$1")
     ITEM_SECTIONS+=("$2")
-    ITEM_TITLES+=("$3")
-    ITEM_SHORT+=("$4")
+    if [ "$USFC_LANG" = en ]; then
+        ITEM_TITLES+=("${5:-$3}")
+        ITEM_SHORT+=("${6:-$4}")
+    else
+        ITEM_TITLES+=("$3")
+        ITEM_SHORT+=("$4")
+    fi
     ITEM_FULL+=("")
     ROLLBACK_NOTES+=("")
+}
+
+# Названия разделов. Раздел хранится по-русски (он же ключ для букв C/B/S/P),
+# а показывается на языке интерфейса
+section_label() {
+    case "${1}" in
+        система) t "система" "system"  ;;
+        база)    t "база"    "base"    ;;
+        сервисы) t "сервисы" "services";;
+        защита)  t "защита"  "security";;
+        *)       REPLY_T="$1" ;;
+    esac
 }
 
 # Индекс пункта → REPLY_ITEM_IDX. Отдельно от item_number: тому нужен
@@ -45,16 +64,20 @@ _usfc_item_idx() {
     return 1
 }
 
-# Полное описание для экрана справки
+# Полное описание для экрана справки. Третий аргумент — английский вариант;
+# пока его нет, показывается русский: пустой экран хуже непереведённого.
 usfc_item_full() {
     _usfc_item_idx "$1" || return 1
-    ITEM_FULL[$REPLY_ITEM_IDX]="$2"
+    if [ "$USFC_LANG" = en ]; then ITEM_FULL[$REPLY_ITEM_IDX]="${3:-$2}"
+    else                           ITEM_FULL[$REPLY_ITEM_IDX]="$2"; fi
 }
 
-# Команды «удалить совсем» для экрана справки
+# Команды «удалить совсем» для экрана справки. Сами команды одинаковые,
+# переводятся только комментарии внутри них
 usfc_item_rollback() {
     _usfc_item_idx "$1" || return 1
-    ROLLBACK_NOTES[$REPLY_ITEM_IDX]="$2"
+    if [ "$USFC_LANG" = en ]; then ROLLBACK_NOTES[$REPLY_ITEM_IDX]="${3:-$2}"
+    else                           ROLLBACK_NOTES[$REPLY_ITEM_IDX]="$2"; fi
 }
 
 # Пункт умеет выключаться повторным выбором (метка ⇄ в таблице)

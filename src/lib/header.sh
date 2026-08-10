@@ -40,9 +40,9 @@ init_logo_colors() {
 fmt_size_mb() {
     local mb="${1:-0}"
     if [ "$mb" -ge 1024 ]; then
-        printf '%d.%d ГБ' "$((mb / 1024))" "$(( (mb % 1024) * 10 / 1024 ))"
+        t "ГБ" "GB"; printf '%d.%d %s' "$((mb / 1024))" "$(( (mb % 1024) * 10 / 1024 ))" "$REPLY_T"
     else
-        printf '%d МБ' "$mb"
+        t "МБ" "MB"; printf '%d %s' "$mb" "$REPLY_T"
     fi
 }
 
@@ -142,7 +142,8 @@ show_header() {
 
 pause() {
     echo ""
-    echo -en "  ${DIM}Enter — продолжить...${NC}"
+    t "Enter — продолжить..." "Enter to continue..."
+    echo -en "  ${DIM}${REPLY_T}${NC}"
     read -r _ </dev/tty
 }
 

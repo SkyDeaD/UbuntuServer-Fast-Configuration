@@ -24,7 +24,7 @@ log_init() {
     fi
     chmod 640 "$USFC_LOG" 2>/dev/null
     chgrp adm "$USFC_LOG" 2>/dev/null
-    printf '\n===== %s  usfc %s  пользователь=%s =====\n' \
+    printf '\n===== %s  usfc %s  user=%s =====\n' \
         "$(date '+%F %T')" "${VERSION:-?}" "${TARGET_USER:-?}" >> "$USFC_LOG"
 }
 
@@ -167,10 +167,13 @@ run_logged() {
         [ -n "$REPLY_STATS" ] && extra="${REPLY_STATS}, ${elapsed}s"
         log_success "${desc} ${DIM}(${extra})${NC}"
     else
-        log_error "${desc} — не удалось (код ${rc}, ${elapsed}s)"
-        echo -e "  ${DIM}последние строки вывода:${NC}"
+        log_error_t "${desc} — не удалось (код ${rc}, ${elapsed}s)" \
+"${desc} — failed (code ${rc}, ${elapsed}s)"
+        t "последние строки вывода:" "last lines of output:"
+        echo -e "  ${DIM}${REPLY_T}${NC}"
         tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null | tail -n 20 | sed 's/^/      /'
-        log_info "полный лог: ${USFC_LOG}"
+        log_info_t "полный лог: ${USFC_LOG}" \
+"full log: ${USFC_LOG}"
     fi
     return "$rc"
 }
