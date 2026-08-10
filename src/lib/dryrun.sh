@@ -113,5 +113,6 @@ dry_run_enable() {
     # Зелёная галочка меняется на тусклую тильду — видно, что это «было бы»
     log_success() { echo -e "  ${DIM}[~]${NC} ${DIM}${1:-}${NC}"; }
 
-    log_info "Сухой прогон: изменяющие команды перехвачены, система не изменится"
+    log_info_t "Сухой прогон: изменяющие команды перехвачены, система не изменится" \
+"Dry run: mutating commands are intercepted, the system will not change"
 }

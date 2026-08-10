@@ -58,11 +58,13 @@ backup_file() {
 backup_list() {
     local d n
     if [ ! -d "$USFC_BACKUP_ROOT" ] || [ -z "$(ls -A "$USFC_BACKUP_ROOT" 2>/dev/null)" ]; then
-        log_info "Снимков пока нет: ${USFC_BACKUP_ROOT}"
+        log_info_t "Снимков пока нет: ${USFC_BACKUP_ROOT}" \
+"No snapshots yet: ${USFC_BACKUP_ROOT}"
         return 1
     fi
     echo ""
-    log_info "Снимки конфигов:"
+    log_info_t "Снимки конфигов:" \
+"Config snapshots:"
     for d in "$USFC_BACKUP_ROOT"/*/; do
         [ -d "$d" ] || continue
         n="$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')"
@@ -82,11 +84,13 @@ backup_restore() {
     if [ -z "$stamp" ]; then
         echo -en "  ${BOLD}Метка снимка (Enter — отмена):${NC} "
         read -r stamp </dev/tty
-        [ -z "$stamp" ] && { log_info "Отменено"; return 0; }
+        [ -z "$stamp" ] && { log_info_t "Отменено" \
+"Cancelled"; return 0; }
     fi
     dir="${USFC_BACKUP_ROOT}/${stamp}"
     if [ ! -d "$dir" ]; then
-        log_error "Нет снимка «${stamp}»"
+        log_error_t "Нет снимка «${stamp}»" \
+"No snapshot named ${stamp}"
         return 1
     fi
     # Страховка поверх уникальной метки: писать снимок отката в тот самый
@@ -96,13 +100,16 @@ backup_restore() {
     fi
 
     echo ""
-    log_warn "Файлы будут перезаписаны содержимым снимка ${stamp}:"
+    log_warn_t "Файлы будут перезаписаны содержимым снимка ${stamp}:" \
+"These files will be overwritten from snapshot ${stamp}:"
     find "$dir" -type f -printf '    /%P\n' 2>/dev/null
     echo ""
     if [ "$USFC_ASSUME_YES" = true ]; then
-        log_info "--yes: подтверждение пропущено"
+        log_info_t "--yes: подтверждение пропущено" \
+"--yes: confirmation skipped"
     else
-        ask_yn "Восстановить?" N || { log_info "Отменено"; return 0; }
+        ask_yn_t "Восстановить?" "Restore?" N || { log_info_t "Отменено" \
+"Cancelled"; return 0; }
     fi
 
     while IFS= read -r f; do
@@ -111,17 +118,22 @@ backup_restore() {
         # должен быть возможен
         backup_file "$target"
         if cp -p "$f" "$target" 2>/dev/null; then
-            log_success "Восстановлен ${target}"
+            log_success_t "Восстановлен ${target}" \
+"Restored ${target}"
             restored=$((restored + 1))
         else
-            log_error "Не удалось восстановить ${target}"
+            log_error_t "Не удалось восстановить ${target}" \
+"Could not restore ${target}"
         fi
     done < <(find "$dir" -type f 2>/dev/null)
 
     echo ""
-    log_info "Восстановлено файлов: ${restored}"
-    log_warn "Сервисы не перезапускались — примени изменения сам, например:"
-    log_info "  ${BOLD}systemctl restart ssh${NC} после sshd_config.d, ${BOLD}sysctl --system${NC} после sysctl.d"
+    log_info_t "Восстановлено файлов: ${restored}" \
+"Files restored: ${restored}"
+    log_warn_t "Сервисы не перезапускались — примени изменения сам, например:" \
+"No services were restarted — apply the changes yourself, for example:"
+    log_info_t "  ${BOLD}systemctl restart ssh${NC} после sshd_config.d, ${BOLD}sysctl --system${NC} после sysctl.d" \
+"  ${BOLD}systemctl restart ssh${NC} after sshd_config.d, ${BOLD}sysctl --system${NC} after sysctl.d"
     return 0
 }
 
@@ -131,6 +143,7 @@ backup_restore() {
 backup_hint() {
     backup_made || return 0
     echo ""
-    log_info "Конфиги, которые правились, сохранены: ${BOLD}${USFC_BACKUP_DIR}${NC}"
+    log_info_t "Конфиги, которые правились, сохранены: ${BOLD}${USFC_BACKUP_DIR}${NC}" \
+"Configs that were edited are saved in: ${BOLD}${USFC_BACKUP_DIR}${NC}"
     log_info "Вернуть как было: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}"
 }
