@@ -32,6 +32,9 @@ write_file() {
         cat >/dev/null
         return 0
     fi
+    # Снимок ДО перезаписи: см. lib/backup.sh — эта пара функций единственная
+    # точка, через которую идут записи в системные файлы
+    backup_file "$1"
     cat > "$1"
 }
 
@@ -42,6 +45,7 @@ append_file() {
         cat >/dev/null
         return 0
     fi
+    backup_file "$1"
     cat >> "$1"
 }
 

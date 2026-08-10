@@ -107,7 +107,7 @@ cf_write_credentials() {
     # во-вторых, оставлял окно между созданием файла и chmod.
     install -m 600 -o root -g root /dev/null "$CF_CREDENTIALS" || {
         log_error "Не удалось создать ${CF_CREDENTIALS}"; return 1; }
-    printf 'dns_cloudflare_api_token = %s\n' "$token" > "$CF_CREDENTIALS" || {
+    printf 'dns_cloudflare_api_token = %s\n' "$token" | write_file "$CF_CREDENTIALS" || {
         log_error "Не удалось записать ${CF_CREDENTIALS}"; return 1; }
     log_success "Credentials-файл создан: ${CF_CREDENTIALS} ($(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root)"
     cf_wildcard_hint

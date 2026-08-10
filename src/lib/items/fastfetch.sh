@@ -102,7 +102,7 @@ apply_fastfetch() {
         need_fastfetch_block=true
     fi
     if [ "$need_fastfetch_block" = true ]; then
-        cat >> "$BASHRC" <<'EOF'
+        append_file "$BASHRC" <<'EOF'
 
 # >>> vps-setup:fastfetch >>>
 if [ -z "${USFC_RESOURCE:-}" ] && [ -x "$(command -v fastfetch)" ]; then

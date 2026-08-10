@@ -22,7 +22,7 @@ drop_policy_rc_d() {
 with_no_service_start() {
     # чужой policy-rc.d не трогаем вообще: он не наш и, возможно, кому-то нужен
     if [ ! -e "$POLICY_RC_D" ]; then
-        printf '#!/bin/sh\nexit 101\n' > "$POLICY_RC_D"
+        printf '#!/bin/sh\nexit 101\n' | write_file "$POLICY_RC_D"
         chmod +x "$POLICY_RC_D"
         POLICY_RC_D_OURS=true
     fi

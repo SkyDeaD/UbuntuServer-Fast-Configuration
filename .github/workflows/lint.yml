@@ -94,7 +94,21 @@ jobs:
             # Сухой прогон обязан НЕ МЕНЯТЬ систему. Глазами это не проверить:
             # изменяющих вызовов около сотни. Сверяем слепок до и после
             bash /w/tests/test_dryrun.sh || exit 1
+            # аудит обязан быть чисто читающим — та же проверка слепком
+            bash /w/tests/test_audit.sh || exit 1
             echo "неинтерактивный режим в порядке"
+          '
+
+      - name: Снимки конфигов и откат
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update -qq >/dev/null 2>&1
+            apt-get install -y -qq unattended-upgrades >/dev/null 2>&1
+            mkdir -p /opt/vps-setup && cp -r /w/src/. /opt/vps-setup/
+            chmod +x /opt/vps-setup/setup.sh
+            ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
+            bash /w/tests/test_backup.sh
           '
 
       - name: Тесты раскладки во всех локалях

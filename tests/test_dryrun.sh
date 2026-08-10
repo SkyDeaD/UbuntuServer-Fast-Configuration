@@ -20,6 +20,10 @@ snapshot() {
         swapon --show --noheadings --raw 2>/dev/null | sort
         echo "--- apt lists ---"
         ls /var/lib/apt/lists/ 2>/dev/null | sort
+        echo "--- домашние каталоги ---"
+        # .bashrc правят три пункта, и раньше слепок сюда не заглядывал —
+        # сухой прогон мог дописать туда алиасы, и тест этого не заметил бы
+        find /root /home -maxdepth 3 -type f -printf '%p %s\n' 2>/dev/null | sort
     } | sha256sum | cut -d' ' -f1
 }
 

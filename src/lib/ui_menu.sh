@@ -118,11 +118,14 @@ show_menu() {
     # Отдельного «R откат» здесь больше нет: R и I открывают один и тот же
     # экран, и две клавиши в строке выглядели как два разных места.
     # Саму клавишу R скрипт по-прежнему принимает — она у людей в пальцах
+    # A под аудит не годится: она уже занята под «применить всё». Берём D
+    # (диагностика) — и раскладка становится симметричной строке разделов:
+    # четыре ячейки плюс хвост
     grid_cell "${CYAN}${BOLD}I${NC} справка" "$item_w"; g1="$REPLY_CELL"
     grid_cell "${CYAN}${BOLD}H${NC} алиасы"  "$item_w"; g2="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g3="$REPLY_CELL"
-    grid_cell "${CYAN}${BOLD}Q${NC} выход"   "$item_w"; g4="$REPLY_CELL"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}"
+    grid_cell "${CYAN}${BOLD}D${NC} аудит"   "$item_w"; g3="$REPLY_CELL"
+    grid_cell "${CYAN}${BOLD}U${NC} удалить" "$item_w"; g4="$REPLY_CELL"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} выход"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
         local ltrunc lpad

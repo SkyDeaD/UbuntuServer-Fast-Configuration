@@ -3,6 +3,7 @@
 lib/core.sh
 lib/os.sh
 lib/dryrun.sh
+lib/backup.sh
 lib/log.sh
 lib/prompt.sh
 lib/header.sh
@@ -33,5 +34,6 @@ lib/layout.sh
 lib/statecache.sh
 lib/ui_menu.sh
 lib/ui_help.sh
+lib/audit.sh
 lib/cli.sh
 lib/main.sh
