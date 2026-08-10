@@ -5,7 +5,7 @@
 # root нужен, чтобы что-то ДЕЛАТЬ. Просто загрузить функции (тесты, CI) можно и
 # без него — иначе линтер пришлось бы гонять от root на ровном месте
 if [ "$(id -u)" -ne 0 ] && [ -z "${USFC_SOURCE_ONLY:-}" ]; then
-    echo "Нужны права root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
+    echo "Root required: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
     exit 1
 fi
 
@@ -29,7 +29,7 @@ if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
     if [ -n "${USFC_SOURCE_ONLY:-}" ]; then
         TARGET_HOME="${HOME:-/root}"
     else
-        echo "Не удалось определить домашнюю директорию пользователя $TARGET_USER" >&2
+        echo "Could not determine the home directory of $TARGET_USER" >&2
         exit 1
     fi
 fi

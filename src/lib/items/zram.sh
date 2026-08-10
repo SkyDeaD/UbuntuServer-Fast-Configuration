@@ -17,14 +17,31 @@ swap-файл уже есть и его размер расходится с р�
 пункт предложит пересоздать. Разделы и LVM не трогаются.
 
 Плюс vm.swappiness=80 / vm.vfs_cache_pressure=50 и опционально earlyoom —
-защита от полного зависания сервера при нехватке памяти."
+защита от полного зависания сервера при нехватке памяти." \
+"Three things about memory at once.
+
+zram is compressed memory used as swap: several times faster than a disk
+swap file, and it does not wear out an SSD. Priority 100, so the kernel uses
+it first.
+
+A backup swap file on disk, priority 10 — the reserve for when zram runs out.
+Its size is min(RAM, free/4), clamped to 512-4096 MB: swap here backs zram up,
+so it follows memory, and dividing by four keeps it from eating a small disk.
+
+Plus vm.swappiness=80 / vm.vfs_cache_pressure=50, and optionally earlyoom —
+it kills the heaviest process before the machine freezes completely."
 
 
 usfc_item_rollback zram "sudo apt purge zram-tools earlyoom
      sudo swapoff /swapfile && sudo rm -f /swapfile
      sudo sed -i '/^\\/swapfile /d' /etc/fstab
      sudo rm -f /etc/sysctl.d/99-zram.conf && sudo sysctl --system
-     # снимать своп имеет смысл, только если памяти заведомо хватает"
+     # снимать своп имеет смысл, только если памяти заведомо хватает" \
+"sudo apt purge zram-tools earlyoom
+     sudo swapoff /swapfile && sudo rm -f /swapfile
+     sudo sed -i '/^\\/swapfile /d' /etc/fstab
+     sudo rm -f /etc/sysctl.d/99-zram.conf && sudo sysctl --system
+     # removing swap only makes sense if you are certain memory is plentiful"
 
 status_zram() {
     local zram_ok=false swap_ok=false
@@ -36,11 +53,11 @@ status_zram() {
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
     if [ "$zram_ok" = true ] && [ "$swap_ok" = true ]; then
-        echo -e "${GREEN}✓ настроено${NC}"; return 0
+        st "$GREEN" "✓ настроено" "✓ configured"; return 0
     elif [ "$zram_ok" = true ] || [ "$swap_ok" = true ]; then
-        echo -e "${YELLOW}! настроено частично${NC}"; return 1
+        st "$YELLOW" "! настроено частично" "! partially configured"; return 1
     else
-        echo -e "${DIM}○ не настроено${NC}"; return 1
+        st "$DIM" "○ не настроено" "○ not configured"; return 1
     fi
 }
 
@@ -51,14 +68,16 @@ apply_zram() {
 
     if [ "$zram_active" = true ]; then
         if [ "$zram_prio" = "100" ]; then
-            log_success "zram уже настроен (приоритет 100) — пропускаю"
+            log_success_t "zram уже настроен (приоритет 100) — пропускаю" \
+"zram is already configured (priority 100) — skipping"
         else
-            log_warn "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную"
-            if ask_yn "Перенастроить под рекомендованные значения?" N; then
+            log_warn_t "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную" \
+"zram is active but its priority is ${zram_prio} (100 recommended) — looks hand-tuned"
+            if ask_yn_t "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N; then
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
-                zram_percent="$(ask_value "Размер zram в % от RAM?" "$cur_percent")"
+                zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "$cur_percent")"
                 if ensure_pkg "zram-tools" zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
@@ -68,18 +87,21 @@ apply_zram() {
                         systemctl start zramswap
                     fi
                     if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
-                        log_success "zram перенастроен (${zram_percent}% RAM)"
+                        log_success_t "zram перенастроен (${zram_percent}% RAM)" \
+"zram reconfigured (${zram_percent}% of RAM)"
                     else
-                        log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
+                        log_error_t "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap" \
+"Could not bring zram up — try by hand: systemctl restart zramswap"
                     fi
                 else
-                    log_error "Установка zram-tools не удалась"
+                    log_error_t "Установка zram-tools не удалась" \
+"Installing zram-tools failed"
                 fi
             fi
         fi
-    elif ask_yn "Установить и настроить zram (lz4, приоритет 100)?"; then
+    elif ask_yn_t "Установить и настроить zram (lz4, приоритет 100)?" "Install and configure zram (lz4, priority 100)?"; then
         local zram_percent
-        zram_percent="$(ask_value "Размер zram в % от RAM?" "${ZRAM_BULK_PERCENT:-75}")"
+        zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-75}")"
         if ensure_pkg "zram-tools" zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
@@ -89,12 +111,15 @@ apply_zram() {
                 systemctl start zramswap
             fi
             if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
-                log_success "zram-tools установлен и настроен (${zram_percent}% RAM)"
+                log_success_t "zram-tools установлен и настроен (${zram_percent}% RAM)" \
+"zram-tools installed and configured (${zram_percent}% of RAM)"
             else
-                log_error "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap"
+                log_error_t "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap" \
+"Could not bring zram up — try by hand: systemctl restart zramswap"
             fi
         else
-            log_error "Установка zram-tools не удалась"
+            log_error_t "Установка zram-tools не удалась" \
+"Installing zram-tools failed"
         fi
     fi
 
@@ -102,38 +127,44 @@ apply_zram() {
         if [ "$swap_prio" = "10" ]; then
             local sw_suggest
             sw_suggest="$(suggest_swap_mb "$SWAP_SIZE_MB")"
-            log_success "Резервный своп: ${swap_path}, ${SWAP_SIZE_MB} МБ, приоритет 10 ${DIM}(занято ${SWAP_USED_MB} МБ)${NC}"
+            log_success_t "Резервный своп: ${swap_path}, ${SWAP_SIZE_MB} МБ, приоритет 10 ${DIM}(занято ${SWAP_USED_MB} МБ)${NC}" \
+"Backup swap: ${swap_path}, ${SWAP_SIZE_MB} MB, priority 10 ${DIM}(${SWAP_USED_MB} MB used)${NC}"
 
             if [ "$SWAP_TYPE" != "file" ]; then
                 # раздел или LVM: менять его размер — это про parted/lvresize и
                 # риск для данных, такое не место в меню быстрой настройки
-                log_info "Тип свопа — ${SWAP_TYPE:-?}, размер разделов этот скрипт не меняет"
+                log_info_t "Тип свопа — ${SWAP_TYPE:-?}, размер разделов этот скрипт не меняет" \
+"Swap type is ${SWAP_TYPE:-?}; this script does not resize partitions"
             elif swap_needs_resize "$SWAP_SIZE_MB" "$sw_suggest"; then
-                log_info "Рекомендуемый размер для этой машины: ${BOLD}${sw_suggest} МБ${NC} ${DIM}(min(RAM, свободно/4))${NC}"
+                log_info_t "Рекомендуемый размер для этой машины: ${BOLD}${sw_suggest} МБ${NC} ${DIM}(min(RAM, свободно/4))${NC}" \
+"Recommended size for this machine: ${BOLD}${sw_suggest} MB${NC} ${DIM}(min(RAM, free/4))${NC}"
                 # В пакетном режиме ask_yn всегда вернёт дефолт N, поэтому
                 # согласием считаем сам факт того, что размер уже спросили
                 # заранее в main() — иначе предзаданное значение пропало бы зря
                 local want_resize=false
                 if [ "$BULK_MODE" = true ]; then
                     [ -n "$SWAP_BULK_MB" ] && want_resize=true
-                elif ask_yn "Изменить размер swap-файла?" N; then
+                elif ask_yn_t "Изменить размер swap-файла?" "Resize the swap file?" N; then
                     want_resize=true
                 fi
                 if [ "$want_resize" = true ]; then
                     local new_mb
-                    new_mb="$(ask_value "Размер swap-файла, МБ?" "${SWAP_BULK_MB:-$sw_suggest}")"
+                    new_mb="$(ask_value_t "Размер swap-файла, МБ?" "Swap file size, MB?" "${SWAP_BULK_MB:-$sw_suggest}")"
                     if [ "$new_mb" -lt 64 ]; then
-                        log_error "Слишком мало (${new_mb} МБ) — размер не меняю"
+                        log_error_t "Слишком мало (${new_mb} МБ) — размер не меняю" \
+"Too small (${new_mb} MB) — leaving the size alone"
                     else
                         resize_swapfile "$swap_path" "$new_mb" "$SWAP_SIZE_MB" "$SWAP_USED_MB"
                     fi
                 fi
             else
-                log_success "Размер близок к рекомендуемому (${sw_suggest} МБ) — оставляю как есть"
+                log_success_t "Размер близок к рекомендуемому (${sw_suggest} МБ) — оставляю как есть" \
+"Close enough to the recommendation (${sw_suggest} MB) — leaving it as is"
             fi
         else
-            log_warn "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)"
-            if ask_yn "Исправить приоритет ${swap_path} в /etc/fstab на 10?"; then
+            log_warn_t "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)" \
+"On-disk swap (${swap_path}) is active but its priority is ${swap_prio} (10 recommended)"
+            if ask_yn_t "Исправить приоритет ${swap_path} в /etc/fstab на 10?" "Set the priority of ${swap_path} to 10 in /etc/fstab?"; then
                 local esc_path
                 esc_path="$(printf '%s' "$swap_path" | sed 's/[.[\*^$/]/\\&/g')"
                 sed -i -E "s#^(${esc_path}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
@@ -143,25 +174,29 @@ apply_zram() {
                 # UUID=/LABEL=, а не путём (типично для разделов) — тогда без
                 # этой проверки log_success был бы враньём
                 if swapon --show --noheadings --raw 2>/dev/null | awk -v p="$swap_path" '$1==p {print $5}' | grep '^10$' >/dev/null; then
-                    log_success "Приоритет исправлен"
+                    log_success_t "Приоритет исправлен" \
+"Priority fixed"
                 else
-                    log_error "Не удалось исправить приоритет ${swap_path} — возможно, в /etc/fstab он указан через UUID=/LABEL=, а не путём. Поправьте вручную: pri=10 в опциях монтирования"
+                    log_error_t "Не удалось исправить приоритет ${swap_path} — возможно, в /etc/fstab он указан через UUID=/LABEL=, а не путём. Поправьте вручную: pri=10 в опциях монтирования" \
+"Could not fix the priority of ${swap_path} — /etc/fstab may reference it by UUID= or LABEL= rather than by path. Fix it by hand: pri=10 in the mount options"
                 fi
             fi
         fi
     else
         local suggested_mb
         suggested_mb="$(suggest_swap_mb)"
-        if ask_yn "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?"; then
+        if ask_yn_t "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?" "Create a backup swap file (${suggested_mb} MB by default, priority 10)?"; then
             local swap_mb
-            swap_mb="$(ask_value "Размер swap-файла, МБ?" "${SWAP_BULK_MB:-$suggested_mb}")"
+            swap_mb="$(ask_value_t "Размер swap-файла, МБ?" "Swap file size, MB?" "${SWAP_BULK_MB:-$suggested_mb}")"
             if create_swapfile /swapfile "$swap_mb"; then
                 ensure_fstab_swap /swapfile
                 swapoff /swapfile 2>/dev/null
                 swapon -a 2>/dev/null       # поднимаем уже с приоритетом из fstab
-                log_success "swapfile создан (${swap_mb} МБ, приоритет 10)"
+                log_success_t "swapfile создан (${swap_mb} МБ, приоритет 10)" \
+"swapfile created (${swap_mb} MB, priority 10)"
             else
-                log_error "Не удалось создать /swapfile на ${swap_mb} МБ — подробности выше"
+                log_error_t "Не удалось создать /swapfile на ${swap_mb} МБ — подробности выше" \
+"Could not create a ${swap_mb} MB /swapfile — details above"
             fi
         fi
     fi
@@ -170,12 +205,14 @@ apply_zram() {
     cur_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
     cur_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
     if [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; then
-        log_success "sysctl уже настроен как рекомендуется"
+        log_success_t "sysctl уже настроен как рекомендуется" \
+"sysctl already matches the recommendation"
     else
-        log_info "Сейчас: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(рекомендуется 80/50)${NC}"
+        log_info_t "Сейчас: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(рекомендуется 80/50)${NC}" \
+"Currently: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(80/50 recommended)${NC}"
         local sysctl_default=Y
         [ "$cur_sw" != "60" ] || [ "$cur_vfs" != "100" ] && sysctl_default=N
-        if ask_yn "Применить рекомендованные значения sysctl?" "$sysctl_default"; then
+        if ask_yn_t "Применить рекомендованные значения sysctl?" "Apply the recommended sysctl values?" "$sysctl_default"; then
             printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' | write_file /etc/sysctl.d/99-zram.conf
             sysctl --system >/dev/null 2>&1
             # Не верим на слово: перечитываем /proc. Раньше здесь безусловно
@@ -186,34 +223,42 @@ apply_zram() {
             new_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
             new_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
             if [ "$new_sw" = "80" ] && [ "$new_vfs" = "50" ]; then
-                log_success "sysctl применён: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}"
+                log_success_t "sysctl применён: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}" \
+"sysctl applied: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}"
             else
-                log_warn "sysctl не применился: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}"
-                log_info "Что-то перебивает /etc/sysctl.d/99-zram.conf — смотри ${BOLD}sysctl --system${NC}"
+                log_warn_t "sysctl не применился: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}" \
+"sysctl did not take effect: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}"
+                log_info_t "Что-то перебивает /etc/sysctl.d/99-zram.conf — смотри ${BOLD}sysctl --system${NC}" \
+"Something overrides /etc/sysctl.d/99-zram.conf — check ${BOLD}sysctl --system${NC}"
             fi
         else
-            log_info "Оставляю sysctl как есть (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})"
+            log_info_t "Оставляю sysctl как есть (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})" \
+"Leaving sysctl alone (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})"
         fi
     fi
 
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
-        log_success "earlyoom уже включён"
-    elif ask_yn "Установить earlyoom (защита от полного падения при нехватке памяти)?"; then
+        log_success_t "earlyoom уже включён" \
+"earlyoom is already enabled"
+    elif ask_yn_t "Установить earlyoom (защита от полного падения при нехватке памяти)?" "Install earlyoom (keeps the box alive when memory runs out)?"; then
         if ensure_pkg "earlyoom" earlyoom; then
             systemctl enable --now earlyoom >/dev/null
-            log_success "earlyoom включён"
+            log_success_t "earlyoom включён" \
+"earlyoom enabled"
         fi
         refresh_pkg_cache
     fi
 
     echo ""
-    log_info "Текущее состояние свопа:"
+    log_info_t "Текущее состояние свопа:" \
+"Current swap state:"
     swapon --show 2>/dev/null | sed 's/^/      /'
 }
 
 disable_zram() {
-    if ask_yn "Выключить zram-устройство (swapfile на диске НЕ трогается)?" N; then
+    if ask_yn_t "Выключить zram-устройство (swapfile на диске НЕ трогается)?" "Disable the zram device (the on-disk swapfile is NOT touched)?" N; then
         systemctl disable --now zramswap &>/dev/null || true
-        log_success "zram выключен. swapfile (если есть) продолжает работать"
+        log_success_t "zram выключен. swapfile (если есть) продолжает работать" \
+"zram disabled. The swapfile, if any, keeps working"
     fi
 }

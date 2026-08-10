@@ -64,16 +64,20 @@ _usfc_item_idx() {
     return 1
 }
 
-# Полное описание для экрана справки
+# Полное описание для экрана справки. Третий аргумент — английский вариант;
+# пока его нет, показывается русский: пустой экран хуже непереведённого.
 usfc_item_full() {
     _usfc_item_idx "$1" || return 1
-    ITEM_FULL[$REPLY_ITEM_IDX]="$2"
+    if [ "$USFC_LANG" = en ]; then ITEM_FULL[$REPLY_ITEM_IDX]="${3:-$2}"
+    else                           ITEM_FULL[$REPLY_ITEM_IDX]="$2"; fi
 }
 
-# Команды «удалить совсем» для экрана справки
+# Команды «удалить совсем» для экрана справки. Сами команды одинаковые,
+# переводятся только комментарии внутри них
 usfc_item_rollback() {
     _usfc_item_idx "$1" || return 1
-    ROLLBACK_NOTES[$REPLY_ITEM_IDX]="$2"
+    if [ "$USFC_LANG" = en ]; then ROLLBACK_NOTES[$REPLY_ITEM_IDX]="${3:-$2}"
+    else                           ROLLBACK_NOTES[$REPLY_ITEM_IDX]="$2"; fi
 }
 
 # Пункт умеет выключаться повторным выбором (метка ⇄ в таблице)

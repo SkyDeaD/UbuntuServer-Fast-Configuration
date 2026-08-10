@@ -116,6 +116,7 @@ apply_service_autostart() {
         systemctl disable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1
         log_success_t "${svc}: установлен, но НЕ запущен (автозапуск выключен)" \
 "${svc}: installed but NOT running (autostart disabled)"
-        log_info "Включить позже: пункт $(item_number "$svc") в меню"
+        log_info_t "Включить позже: пункт $(item_number "$svc") в меню" \
+               "Enable it later: menu item $(item_number "$svc")"
     fi
 }

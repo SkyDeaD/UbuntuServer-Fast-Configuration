@@ -184,7 +184,7 @@ parse_args() {
             # Без явного --yes откат из скрипта был бы невозможен
             --yes|-y)     USFC_ASSUME_YES=true ;;
             *)
-                echo "Неизвестная опция: $1" >&2
+                echo "Unknown option: $1" >&2
                 echo "" >&2
                 show_usage >&2
                 exit 2
