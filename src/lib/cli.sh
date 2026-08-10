@@ -35,7 +35,8 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
   -V, --version         версия и выход
       --no-update       не проверять и не ставить обновления самого usfc
       --verbose         показывать сырой вывод команд вместо спиннера
-      --lang ru|en      язык интерфейса (по умолчанию ru)
+      --lang ru|en      язык интерфейса на этот запуск (не сохраняется;
+                        постоянный выбор — клавиша L в меню)
 
 Неинтерактивный запуск (для cloud-init, Ansible, скриптов развёртывания):
       --apply <что>     применить пункты и выйти, без меню
@@ -103,7 +104,8 @@ Options:
   -V, --version         print version and exit
       --no-update       do not check for or install usfc updates
       --verbose         show raw command output instead of the spinner
-      --lang ru|en      interface language (default: ru)
+      --lang ru|en      interface language for this run (not persisted;
+                        to change it for good use the L key in the menu)
 
 Non-interactive use (cloud-init, Ansible, provisioning scripts):
       --apply <what>    apply items and exit, no menu
