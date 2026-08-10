@@ -28,7 +28,7 @@ status_unattended() {
 apply_unattended() {
     if ! ask_yn "Включить автообновление security-патчей?"; then return; fi
     ensure_pkg "unattended-upgrades" unattended-upgrades || return 1
-    cat > /etc/apt/apt.conf.d/20auto-upgrades <<EOF
+    write_file /etc/apt/apt.conf.d/20auto-upgrades <<EOF
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
@@ -38,7 +38,7 @@ EOF
 
 disable_unattended() {
     if ask_yn "Выключить unattended-upgrades?" N; then
-        printf 'APT::Periodic::Update-Package-Lists "0";\nAPT::Periodic::Unattended-Upgrade "0";\n' > /etc/apt/apt.conf.d/20auto-upgrades
+        printf 'APT::Periodic::Update-Package-Lists "0";\nAPT::Periodic::Unattended-Upgrade "0";\n' | write_file /etc/apt/apt.conf.d/20auto-upgrades
         systemctl disable unattended-upgrades &>/dev/null || true
         log_success "unattended-upgrades выключен"
     fi
