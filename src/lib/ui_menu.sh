@@ -241,7 +241,8 @@ show_summary() {
     [ "${#SUMMARY_TITLES[@]}" -eq 0 ] && return 0
     refresh_term_width
     echo ""
-    echo -e "  ${BOLD}Итоги прогона${NC}"
+    t "Итоги прогона" "Run summary"
+    echo -e "  ${BOLD}${REPLY_T}${NC}"
     local name_w=26 res_w=14 time_w=6 i t r pad
     box_line "$DIM" '╭' '┬' '╮' "$name_w" "$res_w" "$time_w"
     for i in "${!SUMMARY_TITLES[@]}"; do
@@ -256,7 +257,7 @@ show_summary() {
     if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
         echo ""
         for t in "${SUMMARY_FAILED[@]}"; do
-            log_warn "${t}: подробности в ${USFC_LOG}"
+            log_warn_t "${t}: подробности в ${USFC_LOG}" "${t}: details in ${USFC_LOG}"
         done
     fi
 }

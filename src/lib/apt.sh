@@ -94,9 +94,13 @@ show_pkg_report() {
         printf "     %b%s%b %s${DIM}%s${NC}\n" "$color" "$mark" "$NC" "$REPLY_PAD" "$desc"
     done
     if [ "$dry" = true ]; then
-        echo -e "     ${DIM}+${NC}${DIM} — был бы установлен    ${NC}${DIM}·${NC}${DIM} — уже есть в системе${NC}"
+        t "— был бы установлен    " "— would be installed   "; local _l1="$REPLY_T"
+        t "— уже есть в системе" "— already present"
+        echo -e "     ${DIM}+${NC}${DIM} ${_l1}${NC}${DIM}·${NC}${DIM} ${REPLY_T}${NC}"
     else
-        echo -e "     ${GREEN}+${NC}${DIM} — установлен сейчас    ${NC}${DIM}·${NC}${DIM} — уже был в системе${NC}"
+        t "— установлен сейчас    " "— installed just now   "; local _l1="$REPLY_T"
+        t "— уже был в системе" "— was already there"
+        echo -e "     ${GREEN}+${NC}${DIM} ${_l1}${NC}${DIM}·${NC}${DIM} ${REPLY_T}${NC}"
     fi
 }
 

@@ -5,7 +5,10 @@
 show_aliases_help() {
     refresh_term_width
     show_header
-    echo -e "  ${BOLD}Алиасы${NC} ${DIM}(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)${NC}"
+    t "Алиасы" "Aliases"; local _h="$REPLY_T"
+    t "(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)" \
+      "(usfc is added on first run; ls/ll/la/lt/cat/catp/scat/fd come from the CLI tools item)"
+    echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
     echo ""
 
     local col1=8 col2=30 col3 inner_w=$TERM_W
@@ -28,12 +31,12 @@ show_aliases_help() {
     )
 
     box_line "$DIM" '╭' '┬' '╮' "$col1" "$col2" "$col3"
-    local hdr3="Что делает" hdr3_pad h1 h2
+    t "Что делает" "What it does"; local hdr3="$REPLY_T" hdr3_pad h1 h2
     # col3 динамический (зависит от TERM_W) и на узких терминалах может
     # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
     visible_len "$hdr3"; hdr3_pad=$((col3 - REPLY_LEN)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
-    pad_title "Алиас" "$col1";            h1="$REPLY_PAD"
-    pad_title "Реальная команда" "$col2"; h2="$REPLY_PAD"
+    t "Алиас" "Alias"; pad_title "$REPLY_T" "$col1";            h1="$REPLY_PAD"
+    t "Реальная команда" "Real command"; pad_title "$REPLY_T" "$col2"; h2="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
         "$h1" "$h2" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
@@ -57,8 +60,10 @@ show_aliases_help() {
     box_line "$DIM" '╰' '┴' '╯' "$col1" "$col2" "$col3"
 
     echo ""
-    log_info "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д."
-    log_info "Почему у cat/ls вообще другое поведение под sudo — см. README, раздел FAQ"
+    log_info_t "eza/bat умеют работать и без алиасов: eza --icons -la, batcat file.txt и т.д." \
+               "eza/bat work fine without aliases too: eza --icons -la, batcat file.txt and so on"
+    log_info_t "Почему у cat/ls вообще другое поведение под sudo — см. README, раздел FAQ" \
+               "Why cat/ls behave differently under sudo — see the FAQ section of the README"
     echo ""
     pause
 }
@@ -72,7 +77,9 @@ show_item_help() {
         refresh_term_width
         refresh_statuses
         show_header
-        echo -e "  ${BOLD}Справка и откат по пунктам${NC} ${DIM}— что делает каждый пункт и как его отменить${NC}"
+        t "Справка и откат по пунктам" "Help and rollback per item"; local _h="$REPLY_T"
+        t "— что делает каждый пункт и как его отменить" "— what each item does and how to undo it"
+        echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
         echo ""
 
         # Та же рамка и та же арифметика ширин, что у show_menu — справка
@@ -103,9 +110,21 @@ show_item_help() {
         local c_idx c_title c_desc c_st
         box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$desc_w" "$st_w"
         printf -v c_idx "%${idx_w}s" "#"
-        pad_title "Пункт"      "$title_w"; c_title="$REPLY_PAD"
-        pad_title "Что делает" "$desc_w";  c_desc="$REPLY_PAD"
-        pad_title "Сейчас"     "$st_w";    c_st="$REPLY_PAD"
+        # Заголовки колонок обрезаем и добиваем ВРУЧНУЮ, а не через pad_title:
+        # та форсирует минимум один пробел, и заголовок длиной ровно в колонку
+        # вылезает за рамку. По-русски «Что делает» короче ширины и это не
+        # проявлялось, а английское «What it does» на 58 колонках совпало
+        # с desc_w — рамка поехала ровно на один символ
+        local _hp
+        t "Пункт" "Item";              truncate_colored "$REPLY_T" "$title_w"; c_title="$REPLY_TRUNC"
+        visible_len "$c_title"; _hp=$((title_w - REPLY_LEN)); [ "$_hp" -lt 0 ] && _hp=0
+        printf -v c_title '%s%*s' "$c_title" "$_hp" ""
+        t "Что делает" "What it does"; truncate_colored "$REPLY_T" "$desc_w";  c_desc="$REPLY_TRUNC"
+        visible_len "$c_desc";  _hp=$((desc_w - REPLY_LEN));  [ "$_hp" -lt 0 ] && _hp=0
+        printf -v c_desc '%s%*s' "$c_desc" "$_hp" ""
+        t "Сейчас" "Now";              truncate_colored "$REPLY_T" "$st_w";    c_st="$REPLY_TRUNC"
+        visible_len "$c_st";    _hp=$((st_w - REPLY_LEN));    [ "$_hp" -lt 0 ] && _hp=0
+        printf -v c_st '%s%*s' "$c_st" "$_hp" ""
         printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
             "$c_idx" "$c_title" "$c_desc" "$c_st"
         box_line "$DIM" '├' '┼' '┤' "$idx_w" "$title_w" "$desc_w" "$st_w"
@@ -146,14 +165,16 @@ show_item_help() {
         box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$desc_w" "$st_w"
 
         echo ""
-        echo -en "  ${BOLD}Номер пункта — подробности, Enter — назад:${NC} "
+        t "Номер пункта — подробности, Enter — назад:" "Item number for details, Enter to go back:"
+        echo -en "  ${BOLD}${REPLY_T}${NC} "
         local choice
         read -r choice </dev/tty
         [ -z "$choice" ] && return 0
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ITEM_IDS[@]}" ]; then
             show_item_detail "$choice"
         else
-            log_error "Нет пункта «${choice}» — введи число от 1 до ${#ITEM_IDS[@]} или Enter для выхода"
+            log_error_t "Нет пункта «${choice}» — введи число от 1 до ${#ITEM_IDS[@]} или Enter для выхода" \
+                "No item ${choice} — enter a number from 1 to ${#ITEM_IDS[@]}, or Enter to go back"
             sleep 1
         fi
     done
@@ -169,7 +190,9 @@ show_item_detail() {
     refresh_term_width
     show_header
     section_color_for "$section"
-    echo -e "  ${REPLY_COLOR}${BOLD}${idx}. ${ITEM_TITLES[$i]}${NC}   ${DIM}раздел: ${section}${NC}"
+    section_label "$section"; local _sec="$REPLY_T"
+    t "раздел:" "section:"
+    echo -e "  ${REPLY_COLOR}${BOLD}${idx}. ${ITEM_TITLES[$i]}${NC}   ${DIM}${REPLY_T} ${_sec}${NC}"
     hr
     echo ""
     # описание печатаем как есть: переносы строк расставлены в тексте руками,
@@ -179,15 +202,21 @@ show_item_detail() {
     done <<< "${ITEM_FULL[$i]}"
     echo ""
     hr
-    echo -e "  ${BOLD}Статус сейчас:${NC} ${STATUS_TEXT[$id]:-—}"
+    t "Статус сейчас:" "Current status:"
+    echo -e "  ${BOLD}${REPLY_T}${NC} ${STATUS_TEXT[$id]:-—}"
     # Два способа отката показываются вместе, а не «или-или»: у ⇄-пунктов есть
     # и переключатель в меню, и команды на удаление совсем. Раньше вторая
     # половина у них просто не показывалась
     if item_supports_disable "$id"; then
-        echo -e "  ${BOLD}Выключить:${NC} ${DIM}выбери пункт ${idx} в меню ещё раз — скрипт предложит обратное${NC}"
+        t "Выключить:" "Switch off:"; local _h="$REPLY_T"
+        t "выбери пункт ${idx} в меню ещё раз — скрипт предложит обратное" \
+          "pick item ${idx} in the menu again — it will offer the opposite action"
+        echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
     fi
     if [ -n "${ROLLBACK_NOTES[$i]}" ]; then
-        echo -e "  ${BOLD}Удалить совсем${NC} ${DIM}(вручную, скрипт этого не делает):${NC}"
+        t "Удалить совсем" "Remove completely"; local _h="$REPLY_T"
+        t "(вручную, скрипт этого не делает):" "(by hand — the script does not do this):"
+        echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
         echo -e "     ${DIM}${ROLLBACK_NOTES[$i]}${NC}"
     fi
     pause

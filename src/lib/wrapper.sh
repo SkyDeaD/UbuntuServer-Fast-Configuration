@@ -77,7 +77,8 @@ print_relogin_hint() {
     echo ""
     log_warn_t "Разлогинься и подключись уже под новым пользователем:" \
 "Log out and reconnect as the new user:"
-    echo -e "      ${BOLD}ssh ${RELOGIN_HINT_USER}@${ip:-<ip-сервера>}${NC}"
+    t "<ip-сервера>" "<server-ip>"
+    echo -e "      ${BOLD}ssh ${RELOGIN_HINT_USER}@${ip:-$REPLY_T}${NC}"
     log_info_t "Дальше просто ${BOLD}usfc${NC} — sudo писать не нужно" \
 "After that just ${BOLD}usfc${NC} — no need to type sudo"
 }

@@ -191,7 +191,8 @@ main() {
 
     while true; do
         show_menu
-        echo -en "  ${BOLD}Выбор:${NC} "
+        t "Выбор:" "Choose:"
+        echo -en "  ${BOLD}${REPLY_T}${NC} "
         local choice
         read -r choice </dev/tty
         case "$choice" in
@@ -301,7 +302,7 @@ main() {
                                         if swap_needs_resize "$SWAP_SIZE_MB" "$sw_want"; then
                                             log_info_t "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ" \
 "Swap ${SWAP_PATH}: currently ${SWAP_SIZE_MB} MB, recommended ${sw_want} MB"
-                                            SWAP_BULK_MB="$(ask_value "Размер резервного swap-файла, МБ?" "$sw_want")"
+                                            SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$sw_want")"
                                         fi
                                     fi
                                     ;;

@@ -68,7 +68,8 @@ backup_list() {
     for d in "$USFC_BACKUP_ROOT"/*/; do
         [ -d "$d" ] || continue
         n="$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')"
-        printf '    %b%s%b  файлов: %s\n' "$BOLD" "$(basename "$d")" "$NC" "$n"
+        t "файлов" "files"
+        printf '    %b%s%b  %s: %s\n' "$BOLD" "$(basename "$d")" "$NC" "$REPLY_T" "$n"
         find "$d" -type f -printf '        %P\n' 2>/dev/null | sed "s|^        |        /|"
     done
     echo ""
@@ -82,7 +83,8 @@ backup_restore() {
     backup_list || return 1
 
     if [ -z "$stamp" ]; then
-        echo -en "  ${BOLD}Метка снимка (Enter — отмена):${NC} "
+        t "Метка снимка (Enter — отмена):" "Snapshot stamp (Enter to cancel):"
+        echo -en "  ${BOLD}${REPLY_T}${NC} "
         read -r stamp </dev/tty
         [ -z "$stamp" ] && { log_info_t "Отменено" \
 "Cancelled"; return 0; }
@@ -145,5 +147,6 @@ backup_hint() {
     echo ""
     log_info_t "Конфиги, которые правились, сохранены: ${BOLD}${USFC_BACKUP_DIR}${NC}" \
 "Configs that were edited are saved in: ${BOLD}${USFC_BACKUP_DIR}${NC}"
-    log_info "Вернуть как было: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}"
+    log_info_t "Вернуть как было: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}" \
+               "Undo: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}"
 }
