@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: fail2ban ─────────────────────────────────────────
 usfc_item fail2ban защита "fail2ban" \
-    "банит перебор паролей по SSH"
+    "банит перебор паролей по SSH" \
+    "fail2ban" \
+    "bans SSH password guessing"
 usfc_item_toggle fail2ban
 
 usfc_item_full fail2ban "Банит IP после нескольких неудачных попыток входа по SSH — защита от перебора

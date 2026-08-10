@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: UFW firewall ─────────────────────────────────────────
 usfc_item ufw защита "UFW firewall" \
-    "файрвол: закрывает всё, кроме нужного"
+    "файрвол: закрывает всё, кроме нужного" \
+    "UFW firewall" \
+    "closes everything except what is needed"
 usfc_item_toggle ufw
 
 usfc_item_full ufw "Файрвол: закрывает все порты, кроме нужных — SSH-порта и того, что сервер уже

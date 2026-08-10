@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: SSH hardening ─────────────────────────────────────────
 usfc_item sshhardening защита "SSH hardening" \
-    "вход только по ключу, root-логин закрыт"
+    "вход только по ключу, root-логин закрыт" \
+    "SSH hardening" \
+    "key-only login, root login disabled"
 
 usfc_item_full sshhardening "Переводит вход только на ключ: выключает пароль и запрещает root-логин.
 

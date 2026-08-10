@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: nginx-full ─────────────────────────────────────────
 usfc_item nginx сервисы "nginx-full" \
-    "веб-сервер и реверс-прокси"
+    "веб-сервер и реверс-прокси" \
+    "nginx-full" \
+    "web server and reverse proxy"
 usfc_item_toggle nginx
 
 usfc_item_full nginx "Веб-сервер и реверс-прокси, пакет nginx-full.

@@ -14,7 +14,9 @@ os_is_ubuntu && BASE_PKGS="${BASE_PKGS} software-properties-common"
 
 # ── Пункт меню: Базовые пакеты ─────────────────────────────────────────
 usfc_item basepkgs база "Базовые пакеты" \
-    "micro, curl, git, htop, jq и прочая база"
+    "micro, curl, git, htop, jq и прочая база" \
+    "Base packages" \
+    "micro, curl, git, htop, jq and the usual basics"
 
 usfc_item_full basepkgs "micro, curl, wget, git, nano, unzip, htop, jq, rsync и ещё несколько вещей,
 которые обычно ставишь в первую же минуту на любом сервере. В том числе

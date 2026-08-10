@@ -13,7 +13,9 @@ if os_is_ubuntu || os_version_at_least 13; then
 fi
 # ── Пункт меню: CLI-утилиты + starship ─────────────────────────────────────────
 usfc_item cli база "CLI-утилиты + starship" \
-    "современные замены ls/cat/find + промпт"
+    "современные замены ls/cat/find + промпт" \
+    "CLI tools + starship" \
+    "modern ls/cat/find replacements plus a prompt"
 
 usfc_item_full cli "Современные замены классических утилит: eza вместо ls с иконками, bat вместо
 cat с подсветкой, fd вместо find, ripgrep для поиска по содержимому, zoxide —

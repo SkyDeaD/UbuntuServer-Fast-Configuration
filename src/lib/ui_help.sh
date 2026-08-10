@@ -121,7 +121,8 @@ show_item_help() {
             local t_pad
             if [ "$section" != "$prev_section" ]; then
                 prev_section="$section"
-                truncate_colored "● ${section^^}" "$title_w"; c_title="$REPLY_TRUNC"
+                section_label "$section"
+                truncate_colored "● ${REPLY_T^^}" "$title_w"; c_title="$REPLY_TRUNC"
                 visible_len "$c_title"; t_pad=$((title_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
                 printf -v c_idx "%${idx_w}s" ""
                 pad_title "" "$desc_w"; c_desc="$REPLY_PAD"
