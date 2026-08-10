@@ -5,6 +5,7 @@ lib/os.sh
 lib/dryrun.sh
 lib/backup.sh
 lib/log.sh
+lib/i18n.sh
 lib/prompt.sh
 lib/header.sh
 lib/ident.sh
