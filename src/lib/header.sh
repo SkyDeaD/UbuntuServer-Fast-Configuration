@@ -48,16 +48,13 @@ fmt_size_mb() {
 
 # сводка о машине справа от логотипа → массив HEADER_INFO.
 # Всё читается из /proc и /etc — шапка рисуется раз на экран, это дёшево.
-# ВАЖНО: /etc/os-release нельзя просто `source` — там есть переменная VERSION,
-# которая затрёт версию самого скрипта. Поэтому разбираем построчно.
 HEADER_INFO=()
 build_header_info() {
     local host os ram_mb free_mb up_s up_txt k v
     host="$(< /proc/sys/kernel/hostname)"
-    while IFS='=' read -r k v; do
-        [ "$k" = "PRETTY_NAME" ] || continue
-        v="${v%\"}"; v="${v#\"}"; os="$v"; break
-    done < /etc/os-release 2>/dev/null
+    # os-release уже разобран в lib/os.sh — второй парсер здесь только
+    # разъехался бы с первым
+    os="$OS_PRETTY"
     ram_mb="$(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
     [[ "$ram_mb" =~ ^[0-9]+$ ]] || ram_mb=0
     free_mb="$(df -m / 2>/dev/null | awk 'NR==2{print $4}')"
