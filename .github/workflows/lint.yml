@@ -47,6 +47,26 @@ jobs:
           bash tests/assemble.sh > /tmp/usfc-assembled.sh
           shellcheck -S warning /tmp/usfc-assembled.sh
 
+      - name: Определение ОС на Ubuntu и Debian
+        run: |
+          # Гейт и distro-aware списки проверяются на настоящих образах:
+          # в Debian 12 нет eza, в Debian 13 нет software-properties-common,
+          # и раньше пункты из-за этого висели бы «не применёнными» навсегда
+          for img in ubuntu:24.04 debian:12 debian:13; do
+            echo "── $img ──"
+            docker run --rm -v "$PWD:/w" -w /w "$img" bash -c '
+              USFC_SOURCE_ONLY=1 bash -c "
+                source src/setup.sh
+                require_supported_os || { echo \"гейт отверг поддерживаемую ОС\" >&2; exit 1; }
+                echo \"  OS_ID=\$OS_ID codename=\$OS_CODENAME\"
+                echo \"  CLI_PKGS=\$CLI_PKGS\"
+                case \"\$OS_ID\" in
+                  debian) case \" \$BASE_PKGS \" in *software-properties-common*)
+                            echo \"  s-p-c не должен попадать в Debian\" >&2; exit 1;; esac ;;
+                esac
+              "'
+          done
+
       - name: Тесты раскладки во всех локалях
         run: |
           # Функции отрисовки меню переписаны с python3 на чистый bash — тест

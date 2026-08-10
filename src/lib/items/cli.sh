@@ -4,7 +4,13 @@
 
 # Пакеты CLI-набора вынесены в переменную: их перечисляли в трёх местах
 # (status_cli, apply_cli, установка), и списки уже начинали расходиться
-CLI_PKGS="eza bat fd-find ripgrep zoxide ncdu"
+CLI_PKGS="bat fd-find ripgrep zoxide ncdu"
+# eza приехал в Debian только с trixie. На bookworm его нет, и без этой ветки
+# пункт вечно показывал бы «не хватает: eza» — состояние, которое пользователь
+# не может исправить, потому что пакета попросту не существует
+if os_is_ubuntu || os_version_at_least 13; then
+    CLI_PKGS="eza ${CLI_PKGS}"
+fi
 # ── Пункт меню: CLI-утилиты + starship ─────────────────────────────────────────
 usfc_item cli база "CLI-утилиты + starship" \
     "современные замены ls/cat/find + промпт"
@@ -63,33 +69,42 @@ apply_cli() {
         log_success "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены"
     fi
 
-    # алиасы и промпт пишем сразу следом — не отдельным пунктом меню, но только если
-    # утилиты реально стоят: если пользователь отказался ставить или apt не смог,
-    # алиасы на несуществующие eza/batcat сломают ls/cat в следующей сессии
-    if ! command -v eza &>/dev/null && ! command -v batcat &>/dev/null; then
-        log_warn "eza/batcat не установлены — алиасы в .bashrc не пишу"
+    # Алиасы и промпт пишем сразу следом — не отдельным пунктом меню, но
+    # КАЖДЫЙ только если его утилита реально стоит. Прежняя проверка была
+    # «нет ни eza, ни batcat» и пропускала смешанный случай: на Debian 12
+    # batcat есть, а eza в репозиториях нет вовсе — и alias ls='eza …'
+    # ломал ls в следующей же сессии. То же случалось бы на Ubuntu, если бы
+    # один пакет поставился, а другой нет.
+    if ! command -v eza &>/dev/null && ! command -v batcat &>/dev/null \
+       && ! command -v fdfind &>/dev/null; then
+        log_warn "CLI-утилиты не установлены — алиасы в .bashrc не пишу"
         return
     fi
     local BASHRC="${TARGET_HOME}/.bashrc"
     if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
         log_info "Алиасы CLI-утилит в .bashrc уже есть"
-    else
-        cat >> "$BASHRC" <<EOF
-
-# >>> vps-setup:cli >>>
-alias ls='eza --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'
-alias ll='eza -lah --icons --group-directories-first'
-alias la='eza -a --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'
-alias lt='eza --tree --icons --level=2 --group-directories-first'
-alias cat='batcat --paging=never'
-alias catp='batcat'
-alias scat='sudo batcat --paging=never'
-alias fd='fdfind'
-command -v zoxide &>/dev/null && eval "\$(zoxide init bash)"
-command -v starship &>/dev/null && eval "\$(starship init bash)"
-# <<< vps-setup:cli <<<
-EOF
-        chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
-        log_success "Алиасы добавлены в .bashrc"
+        return
     fi
+    {
+        echo ""
+        echo "# >>> vps-setup:cli >>>"
+        if command -v eza &>/dev/null; then
+            echo "alias ls='eza --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'"
+            echo "alias ll='eza -lah --icons --group-directories-first'"
+            echo "alias la='eza -a --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'"
+            echo "alias lt='eza --tree --icons --level=2 --group-directories-first'"
+        fi
+        if command -v batcat &>/dev/null; then
+            echo "alias cat='batcat --paging=never'"
+            echo "alias catp='batcat'"
+            echo "alias scat='sudo batcat --paging=never'"
+        fi
+        command -v fdfind &>/dev/null && echo "alias fd='fdfind'"
+        # эти две строки проверяют наличие сами, уже в момент запуска оболочки
+        echo 'command -v zoxide &>/dev/null && eval "$(zoxide init bash)"'
+        echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
+        echo "# <<< vps-setup:cli <<<"
+    } >> "$BASHRC"
+    chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
+    log_success "Алиасы добавлены в .bashrc"
 }

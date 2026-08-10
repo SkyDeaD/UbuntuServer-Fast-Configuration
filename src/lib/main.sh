@@ -8,6 +8,10 @@ main() {
     start_update_check
     log_init
 
+    # Проверяем ДО того, как что-то делать: раньше на чужой системе скрипт
+    # доходил до середины и падал на apt (сам detect_os отработал при загрузке)
+    require_supported_os || exit 1
+
     show_header
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
     log_info "SSH-порт: ${SSH_PORT}"
