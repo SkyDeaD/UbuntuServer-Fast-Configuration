@@ -104,7 +104,7 @@ apply_cli() {
         echo 'command -v zoxide &>/dev/null && eval "$(zoxide init bash)"'
         echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
         echo "# <<< vps-setup:cli <<<"
-    } >> "$BASHRC"
+    } | append_file "$BASHRC"
     chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
     log_success "Алиасы добавлены в .bashrc"
 }

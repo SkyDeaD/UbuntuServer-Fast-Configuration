@@ -134,7 +134,7 @@ apply_newuser() {
             while IFS= read -r line; do
                 [[ "$line" =~ $key_re ]] || continue
                 grep -qxF "$line" "$auth_keys" 2>/dev/null && continue
-                echo "$line" >> "$auth_keys"
+                echo "$line" | append_file "$auth_keys"
                 copied=$((copied + 1))
             done < "$root_keys"
             log_success "Скопировано ключей: ${copied}"
