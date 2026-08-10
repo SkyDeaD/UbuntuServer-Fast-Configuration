@@ -117,6 +117,17 @@ main() {
     # значение здесь ещё раз: «--lang de» не должен молча ломать вывод
     case "$USFC_LANG" in ru|en) ;; *) log_warn_t "Неизвестный язык «${USFC_LANG}», беру ru" \
 "Unknown language ${USFC_LANG}, falling back to ru"; USFC_LANG=ru ;; esac
+
+    # Язык спрашиваем только при первом интерактивном запуске: если выбор уже
+    # сохранён, задан флагом или нас позвали неинтерактивно (cloud-init,
+    # Ansible, --apply), вопрос был бы либо навязчивым, либо вовсе некому
+    # отвечать — и скрипт завис бы на чтении с /dev/tty
+    if ! usfc_lang_saved && [ "$USFC_LANG_EXPLICIT" = false ] \
+       && [ -z "$USFC_APPLY_SPEC" ] && [ -z "$USFC_ACTION" ] \
+       && [ "$USFC_LIST_ONLY" = false ] && [ -t 0 ] && [ -e /dev/tty ]; then
+        usfc_ask_language
+    fi
+
     dry_run_enable
 
     if [ "$USFC_LIST_ONLY" = true ]; then
@@ -201,6 +212,8 @@ main() {
             [Hh]) show_aliases_help ;;
             # "?" как синоним I: привычнее для тех, кто ищет справку вслепую
             [Dd]) show_audit; pause ;;
+            # Переключение языка перезапускает скрипт — см. usfc_switch_language
+            [Ll]) usfc_switch_language ;;
             [Ii]|'?') show_item_help ;;
             # R когда-то открывала отдельный экран отката. Теперь откат живёт
             # в той же справке, но клавишу принимаем — она у людей в пальцах
@@ -241,8 +254,8 @@ main() {
                 valid=("${dedup[@]}")
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error_t "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, D, U, Q" \
-"Did not understand — an item number, a section letter (C/B/S/P/A), combinable with spaces or commas, or I, H, D, U, Q"
+                    log_error_t "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, D, L, U, Q" \
+"Did not understand — an item number, a section letter (C/B/S/P/A), combinable with spaces or commas, or I, H, D, L, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри

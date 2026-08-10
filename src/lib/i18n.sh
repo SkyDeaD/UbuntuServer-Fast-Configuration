@@ -22,12 +22,81 @@
 # нельзя: bootstrap форсирует LC_ALL=C.UTF-8, а на серверах и без того обычно
 # стоит C или en_US — все нынешние пользователи разом получили бы английский
 # интерфейс без спроса. Английский включается явно: --lang en или USFC_LANG=en.
-USFC_LANG="${USFC_LANG:-ru}"
+# Выбор языка запоминается в файле рядом с установкой. Он переживает
+# обновление: апдейтер подменяет setup.sh, VERSION, MODULES и каталог lib,
+# а посторонние файлы не трогает.
+USFC_LANG_FILE="${USFC_ROOT:-/opt/vps-setup}/lang"
 
+# Приоритет: явный --lang / USFC_LANG → сохранённый выбор → русский.
+# Флаг одноразовый и НЕ сохраняется: одноразовый запуск на чужом языке
+# не должен молча переучивать инструмент. Запоминается только выбор
+# из меню и ответ при первом запуске.
+USFC_LANG_EXPLICIT=false
+if [ -n "${USFC_LANG:-}" ]; then
+    USFC_LANG_EXPLICIT=true
+else
+    # Инициализация обязательна, а не косметика: без неё под set -u падает
+    # первый же case по $USFC_LANG, когда файла выбора ещё нет
+    USFC_LANG=""
+    # Существование проверяем ОТДЕЛЬНО: `< несуществующий` ругается сам shell,
+    # ещё до запуска tr, и 2>/dev/null на команде это сообщение не глушит
+    if [ -s "$USFC_LANG_FILE" ]; then
+        USFC_LANG="$(tr -d '[:space:]' < "$USFC_LANG_FILE" 2>/dev/null)"
+    fi
+fi
 case "$USFC_LANG" in
     ru|en) ;;
     *)     USFC_LANG=ru ;;
 esac
+
+# Был ли выбор сделан осознанно — от этого зависит, спрашивать ли при старте
+usfc_lang_saved() { [ -s "$USFC_LANG_FILE" ]; }
+
+usfc_lang_save() {
+    [ -n "${USFC_SOURCE_ONLY:-}" ] && return 0
+    printf '%s\n' "$1" > "$USFC_LANG_FILE" 2>/dev/null || {
+        echo "  Не удалось сохранить выбор языка в ${USFC_LANG_FILE}" >&2
+        echo "  Could not save the language choice to ${USFC_LANG_FILE}" >&2
+        return 1
+    }
+}
+
+# Вопрос при первом запуске. Двуязычный по необходимости: на этом шаге ещё
+# неизвестно, какой язык человек понимает, и спросить на одном — значит
+# половине пользователей показать непонятное.
+usfc_ask_language() {
+    echo ""
+    echo -e "  ${BOLD}Язык интерфейса${NC}  ${DIM}/${NC}  ${BOLD}Interface language${NC}"
+    echo -e "    ${CYAN}${BOLD}1${NC}) Русский"
+    echo -e "    ${CYAN}${BOLD}2${NC}) English"
+    echo ""
+    local choice
+    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[1]:${NC} "
+    read -r choice </dev/tty
+    case "$choice" in
+        2|e|en|E|EN|english|English) USFC_LANG=en ;;
+        *)                           USFC_LANG=ru ;;
+    esac
+    usfc_lang_save "$USFC_LANG"
+    echo ""
+    t "Язык сохранён. Сменить потом — клавиша L в меню." \
+      "Language saved. Change it later with the L key in the menu."
+    log_info "$REPLY_T"
+}
+
+# Переключение из меню. Перезапускаем себя, а не правим переменные на лету:
+# названия и описания пунктов складываются в массивы при загрузке модулей
+# (usfc_item), и поменять язык без пересборки реестра значило бы обновить
+# половину экрана. exec заодно гарантирует, что не осталось ничего от
+# прежнего языка.
+usfc_switch_language() {
+    local new=ru
+    [ "$USFC_LANG" = ru ] && new=en
+    usfc_lang_save "$new"
+    # --no-update: обновление уже проверялось на этом запуске, второй раз
+    # спрашивать про него при простой смене языка незачем
+    USFC_LANG="$new" USFC_NO_UPDATE=1 exec "$SCRIPT_PATH"
+}
 
 REPLY_T=''
 t() {
@@ -46,16 +115,6 @@ log_error_t()   { t "$1" "$2"; log_error   "$REPLY_T"; }
 ask_yn_t()      { t "$1" "$2"; ask_yn "$REPLY_T" "${3:-Y}"; }
 # ask_value_t <ru> <en> <дефолт>
 ask_value_t()   { t "$1" "$2"; ask_value "$REPLY_T" "$3"; }
-
-# Подсказка про английский. Печатается один раз за запуск и только тем, кто
-# сидит на русском: иначе про существование --lang не узнать никак.
-I18N_HINT_SHOWN=false
-i18n_hint() {
-    [ "$USFC_LANG" = ru ] || return 0
-    [ "$I18N_HINT_SHOWN" = true ] && return 0
-    I18N_HINT_SHOWN=true
-    echo -e "  ${DIM}English interface: usfc --lang en${NC}"
-}
 
 # st <цвет> <ru> <en> — строка статуса пункта.
 # Статусы печатаются десятками и всегда одной формой «цвет + текст + сброс»,
