@@ -51,7 +51,7 @@ status_docker() {
 # а расходиться эти две строки не должны
 docker_write_repo() {
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] ${1} ${2} stable" \
-        > /etc/apt/sources.list.d/docker.list
+        | write_file /etc/apt/sources.list.d/docker.list
 }
 
 apply_docker() {

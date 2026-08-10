@@ -105,6 +105,7 @@ main() {
     # Проверяем ДО того, как что-то делать: раньше на чужой системе скрипт
     # доходил до середины и падал на apt (сам detect_os отработал при загрузке)
     require_supported_os || exit 1
+    dry_run_enable
 
     if [ "$USFC_LIST_ONLY" = true ]; then
         profile_list

@@ -60,7 +60,7 @@ apply_zram() {
                 if ensure_pkg "zram-tools" zram-tools; then
                     systemctl stop zramswap 2>/dev/null
                     swapoff /dev/zram0 2>/dev/null || true
-                    printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
+                    printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
                     if ! systemctl start zramswap; then
                         sleep 2
                         systemctl start zramswap
@@ -81,7 +81,7 @@ apply_zram() {
         if ensure_pkg "zram-tools" zram-tools; then
             systemctl stop zramswap 2>/dev/null
             swapoff /dev/zram0 2>/dev/null || true
-            printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" > /etc/default/zramswap
+            printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
             if ! systemctl start zramswap; then
                 sleep 2
                 systemctl start zramswap
@@ -174,7 +174,7 @@ apply_zram() {
         local sysctl_default=Y
         [ "$cur_sw" != "60" ] || [ "$cur_vfs" != "100" ] && sysctl_default=N
         if ask_yn "Применить рекомендованные значения sysctl?" "$sysctl_default"; then
-            printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' > /etc/sysctl.d/99-zram.conf
+            printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' | write_file /etc/sysctl.d/99-zram.conf
             sysctl --system >/dev/null 2>&1
             # Не верим на слово: перечитываем /proc. Раньше здесь безусловно
             # печаталось «sysctl применён» сразу под строкой со СТАРЫМИ числами —
