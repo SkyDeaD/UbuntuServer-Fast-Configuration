@@ -2,6 +2,11 @@
 
 # USFC — manual guide
 
+> This guide describes Ubuntu. On Debian there are exactly two differences:
+> Docker has its own repository path (`/linux/debian` instead of
+> `/linux/ubuntu`), and the fastfetch PPA does not exist — Debian 13 ships
+> the package in its normal repositories, Debian 12 does not have it at all.
+
 ---
 
 </div>
