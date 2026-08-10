@@ -41,7 +41,9 @@ apply_fastfetch() {
         lowest="$(printf '%s\n%s\n' "$v" "2.64.0" | sort -V | head -n1)"
         [ "$lowest" = "2.64.0" ] && need_ppa=false
     fi
-    if [ "$need_ppa" = true ]; then
+    if [ "$need_ppa" = false ]; then
+        log_success "fastfetch уже подходящей версии"
+    elif os_is_ubuntu; then
         if ask_yn "Установить/обновить fastfetch (через PPA)?"; then
             ensure_apt_updated
             # -n (--no-update): add-apt-repository в конце сам дёргает apt update,
@@ -55,8 +57,21 @@ apply_fastfetch() {
                 log_info "Версия: $(fastfetch --version 2>/dev/null)"
             fi
         fi
+    # PPA — механизм Launchpad, на Debian его нет. Зато с trixie fastfetch
+    # лежит в обычных репозиториях (проверено: в bookworm его ещё нет)
+    elif apt-cache policy fastfetch 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
+        if ask_yn "Установить fastfetch из репозиториев ${OS_ID}?"; then
+            if ensure_pkg "fastfetch" fastfetch; then
+                log_info "Версия: $(fastfetch --version 2>/dev/null)"
+            fi
+        fi
     else
-        log_success "fastfetch уже подходящей версии"
+        # Молчать нельзя: пункт остался бы вечно «не установлен» без объяснения,
+        # почему его невозможно применить именно здесь
+        log_warn "В репозиториях ${OS_PRETTY:-$OS_ID} нет пакета fastfetch"
+        log_info "PPA существует только для Ubuntu. Варианты: поставить .deb"
+        log_info "с github.com/fastfetch-cli/fastfetch/releases или обновить дистрибутив"
+        return 0
     fi
 
     # конфиг и автозапуск в .bashrc пишем сразу следом — не отдельным пунктом меню

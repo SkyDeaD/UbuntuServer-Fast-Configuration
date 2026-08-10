@@ -46,6 +46,14 @@ status_docker() {
     echo -e "${YELLOW}! ${ver}, не запущен${NC}"; return 1
 }
 
+# docker_write_repo <база репозитория> <codename> — строчка sources.list.
+# Отдельной функцией, потому что при фолбэке на noble она пишется второй раз,
+# а расходиться эти две строки не должны
+docker_write_repo() {
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] ${1} ${2} stable" \
+        > /etc/apt/sources.list.d/docker.list
+}
+
 apply_docker() {
     # Ветка «уже установлен» — как у apply_nginx. Без неё выбор этого пункта на
     # системе с Docker уходил в полную переустановку: ключ, репозиторий, apt.
@@ -84,28 +92,29 @@ apply_docker() {
 
     ensure_pkg "Зависимости Docker" ca-certificates curl || return 1
     install -m 0755 -d /etc/apt/keyrings
+    # У Docker отдельные ветки репозитория под каждый дистрибутив, и путь
+    # различается только идентификатором: /linux/ubuntu против /linux/debian.
+    # Проверено — обе отдают пакеты и для noble, и для bookworm с trixie
+    local docker_repo="https://download.docker.com/linux/${OS_ID}"
     run_logged "GPG-ключ Docker" \
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc || return 1
+        curl -fsSL "${docker_repo}/gpg" -o /etc/apt/keyrings/docker.asc || return 1
     chmod a+r /etc/apt/keyrings/docker.asc
-    local codename
-    codename="$(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}")"
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${codename} stable" \
-        > /etc/apt/sources.list.d/docker.list
+    local codename="$OS_CODENAME"
+    docker_write_repo "$docker_repo" "$codename"
     run_logged "Списки пакетов Docker" apt_get update -qq
     # grep БЕЗ -q — иначе SIGPIPE и вечно ложное условие, см. блок про ловушку
     # в начале файла. Здесь это и вскрылось: фолбэк срабатывал на каждой машине
     if ! apt-cache policy docker-ce-cli 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
-        # Падать на noble некуда: это и есть та версия, на которую переключаются.
-        # Раньше сюда приезжали все подряд и читали «нет пакетов под 'noble' —
-        # переключаюсь на noble»
-        if [ "$codename" = "noble" ]; then
-            log_error "Репозиторий Docker не отдал пакеты для noble — переключаться некуда"
+        # Фолбэк на noble осмыслен только для Ubuntu: на Debian это чужая ветка
+        # репозитория, её пакеты собраны под другие версии библиотек.
+        # И падать на саму noble некуда — это и есть цель переключения
+        if ! os_is_ubuntu || [ "$codename" = "noble" ]; then
+            log_error "Репозиторий Docker не отдал пакеты для '${codename}' (${OS_ID})"
             log_info "Проверь сеть и ${USFC_LOG}; вручную: ${BOLD}apt-cache policy docker-ce-cli${NC}"
             return 1
         fi
         log_warn "У Docker пока нет пакетов под '${codename}' — переключаюсь на noble (24.04, совместимо)"
-        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu noble stable" \
-            > /etc/apt/sources.list.d/docker.list
+        docker_write_repo "$docker_repo" noble
         run_logged "Списки пакетов Docker (noble)" apt_get update -qq
     fi
     with_no_service_start run_logged "Docker CE + Compose" \
