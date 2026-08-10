@@ -122,7 +122,7 @@ show_menu() {
     # сколько занимает самое длинное «S сервисы». По-английски «P security»
     # занимает те же 10, но без остатка на пробел, и ячейки слипались:
     # «S servicesP securityA all». Считаем максимум и добавляем разделитель.
-    local item_w=0 _lbl g1 g2 g3 g4
+    local item_w=0 _lbl g1 g2 g3 g4 g5
     for _lbl in "C $(section_label система; printf '%s' "$REPLY_T")" \
                 "B $(section_label база;    printf '%s' "$REPLY_T")" \
                 "S $(section_label сервисы; printf '%s' "$REPLY_T")" \
@@ -130,7 +130,8 @@ show_menu() {
                 "I $(t "справка" "help";    printf '%s' "$REPLY_T")" \
                 "H $(t "алиасы" "aliases";  printf '%s' "$REPLY_T")" \
                 "D $(t "аудит" "audit";     printf '%s' "$REPLY_T")" \
-                "U $(t "удалить" "remove";  printf '%s' "$REPLY_T")"; do
+                "U $(t "удалить" "remove";  printf '%s' "$REPLY_T")" \
+                "L $(t "язык" "language";   printf '%s' "$REPLY_T")"; do
         visible_len "$_lbl"
         [ "$REPLY_LEN" -gt "$item_w" ] && item_w="$REPLY_LEN"
     done
@@ -167,8 +168,9 @@ show_menu() {
     t "алиасы" "aliases"; grid_cell "${CYAN}${BOLD}H${NC} ${REPLY_T}" "$item_w"; g2="$REPLY_CELL"
     t "аудит" "audit";    grid_cell "${CYAN}${BOLD}D${NC} ${REPLY_T}" "$item_w"; g3="$REPLY_CELL"
     t "удалить" "remove"; grid_cell "${CYAN}${BOLD}U${NC} ${REPLY_T}" "$item_w"; g4="$REPLY_CELL"
+    t "язык" "language";  grid_cell "${CYAN}${BOLD}L${NC} ${REPLY_T}" "$item_w"; g5="$REPLY_CELL"
     t "выход" "quit"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${CYAN}${BOLD}Q${NC} ${REPLY_T}"
+    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${g5}${CYAN}${BOLD}Q${NC} ${REPLY_T}"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
         local ltrunc lpad
