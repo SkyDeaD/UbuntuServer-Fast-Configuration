@@ -25,7 +25,7 @@ status_fail2ban() {
 apply_fail2ban() {
     if ! ask_yn "Установить fail2ban?"; then return; fi
     ensure_pkg "fail2ban" fail2ban || return 1
-    cat > /etc/fail2ban/jail.local <<EOF
+    write_file /etc/fail2ban/jail.local <<EOF
 [sshd]
 enabled = true
 port = ${SSH_PORT}

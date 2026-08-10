@@ -106,7 +106,7 @@ ensure_fstab_swap() {
     if grep -qE "^${esc}\s" /etc/fstab 2>/dev/null; then
         sed -i -E "s#^(${esc}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
     else
-        echo "${path} none swap sw,pri=10 0 0" >> /etc/fstab
+        echo "${path} none swap sw,pri=10 0 0" | append_file /etc/fstab
     fi
 }
 

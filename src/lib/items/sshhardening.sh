@@ -95,7 +95,7 @@ apply_sshhardening() {
     fi
     log_success "Базовый вход по ключу подтверждён"
     cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%s)"
-    cat > /etc/ssh/sshd_config.d/10-hardening.conf <<EOF
+    write_file /etc/ssh/sshd_config.d/10-hardening.conf <<EOF
 PermitRootLogin no
 PasswordAuthentication no
 PubkeyAuthentication yes
