@@ -51,6 +51,7 @@ fi
 # Считает ли ${#s} символы (а не байты) — определяем один раз, дальше это
 # горячий путь отрисовки меню, там не до проверок
 _probe='─'
+# shellcheck disable=SC2034  # читается в lib/layout.sh: visible_len и truncate_colored
 if [ "${#_probe}" -eq 1 ]; then CHARLEN_NATIVE=true; else CHARLEN_NATIVE=false; fi
 unset _probe
 
