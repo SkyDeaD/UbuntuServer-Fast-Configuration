@@ -55,7 +55,11 @@ _probe='─'
 if [ "${#_probe}" -eq 1 ]; then CHARLEN_NATIVE=true; else CHARLEN_NATIVE=false; fi
 unset _probe
 
-REPO_RAW_BASE="https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src"
+# Откуда качаются обновления и модули. Переопределяется переменной окружения:
+# без этого механизм обновления невозможно проверить до того, как изменения
+# окажутся в main, — а проверять его надо именно до, потому что чинить
+# сломанное обновление уже нечем.
+REPO_RAW_BASE="${USFC_REPO_RAW_BASE:-https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/src}"
 
 # ═══════════════════════════════════════════════════════════════
 # Загрузка модулей
