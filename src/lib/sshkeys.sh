@@ -40,7 +40,7 @@ add_pubkey_interactive() {
         log_info "Такой ключ уже есть"
         return 0
     fi
-    echo "$pubkey_line" >> "$auth_keys"
+    echo "$pubkey_line" | append_file "$auth_keys"
     log_success "Ключ добавлен"
     return 0
 }

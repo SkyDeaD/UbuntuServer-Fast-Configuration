@@ -36,6 +36,10 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
       --dry-run         показать, что было бы сделано, ничего не меняя
       --config <файл>   ответы на вопросы из файла
       --list            показать профили и id пунктов
+      --audit           проверить состояние сервера (только чтение)
+      --backups         показать снимки конфигов
+      --restore [метка] восстановить конфиги из снимка
+  -y, --yes             не спрашивать подтверждения (нужен для --restore)
 
   <что> — это профиль, список id или номеров:
       --apply web                 профиль
@@ -74,6 +78,9 @@ EOF
 USFC_APPLY_SPEC=""
 USFC_CONFIG_FILE=""
 USFC_LIST_ONLY=false
+USFC_ACTION=""
+USFC_RESTORE_STAMP=""
+USFC_ASSUME_YES=false
 
 parse_args() {
     while [ "$#" -gt 0 ]; do
@@ -84,6 +91,11 @@ parse_args() {
             --verbose)    USFC_VERBOSE=1 ;;
             --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1 ;;
             --list)       USFC_LIST_ONLY=true ;;
+            --audit)      USFC_ACTION=audit ;;
+            --backups)    USFC_ACTION=backups ;;
+            --restore)
+                USFC_ACTION=restore
+                case "${2:-}" in -*|'') ;; *) USFC_RESTORE_STAMP="$2"; shift ;; esac ;;
             --apply)
                 [ -n "${2:-}" ] || { echo "--apply требует список пунктов или профиль" >&2; exit 2; }
                 USFC_APPLY_SPEC="$2"; shift ;;
@@ -92,10 +104,10 @@ parse_args() {
                 [ -n "${2:-}" ] || { echo "--config требует путь к файлу" >&2; exit 2; }
                 USFC_CONFIG_FILE="$2"; shift ;;
             --config=*)   USFC_CONFIG_FILE="${1#*=}" ;;
-            # --yes принимаем ради привычки, но он ничего не включает:
-            # --apply и так не задаёт вопросов. Молча игнорировать флаг хуже,
-            # чем сказать, что он лишний
-            --yes|-y)     : ;;
+            # Для --apply он не нужен (вопросов там и так нет), а вот
+            # --restore перезаписывает работающие конфиги и всегда спрашивает.
+            # Без явного --yes откат из скрипта был бы невозможен
+            --yes|-y)     USFC_ASSUME_YES=true ;;
             *)
                 echo "Неизвестная опция: $1" >&2
                 echo "" >&2
