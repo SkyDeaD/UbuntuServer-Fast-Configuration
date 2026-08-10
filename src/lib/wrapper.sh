@@ -57,7 +57,8 @@ switch_target_user() {
     local user="$1" home
     home="$(getent passwd "$user" | cut -d: -f6)"
     if [ -z "$home" ] || [ ! -d "$home" ]; then
-        log_error "Не удалось определить домашний каталог ${user} — контекст не переключаю"
+        log_error_t "Не удалось определить домашний каталог ${user} — контекст не переключаю" \
+"Could not determine the home directory of ${user} — not switching context"
         return 1
     fi
     TARGET_USER="$user"
@@ -65,7 +66,8 @@ switch_target_user() {
     install_usfc_wrapper
     invalidate_statuses
     RELOGIN_HINT_USER="$user"
-    log_info "Дальнейшие настройки применяются к ${BOLD}${user}${NC} ${DIM}(${home})${NC}"
+    log_info_t "Дальнейшие настройки применяются к ${BOLD}${user}${NC} ${DIM}(${home})${NC}" \
+"Further settings apply to ${BOLD}${user}${NC} ${DIM}(${home})${NC}"
 }
 
 print_relogin_hint() {
@@ -73,7 +75,10 @@ print_relogin_hint() {
     local ip
     ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
     echo ""
-    log_warn "Разлогинься и подключись уже под новым пользователем:"
-    echo -e "      ${BOLD}ssh ${RELOGIN_HINT_USER}@${ip:-<ip-сервера>}${NC}"
-    log_info "Дальше просто ${BOLD}usfc${NC} — sudo писать не нужно"
+    log_warn_t "Разлогинься и подключись уже под новым пользователем:" \
+"Log out and reconnect as the new user:"
+    t "<ip-сервера>" "<server-ip>"
+    echo -e "      ${BOLD}ssh ${RELOGIN_HINT_USER}@${ip:-$REPLY_T}${NC}"
+    log_info_t "Дальше просто ${BOLD}usfc${NC} — sudo писать не нужно" \
+"After that just ${BOLD}usfc${NC} — no need to type sudo"
 }

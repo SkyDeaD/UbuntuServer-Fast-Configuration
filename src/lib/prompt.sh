@@ -26,7 +26,8 @@ ask_value() {
     read -r reply </dev/tty
     reply="${reply:-$default}"
     if ! [[ "$reply" =~ ^[0-9]+$ ]]; then
-        log_warn "Не похоже на число — использую значение по умолчанию (${default})"
+        log_warn_t "Не похоже на число — использую значение по умолчанию (${default})" \
+"Does not look like a number — using the default (${default})"
         reply="$default"
     fi
     echo "$reply"

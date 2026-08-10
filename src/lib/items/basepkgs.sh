@@ -14,7 +14,9 @@ os_is_ubuntu && BASE_PKGS="${BASE_PKGS} software-properties-common"
 
 # ── Пункт меню: Базовые пакеты ─────────────────────────────────────────
 usfc_item basepkgs база "Базовые пакеты" \
-    "micro, curl, git, htop, jq и прочая база"
+    "micro, curl, git, htop, jq и прочая база" \
+    "Base packages" \
+    "micro, curl, git, htop, jq and the usual basics"
 
 usfc_item_full basepkgs "micro, curl, wget, git, nano, unzip, htop, jq, rsync и ещё несколько вещей,
 которые обычно ставишь в первую же минуту на любом сервере. В том числе
@@ -22,11 +24,20 @@ software-properties-common, без которого не заработает ad
 нужный дальше для PPA fastfetch.
 
 После установки выводится список: что приехало сейчас, что уже стояло,
-и коротко — зачем каждый пакет нужен."
+и коротко — зачем каждый пакет нужен." \
+"micro, curl, wget, git, nano, unzip, htop, jq, rsync and a few more things
+you install in the first minute on any server. On Ubuntu that also includes
+software-properties-common, without which add-apt-repository — needed later
+for the fastfetch PPA — does not work.
+
+Afterwards it prints a list: what arrived now, what was already there, and
+a short note on why each package is useful."
 
 
 usfc_item_rollback basepkgs "sudo apt purge micro unzip htop bind9-dnsutils jq rsync
-     (осторожно: curl/git/ca-certificates часто нужны другим программам — не удаляй не глядя)"
+     (осторожно: curl/git/ca-certificates часто нужны другим программам — не удаляй не глядя)" \
+"sudo apt purge micro unzip htop bind9-dnsutils jq rsync
+     (careful: curl/git/ca-certificates are often needed by other software — do not remove them blindly)"
 
 status_basepkgs() {
     local p missing=""
@@ -34,13 +45,13 @@ status_basepkgs() {
         pkg_installed "$p" || missing="${missing}${missing:+, }${p}"
     done
     if [ -n "$missing" ]; then
-        echo -e "${DIM}○ не хватает: ${missing}${NC}"; return 1
+        st "$DIM" "○ не хватает: ${missing}" "○ missing: ${missing}"; return 1
     fi
-    echo -e "${GREEN}✓ установлено${NC}"; return 0
+    st "$GREEN" "✓ установлено" "✓ installed"; return 0
 }
 
 apply_basepkgs() {
-    if ask_yn "Установить базовый набор пакетов (${BASE_PKGS})?"; then
+    if ask_yn_t "Установить базовый набор пакетов (${BASE_PKGS})?" "Install the base package set (${BASE_PKGS})?"; then
         ensure_apt_updated
         # shellcheck disable=SC2086
         snapshot_pkgs $BASE_PKGS

@@ -122,8 +122,12 @@ jobs:
             env $cfg bash tests/test_layout.sh src/setup.sh
           done
 
-      - name: Рамки и выравнивание колонок на всех ширинах
-        run: bash tests/test_help_widths.sh src/setup.sh
+      - name: Рамки и выравнивание на всех ширинах и обоих языках
+        run: |
+          # Английский и русский дают разную длину строк, и рамка едет там,
+          # где по-русски всё влезало: «S servicesP security» без пробела
+          # между ячейками — ровно это и ловится здесь
+          bash tests/test_help_widths.sh src/setup.sh
 
       - name: Реестр пунктов согласован
         run: |

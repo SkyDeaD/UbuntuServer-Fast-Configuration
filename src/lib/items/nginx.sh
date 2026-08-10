@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: nginx-full ─────────────────────────────────────────
 usfc_item nginx сервисы "nginx-full" \
-    "веб-сервер и реверс-прокси"
+    "веб-сервер и реверс-прокси" \
+    "nginx-full" \
+    "web server and reverse proxy"
 usfc_item_toggle nginx
 
 usfc_item_full nginx "Веб-сервер и реверс-прокси, пакет nginx-full.
@@ -14,13 +16,27 @@ usfc_item_full nginx "Веб-сервер и реверс-прокси, паке
 сервис считается законченным состоянием и больше не переспрашивается.
 
 Когда nginx уже стоит, этот же пункт работает выключателем: остановит
-работающий сервер или поднимет остановленный — смотря что сейчас."
+работающий сервер или поднимет остановленный — смотря что сейчас." \
+"A web server and reverse proxy, the nginx-full package.
+
+Autostart is asked BEFORE installing and defaults to off. So that 'do not
+start it' means exactly that, rather than 'start it and immediately kill it'
+(nginx would grab :80 in between), the install is wrapped in policy-rc.d.
+A deliberately disabled service counts as a finished state and is not asked
+about again.
+
+Once nginx is installed, this same item acts as a switch: it stops a running
+server or starts a stopped one, depending on the current state."
 
 
 usfc_item_rollback nginx "sudo systemctl disable --now nginx
      sudo apt purge nginx-full
      sudo rm -rf /etc/nginx
-     # УДАЛЯЕТ конфиги сайтов в /etc/nginx — если уже настраивал поверх, забэкапь"
+     # УДАЛЯЕТ конфиги сайтов в /etc/nginx — если уже настраивал поверх, забэкапь" \
+"sudo systemctl disable --now nginx
+     sudo apt purge nginx-full
+     sudo rm -rf /etc/nginx
+     # DELETES the site configs in /etc/nginx — back them up if you configured anything"
 
 # ПРО «автозапуск выкл.» ниже: сервис, который пользователь сознательно попросил не
 # запускать (см. apply_service_autostart), — это законченное состояние, а не недоделка.
@@ -28,20 +44,20 @@ usfc_item_rollback nginx "sudo systemctl disable --now nginx
 # прогоне. Само состояние хранит systemd, отдельный файл-состояния не нужен.
 status_nginx() {
     if ! pkg_installed nginx-full; then
-        echo -e "${DIM}○ не установлен${NC}"; return 1
+        st "$DIM" "○ не установлен" "○ not installed"; return 1
     fi
     if systemctl is-active nginx &>/dev/null; then
-        echo -e "${GREEN}✓ установлен и запущен${NC}"; return 0
+        st "$GREEN" "✓ установлен и запущен" "✓ installed and running"; return 0
     fi
     if [ "$(systemctl is-enabled nginx 2>/dev/null)" = "disabled" ]; then
-        echo -e "${GREEN}✓ установлен, автозапуск выкл.${NC}"; return 0
+        st "$GREEN" "✓ установлен, автозапуск выкл." "✓ installed, autostart off"; return 0
     fi
-    echo -e "${YELLOW}! установлен, не запущен${NC}"; return 1
+    st "$YELLOW" "! установлен, не запущен" "! installed, not running"; return 1
 }
 
 apply_nginx() {
     if ! pkg_installed nginx-full; then
-        if ! ask_yn "Установить nginx-full?"; then return; fi
+        if ! ask_yn_t "Установить nginx-full?" "Install nginx-full?"; then return; fi
         # спрашиваем ДО установки: ответ решает, дать ли postinst поднять сервис
         local autostart=false
         resolve_autostart NGINX_AUTOSTART "Запустить nginx и включить автозапуск?" && autostart=true
@@ -52,19 +68,23 @@ apply_nginx() {
         return
     fi
 
-    log_info "nginx-full уже установлен"
+    log_info_t "nginx-full уже установлен" \
+"nginx-full is already installed"
     local enabled active
     enabled="$(systemctl is-enabled nginx 2>/dev/null)"
     active="$(systemctl is-active nginx 2>/dev/null)"
     if [ "$active" = "active" ]; then
-        log_success "nginx запущен ${DIM}(автозапуск: ${enabled:-?})${NC}"
-        if [ "$enabled" != "enabled" ] && ask_yn "Включить автозапуск nginx при загрузке?" N; then
-            systemctl enable nginx >/dev/null 2>&1 && log_success "Автозапуск включён"
+        log_success_t "nginx запущен ${DIM}(автозапуск: ${enabled:-?})${NC}" \
+"nginx is running ${DIM}(autostart: ${enabled:-?})${NC}"
+        if [ "$enabled" != "enabled" ] && ask_yn_t "Включить автозапуск nginx при загрузке?" "Enable nginx autostart at boot?" N; then
+            systemctl enable nginx >/dev/null 2>&1 && log_success_t "Автозапуск включён" \
+"Autostart enabled"
         fi
-    elif ask_yn "nginx не запущен. Запустить и включить автозапуск?" N; then
+    elif ask_yn_t "nginx не запущен. Запустить и включить автозапуск?" "nginx is not running. Start it and enable autostart?" N; then
         apply_service_autostart nginx true
     else
-        log_info "Оставляю nginx выключенным"
+        log_info_t "Оставляю nginx выключенным" \
+"Leaving nginx switched off"
     fi
 }
 
@@ -86,13 +106,15 @@ apply_nginx() {
 # переключатели: смотрят на текущее состояние и предлагают противоположное.
 disable_nginx() {
     if service_is_up nginx; then
-        if ! ask_yn "Остановить nginx и убрать из автозапуска? Сайты на :80 и :443 перестанут отвечать" N; then
-            log_info "Оставляю nginx как есть"; return 0
+        if ! ask_yn_t "Остановить nginx и убрать из автозапуска? Сайты на :80 и :443 перестанут отвечать" "Stop nginx and remove it from autostart? Sites on :80 and :443 will stop responding" N; then
+            log_info_t "Оставляю nginx как есть" \
+"Leaving nginx as it is"; return 0
         fi
         apply_service_autostart nginx false
     else
-        if ! ask_yn "nginx выключен. Запустить и включить автозапуск?" Y; then
-            log_info "Оставляю nginx выключенным"; return 0
+        if ! ask_yn_t "nginx выключен. Запустить и включить автозапуск?" "nginx is off. Start it and enable autostart?" Y; then
+            log_info_t "Оставляю nginx выключенным" \
+"Leaving nginx switched off"; return 0
         fi
         apply_service_autostart nginx true
     fi

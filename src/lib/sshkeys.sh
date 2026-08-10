@@ -26,21 +26,26 @@ ensure_ssh_dir() {
 # опирается apply_newuser, решая, можно ли оставить пользователя без пароля
 add_pubkey_interactive() {
     local auth_keys="$1" pubkey_line
-    echo -en "  ${BOLD}Вставь публичный ключ одной строкой:${NC} "
+    t "Вставь публичный ключ одной строкой:" "Paste the public key on one line:"
+    echo -en "  ${BOLD}${REPLY_T}${NC} "
     read -r pubkey_line </dev/tty
     if [ -z "$pubkey_line" ]; then
-        log_info "Пусто — ключ не добавлен"
+        log_info_t "Пусто — ключ не добавлен" \
+"Empty — no key added"
         return 1
     fi
     if [[ ! "$pubkey_line" =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-|sk-ssh-|sk-ecdsa-) ]]; then
-        log_error "Не похоже на публичный SSH-ключ — не добавляю"
+        log_error_t "Не похоже на публичный SSH-ключ — не добавляю" \
+"Does not look like an SSH public key — not adding it"
         return 1
     fi
     if grep -qF "$pubkey_line" "$auth_keys" 2>/dev/null; then
-        log_info "Такой ключ уже есть"
+        log_info_t "Такой ключ уже есть" \
+"That key is already there"
         return 0
     fi
     echo "$pubkey_line" | append_file "$auth_keys"
-    log_success "Ключ добавлен"
+    log_success_t "Ключ добавлен" \
+"Key added"
     return 0
 }
