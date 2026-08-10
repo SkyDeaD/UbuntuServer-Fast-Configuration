@@ -167,10 +167,12 @@ run_logged() {
         [ -n "$REPLY_STATS" ] && extra="${REPLY_STATS}, ${elapsed}s"
         log_success "${desc} ${DIM}(${extra})${NC}"
     else
-        log_error "${desc} — не удалось (код ${rc}, ${elapsed}s)"
+        log_error_t "${desc} — не удалось (код ${rc}, ${elapsed}s)" \
+"${desc} — failed (code ${rc}, ${elapsed}s)"
         echo -e "  ${DIM}последние строки вывода:${NC}"
         tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null | tail -n 20 | sed 's/^/      /'
-        log_info "полный лог: ${USFC_LOG}"
+        log_info_t "полный лог: ${USFC_LOG}" \
+"full log: ${USFC_LOG}"
     fi
     return "$rc"
 }

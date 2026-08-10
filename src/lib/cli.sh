@@ -4,14 +4,18 @@
 
 uninstall_self() {
     echo ""
-    log_warn "Это удаляет СЕБЯ (сам скрипт usfc) — /opt/vps-setup и команду usfc"
-    log_info "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —"
-    log_info "этим не трогается. Команды на удаление лежат на экране I (справка и откат)"
-    if ask_yn "Точно удалить usfc из системы?" N; then
+    log_warn_t "Это удаляет СЕБЯ (сам скрипт usfc) — /opt/vps-setup и команду usfc" \
+"This removes usfc ITSELF — /opt/vps-setup and the usfc command"
+    log_info_t "Всё, что скрипт установил на систему (пакеты, Docker, nginx, SSH hardening и т.д.) —" \
+"Everything it installed on the system (packages, Docker, nginx, SSH hardening and so on)"
+    log_info_t "этим не трогается. Команды на удаление лежат на экране I (справка и откат)" \
+"is left alone. Removal commands live on screen I (help and rollback)"
+    if ask_yn_t "Точно удалить usfc из системы?" "Really remove usfc from this system?" N; then
         rm -f /usr/local/bin/usfc
         rm -rf /opt/vps-setup
         echo ""
-        log_success "usfc удалён. Пока."
+        log_success_t "usfc удалён. Пока." \
+"usfc removed. Bye."
         exit 0
     fi
 }
