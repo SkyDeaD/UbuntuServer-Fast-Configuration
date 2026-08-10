@@ -18,12 +18,33 @@ jobs:
         run: |
           bash -n src/setup.sh
           bash -n install.sh
+          # каждый модуль обязан быть синтаксически целым сам по себе:
+          # так разрез, попавший в середину функции, виден сразу
+          while IFS= read -r m; do
+            [ -n "$m" ] || continue
+            bash -n "src/$m" || { echo "битый модуль: $m" >&2; exit 1; }
+          done < src/MODULES
+
+      - name: Манифест совпадает с содержимым src/lib
+        run: |
+          # Ни осиротевших файлов, ни забытых строк: MODULES — единственный
+          # источник правды и для загрузки, и для обновления
+          find src/lib -name '*.sh' | sed 's|^src/||' | sort > /tmp/on-disk
+          grep -vE '^\s*(#|$)' src/MODULES | sort > /tmp/in-manifest
+          diff /tmp/in-manifest /tmp/on-disk || {
+            echo "src/MODULES разошёлся с src/lib (< манифест, > диск)" >&2; exit 1; }
+          echo "модулей: $(wc -l < /tmp/on-disk)"
 
       - name: shellcheck
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y shellcheck
           shellcheck -S warning src/setup.sh install.sh tests/*.sh
+          # Модули линтуются СБОРКОЙ, а не по одному: по отдельности shellcheck
+          # не видит межмодульных REPLY_*-переменных и сыпет ложными SC2034.
+          # Сборка — это ровно то, что выполняется на машине (тот же порядок).
+          bash tests/assemble.sh > /tmp/usfc-assembled.sh
+          shellcheck -S warning /tmp/usfc-assembled.sh
 
       - name: Тесты раскладки во всех локалях
         run: |
