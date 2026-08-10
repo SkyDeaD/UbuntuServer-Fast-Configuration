@@ -13,7 +13,9 @@
 REPLY_SUDOERS=''
 # ── Пункт меню: Пользователь + sudo ─────────────────────────────────────────
 usfc_item newuser система "Пользователь + sudo" \
-    "создаёт обычного юзера с sudo на голой VPS"
+    "создаёт обычного юзера с sudo на голой VPS" \
+    "User + sudo" \
+    "creates a normal sudo user on a bare VPS"
 
 usfc_item_full newuser "Нужен, когда хостер выдал сервер с одним лишь root. Работать из-под root
 не стоит: SSH hardening без отдельного пользователя не работает в принципе,

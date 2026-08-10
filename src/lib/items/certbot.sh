@@ -21,7 +21,9 @@ REPLY_CF_TOKEN=""
 REPLY_CF_MODE=''
 # ── Пункт меню: Certbot + плагины ─────────────────────────────────────────
 usfc_item certbot сервисы "Certbot + плагины" \
-    "TLS-сертификаты, в том числе wildcard через DNS"
+    "TLS-сертификаты, в том числе wildcard через DNS" \
+    "Certbot + plugins" \
+    "TLS certificates, wildcard included via DNS"
 
 usfc_item_full certbot "Сам certbot плюс, по выбору, плагин nginx (HTTP-01, обычные сертификаты)
 и плагин dns-cloudflare (DNS-01 — без него не выпустить wildcard).

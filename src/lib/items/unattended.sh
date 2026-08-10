@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: unattended-upgrades ─────────────────────────────────────────
 usfc_item unattended защита "unattended-upgrades" \
-    "сам ставит security-обновления системы"
+    "сам ставит security-обновления системы" \
+    "unattended-upgrades" \
+    "installs security updates on its own"
 usfc_item_toggle unattended
 
 usfc_item_full unattended "Сам ставит security-обновления системы, без твоего участия.

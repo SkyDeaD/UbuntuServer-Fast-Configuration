@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: Docker log rotation ─────────────────────────────────────────
 usfc_item dockerlog защита "Docker log rotation" \
-    "ограничивает логи контейнеров, чтобы не съели диск"
+    "ограничивает логи контейнеров, чтобы не съели диск" \
+    "Docker log rotation" \
+    "caps container logs so they cannot eat the disk"
 usfc_item_toggle dockerlog
 
 usfc_item_full dockerlog "Ограничивает логи контейнеров: 10 МБ на файл, 3 файла.

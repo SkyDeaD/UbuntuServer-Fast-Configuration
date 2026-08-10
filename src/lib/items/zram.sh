@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: ZRAM + swap + earlyoom ─────────────────────────────────────────
 usfc_item zram защита "ZRAM + swap + earlyoom" \
-    "сжатая память + резервный своп + защита от OOM"
+    "сжатая память + резервный своп + защита от OOM" \
+    "ZRAM + swap + earlyoom" \
+    "compressed memory, backup swap, OOM protection"
 usfc_item_toggle zram
 
 usfc_item_full zram "zram — сжатая память прямо в оперативке (по умолчанию 75% RAM, приоритет 100),

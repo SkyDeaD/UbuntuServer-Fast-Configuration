@@ -3,7 +3,9 @@
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: Docker + Compose ─────────────────────────────────────────
 usfc_item docker сервисы "Docker + Compose" \
-    "Docker CE + Compose из официального репозитория"
+    "Docker CE + Compose из официального репозитория" \
+    "Docker + Compose" \
+    "Docker CE + Compose from the official repository"
 usfc_item_toggle docker
 
 usfc_item_full docker "Docker CE + Compose plugin из официального репозитория Docker, а не пакет
