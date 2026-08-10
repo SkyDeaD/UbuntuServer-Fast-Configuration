@@ -94,6 +94,14 @@ service_is_up() {
 apply_service_autostart() {
     local svc="$1" want="$2"
     service_units "$svc"
+    if [ "$USFC_DRY_RUN" = true ]; then
+        if [ "$want" = true ]; then
+            log_info "[сухой прогон] systemctl enable --now ${REPLY_UNITS[*]}"
+        else
+            log_info "[сухой прогон] systemctl disable --now ${REPLY_UNITS[*]}"
+        fi
+        return 0
+    fi
     if [ "$want" = true ]; then
         if systemctl enable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1; then
             log_success "${svc}: запущен, автозапуск включён"

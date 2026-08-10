@@ -67,6 +67,33 @@ jobs:
               "'
           done
 
+      - name: Неинтерактивный режим и профили
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -c '
+            mkdir -p /opt/vps-setup && cp -r /w/src/. /opt/vps-setup/
+            chmod +x /opt/vps-setup/setup.sh
+            ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
+
+            # имя профиля не должно совпадать с id пункта: профиль docker
+            # перебивал одноимённый пункт и разворачивался в восемь вместо одного
+            USFC_SOURCE_ONLY=1 bash -c "source /opt/vps-setup/setup.sh; usfc_check_profile_names" \
+              || { echo "коллизия имён профилей" >&2; exit 1; }
+
+            usfc --list >/dev/null || { echo "--list упал" >&2; exit 1; }
+
+            # опечатка — код 2, а не тихий успех
+            if usfc --apply nosuchprofile --dry-run >/dev/null 2>&1; then
+              echo "опечатка в --apply не дала ошибки" >&2; exit 1
+            fi
+
+            # сухой прогон ничего не ставит и завершается нулём
+            usfc --apply all --dry-run >/dev/null 2>&1 || { echo "--dry-run вернул ошибку" >&2; exit 1; }
+            command -v docker >/dev/null && { echo "сухой прогон установил docker" >&2; exit 1; }
+            [ "$(ls /var/lib/apt/lists/ 2>/dev/null | wc -l)" -eq 0 ] \
+              || { echo "сухой прогон трогал списки apt" >&2; exit 1; }
+            echo "неинтерактивный режим в порядке"
+          '
+
       - name: Тесты раскладки во всех локалях
         run: |
           # Функции отрисовки меню переписаны с python3 на чистый bash — тест
