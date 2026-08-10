@@ -1,3 +1,5 @@
+# Порядок загрузки. Он же — порядок пунктов в меню (см. lib/items/*).
+# Проверяется в CI: этот список обязан совпадать с содержимым src/lib.
 lib/core.sh
 lib/log.sh
 lib/prompt.sh
@@ -6,10 +8,24 @@ lib/ident.sh
 lib/services.sh
 lib/apt.sh
 lib/update.sh
-lib/status.sh
-lib/apply.sh
-lib/disable.sh
-lib/items.sh
+lib/swap.sh
+lib/sshkeys.sh
+lib/wrapper.sh
+lib/registry.sh
+lib/items/newuser.sh
+lib/items/basepkgs.sh
+lib/items/cli.sh
+lib/items/fastfetch.sh
+lib/items/tmux.sh
+lib/items/docker.sh
+lib/items/nginx.sh
+lib/items/certbot.sh
+lib/items/dockerlog.sh
+lib/items/fail2ban.sh
+lib/items/unattended.sh
+lib/items/zram.sh
+lib/items/sshhardening.sh
+lib/items/ufw.sh
 lib/layout.sh
 lib/statecache.sh
 lib/ui_menu.sh
