@@ -68,12 +68,18 @@ snapshot_pkgs() {
 
 show_pkg_report() {
     local p name_w=27 desc_w mark color desc
+    # В сухом прогоне ничего не ставилось, и обычная логика («apt отчитался,
+    # а пакета нет») пометила бы КАЖДЫЙ пакет крестом, будто всё сломалось
+    local dry=false
+    [ "$USFC_DRY_RUN" = true ] && dry=true
     # 5 — отступ слева и маркер с пробелом; остальное отдаём описанию
     desc_w=$(( TERM_W - 5 - name_w - 1 ))
     [ "$desc_w" -lt 10 ] && desc_w=10
     echo ""
     for p in "$@"; do
-        if [ -n "${PKG_WAS[$p]:-}" ]; then
+        if [ "$dry" = true ] && [ -z "${PKG_WAS[$p]:-}" ]; then
+            mark='+'; color="$DIM"
+        elif [ -n "${PKG_WAS[$p]:-}" ]; then
             mark='·'; color="$DIM"
         elif pkg_installed "$p"; then
             mark='+'; color="$GREEN"
@@ -87,7 +93,11 @@ show_pkg_report() {
         pad_title "$p" "$name_w"
         printf "     %b%s%b %s${DIM}%s${NC}\n" "$color" "$mark" "$NC" "$REPLY_PAD" "$desc"
     done
-    echo -e "     ${GREEN}+${NC}${DIM} — установлен сейчас    ${NC}${DIM}·${NC}${DIM} — уже был в системе${NC}"
+    if [ "$dry" = true ]; then
+        echo -e "     ${DIM}+${NC}${DIM} — был бы установлен    ${NC}${DIM}·${NC}${DIM} — уже есть в системе${NC}"
+    else
+        echo -e "     ${GREEN}+${NC}${DIM} — установлен сейчас    ${NC}${DIM}·${NC}${DIM} — уже был в системе${NC}"
+    fi
 }
 
 # ── apt и блокировка dpkg ─────────────────────────────────────────────────────
@@ -101,7 +111,19 @@ show_pkg_report() {
 # archive) — ему, в отличие от нас, не нужно гадать про fuser/flock, которых
 # на минимальном образе может не оказаться.
 APT_LOCK_TIMEOUT="${USFC_APT_LOCK_TIMEOUT:-300}"
-apt_get() { apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" "$@"; }
+apt_get() {
+    # Второй рубеж сухого прогона: часть вызовов идёт мимо run_logged
+    # (например, apt_get update -qq внутри ensure_apt_updated). Читающие
+    # подкоманды пропускаем — они системе ничего не делают, а без них
+    # сухой прогон врал бы о том, что уже установлено
+    if [ "$USFC_DRY_RUN" = true ]; then
+        case "${1:-}" in
+            list|show|policy|search|-v|--version) ;;
+            *) printf '  %b[сухой прогон]%b apt-get %s\n' "$DIM" "$NC" "$*"; return 0 ;;
+        esac
+    fi
+    apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" "$@"
+}
 
 # Отдельного предупреждения «пакетный менеджер занят» здесь больше нет. Оно
 # гадало по pgrep и срабатывало от одного факта, что unattended-upgrades

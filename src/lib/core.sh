@@ -40,6 +40,10 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 
 BULK_MODE=false
+# Сухой прогон: показать, что было бы сделано, ничего не меняя. Для
+# инструмента, который просят запустить под root через curl | sudo bash,
+# это в первую очередь про доверие
+USFC_DRY_RUN=false
 ZRAM_BULK_PERCENT=""
 SWAP_BULK_MB=""
 
