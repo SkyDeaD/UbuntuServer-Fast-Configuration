@@ -6,7 +6,11 @@
 # но в списке установленных его нет; реальное имя пакета — bind9-dnsutils.
 # certbot и python3-certbot-nginx отсюда сознательно убраны: TLS — это сервис со
 # своими плагинами и секретами, ему выделен отдельный пункт меню (apply_certbot)
-BASE_PKGS="micro curl wget git nano unzip htop bind9-dnsutils jq software-properties-common ca-certificates gnupg rsync"
+BASE_PKGS="micro curl wget git nano unzip htop bind9-dnsutils jq ca-certificates gnupg rsync"
+# software-properties-common нужен только ради add-apt-repository, то есть
+# только под PPA fastfetch, то есть только на Ubuntu. В Debian 13 такого пакета
+# в репозиториях нет вовсе, и он делал бы пункт вечно «не применённым»
+os_is_ubuntu && BASE_PKGS="${BASE_PKGS} software-properties-common"
 
 # ── Пункт меню: Базовые пакеты ─────────────────────────────────────────
 usfc_item basepkgs база "Базовые пакеты" \

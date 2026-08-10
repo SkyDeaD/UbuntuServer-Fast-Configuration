@@ -1,6 +1,7 @@
 # Порядок загрузки. Он же — порядок пунктов в меню (см. lib/items/*).
 # Проверяется в CI: этот список обязан совпадать с содержимым src/lib.
 lib/core.sh
+lib/os.sh
 lib/log.sh
 lib/prompt.sh
 lib/header.sh
