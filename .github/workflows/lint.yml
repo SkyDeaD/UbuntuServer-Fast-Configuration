@@ -60,24 +60,34 @@ jobs:
       - name: Рамки и выравнивание колонок на всех ширинах
         run: bash tests/test_help_widths.sh src/setup.sh
 
-      - name: Массивы меню параллельны
+      - name: Реестр пунктов согласован
         run: |
-          # ITEM_TITLES/ITEM_SECTIONS/ROLLBACK_NOTES обязаны совпадать по длине
-          # с ITEM_IDS — разъехавшиеся индексы ломают и нумерацию, и раскраску,
-          # причём молча
+          # Параллельность массивов больше не проверяем: их наполняет usfc_item,
+          # рассинхронизировать нечего по построению. Зато проверяем то, что
+          # регистрация действительно случилась и у каждого пункта есть код.
           USFC_SOURCE_ONLY=1 bash -c '
             source src/setup.sh
             n=${#ITEM_IDS[@]}
-            for name in ITEM_TITLES ITEM_SECTIONS ROLLBACK_NOTES; do
+            [ "$n" -gt 0 ] || { echo "реестр пуст: ни один lib/items/* не зарегистрировался" >&2; exit 1; }
+            for name in ITEM_TITLES ITEM_SECTIONS ITEM_SHORT ITEM_FULL ROLLBACK_NOTES; do
               declare -n arr="$name"
-              if [ "${#arr[@]}" -ne "$n" ]; then
-                echo "$name: ${#arr[@]} элементов против ${n} в ITEM_IDS" >&2
-                exit 1
-              fi
+              [ "${#arr[@]}" -eq "$n" ] || { echo "$name: ${#arr[@]} против ${n}" >&2; exit 1; }
             done
             for id in "${ITEM_IDS[@]}"; do
               declare -F "status_${id}" >/dev/null || { echo "нет status_${id}" >&2; exit 1; }
               declare -F "apply_${id}"  >/dev/null || { echo "нет apply_${id}"  >&2; exit 1; }
+              [ -f "src/lib/items/${id}.sh" ] || { echo "нет файла пункта ${id}" >&2; exit 1; }
             done
-            echo "меню согласовано: ${n} пунктов"
+            # у помеченного ⇄ обязана быть функция выключения
+            for id in "${DISABLE_SUPPORTED[@]}"; do
+              declare -F "disable_${id}" >/dev/null || { echo "нет disable_${id}" >&2; exit 1; }
+            done
+            # каждый файл пункта обязан себя зарегистрировать
+            for f in src/lib/items/*.sh; do
+              id="$(basename "$f" .sh)"
+              case " ${ITEM_IDS[*]} " in *" $id "*) ;; *)
+                echo "файл $f есть, а пункт $id не зарегистрирован" >&2; exit 1 ;;
+              esac
+            done
+            echo "реестр согласован: ${n} пунктов, из них с ⇄ — ${#DISABLE_SUPPORTED[@]}"
           '
