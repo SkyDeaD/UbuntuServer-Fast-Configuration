@@ -1,6 +1,100 @@
 # shellcheck shell=bash
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
+# run_items <номера...> — прогнать пачку пунктов без вопросов по ходу.
+# Вынесено из меню, потому что ровно то же нужно неинтерактивному --apply:
+# два экземпляра этого цикла разъехались бы при первой же правке сводки.
+run_items() {
+    [ "$#" -eq 0 ] && return 0
+    local total="$#" pos=0 rc0 t0 num
+    BULK_MODE=true
+    summary_reset
+    for num in "$@"; do
+        pos=$((pos + 1))
+        now_s; t0="$REPLY_NOW"
+        process_item "$num" "$pos" "$total"; rc0=$?
+        now_s
+        summary_record "$num" "$rc0" "$((REPLY_NOW - t0))"
+    done
+    BULK_MODE=false
+    show_summary
+}
+
+# Заготовленные ответы живут ровно один прогон: иначе следующий пакетный
+# запуск молча унаследовал бы токен и проценты от предыдущего
+reset_bulk_answers() {
+    ZRAM_BULK_PERCENT=""
+    SWAP_BULK_MB=""
+    # shellcheck disable=SC2034  # читаются в apply_nginx/apply_docker
+    NGINX_AUTOSTART=""
+    # shellcheck disable=SC2034
+    DOCKER_AUTOSTART=""
+    CERTBOT_CF_BULK=""
+    CF_TOKEN_BULK=""
+}
+
+# Неинтерактивный прогон: cloud-init, Ansible, скрипт развёртывания.
+#
+# Коды возврата сделаны пригодными для CI, а не «0 или что-то»:
+#   0 — всё применилось
+#   1 — часть пунктов не удалась
+#   2 — не разобрали, что применять (опечатка в профиле или id)
+run_noninteractive() {
+    resolve_items "$USFC_APPLY_SPEC" || return 2
+
+    local -a nums=() skipped=() already=()
+    local n id
+    for n in "${REPLY_ITEM_NUMS[@]}"; do
+        id="${ITEM_IDS[$((n - 1))]}"
+        # SSH hardening умеет закрыть доступ к серверу и потому всегда требовал
+        # явного подтверждения. Молча пропускать его тоже нельзя — скажем прямо
+        if [ "$id" = "sshhardening" ]; then
+            skipped+=("$id")
+            continue
+        fi
+        # Уже применённое пропускаем. Это не оптимизация, а вопрос смысла:
+        # в меню повторный выбор ⇄-пункта означает «переключить», и без этой
+        # проверки `--apply` из cloud-init ВЫКЛЮЧАЛ бы то, что просили включить.
+        # Заодно повторный запуск становится честным no-op — как и положено
+        # в провижининге
+        if item_applied "$id"; then
+            already+=("$id")
+            continue
+        fi
+        nums+=("$n")
+    done
+
+    echo ""
+    if [ "$USFC_DRY_RUN" = true ]; then
+        log_info "Сухой прогон: ничего меняться не будет"
+    fi
+    log_info "Пунктов к применению: ${#nums[@]} ${DIM}(${USFC_APPLY_SPEC})${NC}"
+    if [ "${#already[@]}" -gt 0 ]; then
+        log_info "Уже применено, пропускаю: ${DIM}${already[*]}${NC}"
+    fi
+    if [ "${#skipped[@]}" -gt 0 ]; then
+        log_warn "Пропускаю ${skipped[*]}: требует явного подтверждения, в неинтерактивном режиме его взять негде"
+        log_info "Настрой отдельно: ${BOLD}sudo usfc${NC}, пункт $(item_number sshhardening)"
+    fi
+    [ "${#nums[@]}" -eq 0 ] && { log_info "Применять нечего"; return 0; }
+
+    run_items "${nums[@]}"
+    reset_bulk_answers
+
+    # В сухом прогоне сводка сравнивает состояние системы с ожидаемым и,
+    # разумеется, не находит изменений. Возвращать из-за этого «ошибку»
+    # значило бы валить CI на проверке, которая ничего и не должна была менять
+    if [ "$USFC_DRY_RUN" = true ]; then
+        echo ""
+        log_info "Сухой прогон закончен: система не изменилась"
+        return 0
+    fi
+    if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
 main() {
     # curl за VERSION стартует ПЕРВЫМ и крутится в фоне, пока идёт вся локальная
     # работа ниже — так проверка обновлений остаётся на каждом запуске, но
@@ -11,6 +105,18 @@ main() {
     # Проверяем ДО того, как что-то делать: раньше на чужой системе скрипт
     # доходил до середины и падал на apt (сам detect_os отработал при загрузке)
     require_supported_os || exit 1
+
+    if [ "$USFC_LIST_ONLY" = true ]; then
+        profile_list
+        exit 0
+    fi
+    if [ -n "$USFC_CONFIG_FILE" ]; then
+        load_config "$USFC_CONFIG_FILE" || exit 2
+    fi
+    if [ -n "$USFC_APPLY_SPEC" ]; then
+        run_noninteractive
+        exit $?
+    fi
 
     show_header
     log_info "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
@@ -167,6 +273,7 @@ main() {
                                     echo ""
                                     log_info "nginx — веб-сервер и реверс-прокси. Если сайты пока не настроены,"
                                     log_info "поднимать его не обязательно — включишь потом пунктом $(item_number nginx) в меню"
+                                    # shellcheck disable=SC2034  # читается косвенно через resolve_autostart
                                     ask_yn "Запускать nginx после установки (и включать автозапуск)?" N \
                                         && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
                                     ;;
@@ -174,6 +281,7 @@ main() {
                                     echo ""
                                     log_info "Docker — запуск приложений в контейнерах. Если сейчас не нужен,"
                                     log_info "можно не поднимать — включишь потом пунктом $(item_number docker) в меню"
+                                    # shellcheck disable=SC2034  # читается косвенно через resolve_autostart
                                     ask_yn "Запускать Docker после установки (и включать автозапуск)?" N \
                                         && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
                                     ;;
@@ -200,27 +308,9 @@ main() {
 
                         echo ""
                         if ask_yn "Применить эти ${#pending[@]} пунктов сейчас?"; then
-                            BULK_MODE=true
-                            summary_reset
-                            local pos=0 rc0 t0
-                            for num in "${pending[@]}"; do
-                                pos=$((pos + 1))
-                                now_s; t0="$REPLY_NOW"
-                                process_item "$num" "$pos" "${#pending[@]}"; rc0=$?
-                                now_s
-                                summary_record "$num" "$rc0" "$((REPLY_NOW - t0))"
-                            done
-                            BULK_MODE=false
-                            show_summary
+                            run_items "${pending[@]}"
                         fi
-                        ZRAM_BULK_PERCENT=""
-                        SWAP_BULK_MB=""
-                        # shellcheck disable=SC2034
-                        NGINX_AUTOSTART=""
-                        # shellcheck disable=SC2034
-                        DOCKER_AUTOSTART=""
-                        CERTBOT_CF_BULK=""
-                        CF_TOKEN_BULK=""
+                        reset_bulk_answers
                         pause
                     fi
                 fi

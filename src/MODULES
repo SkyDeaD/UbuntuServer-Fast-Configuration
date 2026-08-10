@@ -13,6 +13,7 @@ lib/swap.sh
 lib/sshkeys.sh
 lib/wrapper.sh
 lib/registry.sh
+lib/profiles.sh
 lib/items/newuser.sh
 lib/items/basepkgs.sh
 lib/items/cli.sh
