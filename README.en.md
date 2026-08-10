@@ -7,6 +7,7 @@
 ---
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
+![Debian 12 | 13](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
 ![bash](https://img.shields.io/badge/bash-%3E%3D5.0-4EAA25?logo=gnubash&logoColor=white)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
 
@@ -18,12 +19,18 @@ Every time you spin up a new VPS it's the same routine: get a decent `ls` going,
 
 ## Requirements
 
-Ubuntu 24.04 or 26.04, root access, outbound internet.
+Ubuntu 24.04/26.04 or Debian 12/13, root access, outbound internet.
+
+On anything else the script refuses to act: it checks the distribution at startup and says so plainly, instead of failing somewhere in the middle.
 
 ## Contents
 
 - [Quick start](#quick-start)
 - [What each item does](#what-each-item-does)
+- [Server audit](#server-audit)
+- [Non-interactive use](#non-interactive-use)
+- [Config snapshots and rollback](#config-snapshots-and-rollback)
+- [Interface language](#interface-language)
 - [Customization](#customization)
 - [FAQ](#faq)
 - [Contributing](#contributing)
@@ -72,10 +79,17 @@ Decline and nothing breaks: item **1 "Пользователь + sudo"** stays a
 ### Flags
 
 ```bash
-usfc --help        # help
+usfc --help        # this help
 usfc --version     # version
-usfc --no-update   # skip the usfc self-update check
+usfc --no-update   # do not check for usfc updates
 usfc --verbose     # raw command output instead of the spinner
+usfc --lang ru     # Russian interface for this run
+usfc --audit       # check the server's state, changing nothing
+usfc --list        # profiles and item ids
+usfc --apply web   # apply a set of items without the menu
+usfc --dry-run     # show what would be done
+usfc --backups     # config snapshots
+usfc --restore     # restore configs from a snapshot
 ```
 
 `USFC_APT_LOCK_TIMEOUT` (300 s by default) controls how long to wait for the dpkg lock. The wait is needed because on a freshly booted server `apt-daily.timer` starts `unattended-upgrades`, which holds `/var/lib/dpkg/lock-frontend` for minutes — without waiting, every install would fail instantly with `E: Could not get lock`.
@@ -133,11 +147,119 @@ The hardening section comes last on purpose: UFW scans actually-listening ports 
 
 </details>
 
+## Server audit
+
+The script does more than set things up — it also answers "what is going on with this server right now". Key `D` in the menu, or `usfc --audit`:
+
+```
+Network
+! Public ports: 22
+    The firewall is off, so all of them are reachable. Item 14
+
+Access
+! Password login is allowed
+    SSH brute-forcing runs around the clock. Item 13
+✓ Root login: prohibit-password
+! fail2ban is not running
+    Item 10
+
+Summary:  healthy: 9   warnings: 3   critical: 0
+```
+
+It checks disk and inode usage (inodes run out before space does and look like "no space left" while gigabytes are free), memory and swap, failed systemd units, public ports against the UFW rules, password and root login, pending security updates, whether a reboot is needed, and certificate expiry.
+
+The audit is **read-only**. That is not a promise but a tested property: CI compares a snapshot of `/etc`, dpkg, `passwd/group` and swap taken before and after the run.
+
+## Non-interactive use
+
+The same thing without the menu — for cloud-init, Ansible and provisioning scripts:
+
+```bash
+usfc --apply web                  # a ready-made profile
+usfc --apply docker,nginx,ufw     # your own items
+usfc --apply all --dry-run        # show what would be done
+usfc --config /etc/usfc.conf      # answers from a file
+usfc --list                       # available profiles and ids
+```
+
+Profiles: `minimal`, `web`, `dockerhost`, `secure`. Exit codes are made for CI: `0` — applied, `1` — some items failed, `2` — could not work out what to apply.
+
+The config file is parsed line by line rather than sourced: `--config` pointing at an unvetted file must not be able to run commands.
+
+```ini
+ITEMS=web
+NGINX_AUTOSTART=Y
+DOCKER_AUTOSTART=N
+ZRAM_PERCENT=75
+SWAP_MB=2048
+```
+
+> **SSH hardening is skipped in non-interactive mode**, with an explicit message. Locking yourself out of a server because of somebody else's config file is not a fair price for automation. Configure it from the menu instead.
+
+> **Re-running is a genuine no-op.** Items that are already applied get skipped. This is not an optimisation but a question of meaning: in the menu, picking a `⇄` item again means "toggle", and without this check `--apply` from cloud-init would switch off what you asked it to switch on.
+
+### Dry run
+
+`--dry-run` shows what would happen and **does not change the system**. The interception does not live in individual functions but at the level of the commands themselves: `usermod`, `install`, `chmod`, `systemctl`, `swapon` and friends are shadowed for the duration of the run, and writes to system files all go through one shared point. Read-only calls (`systemctl is-active`, `sed` without `-i`) are passed through — without them the dry run would already lie about the current state.
+
+Completeness is verified by a test rather than by eye: a snapshot of the system before and after `--apply all --dry-run` must match.
+
+## Config snapshots and rollback
+
+Before overwriting any system file, the script copies it into `/var/backups/usfc/<stamp>`:
+
+```bash
+usfc --backups                    # what is there
+usfc --restore 20260810-1021-4242 # put it back
+```
+
+Snapshots are taken automatically, and only for the files the script itself edits: `sshd_config.d/10-hardening.conf`, `fstab`, `daemon.json`, `20auto-upgrades`, `99-zram.conf`, `zramswap`, `.bashrc` and the rest. Restoring takes another snapshot first — undoing the undo has to be possible too.
+
+## Interface language
+
+On the very first run the script asks in both languages at once, because at that point there is no way to know which one you read:
+
+```
+Язык интерфейса  /  Interface language
+  1) Русский
+  2) English
+Выбор / Choice [1]:
+```
+
+The choice is remembered and survives updates. Change it later with the `L` key in the menu. The `--lang` flag applies to a single run and saves nothing: running once in another language should not quietly re-teach the tool.
+
 ## Customization
 
 The fastfetch `src/config.jsonc` — edit and commit it, `src/setup.sh` pulls it from the raw URL on every run.
 
-Your own fork — change `REPO_RAW_BASE` at the top of `install.sh` and `src/setup.sh`. Version checking runs off a separate `src/VERSION` file — if you edit `src/setup.sh`, bump it.
+Your own fork — the `USFC_REPO_RAW_BASE` environment variable overrides where updates and modules are fetched from; no code change needed. Version checking runs off a separate `src/VERSION` file.
+
+### How the code is laid out
+
+Since 4.0.0 this is not a single file but an entry point plus modules:
+
+```
+src/setup.sh        loader: bootstrap, self-healing, module loading
+src/MODULES         manifest — also the load order and the menu order
+src/lib/*.sh        core by layers: logging, layout, apt, updates, audit…
+src/lib/items/*.sh  one file per menu item
+```
+
+**Adding an item means one new file in `src/lib/items/` and one line in `MODULES`.** An item registers itself, so there are no six parallel arrays to keep in sync any more:
+
+```bash
+usfc_item docker сервисы "Docker + Compose" "Docker CE + Compose из официального репозитория" \
+    "Docker + Compose" "Docker CE + Compose from the official repository"
+usfc_item_toggle docker
+usfc_item_full docker "Russian description" "English description"
+usfc_item_rollback docker "removal commands" "removal commands"
+
+status_docker()  { ...; }
+apply_docker()   { ...; }
+disable_docker() { ...; }
+```
+
+The English variant is optional: until it exists, the Russian text is shown.
 
 ## FAQ
 
@@ -151,7 +273,17 @@ That's your local terminal's (the client's) font, not the server's — the Nerd 
 <details>
 <summary>Docker install fails with an error about the distro codename</summary>
 
-The official Docker repo sometimes lags behind fresh Ubuntu releases — the script detects this and falls back to a compatible `noble`.
+The official Docker repo sometimes lags behind fresh Ubuntu releases — the script detects this and falls back to a compatible `noble`. There is deliberately no such fallback on Debian: `noble` is a different branch of the repository built against different library versions, so the item stops honestly instead of installing packages that are known not to fit.
+
+</details>
+
+<details>
+<summary>What does not work on Debian</summary>
+
+Almost everything works. There are exactly two differences, both verified on real images:
+
+- **Debian 12 (bookworm)** — no `eza` and no `fastfetch` in the repositories. `eza` simply drops out of the CLI set, and the `ls`/`ll`/`la`/`lt` aliases are not written to `.bashrc` (they would break `ls`). The fastfetch item explains that the package is missing and points at the `.deb` on GitHub.
+- **Debian 13 (trixie)** — everything is there except `software-properties-common`, which is only needed for PPAs, i.e. only on Ubuntu.
 
 </details>
 
