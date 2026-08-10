@@ -73,7 +73,7 @@ apply_sshhardening() {
     ssh-keygen -t ed25519 -N '' -f "$TEST_KEY" -C "vps-setup-selftest" -q
     local TEST_PUB
     TEST_PUB="$(cat "${TEST_KEY}.pub")"
-    echo "$TEST_PUB" >> "$AUTH_KEYS"
+    echo "$TEST_PUB" | append_file "$AUTH_KEYS"
 
     ssh_selftest() {
         ssh -i "$TEST_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no \
@@ -131,6 +131,12 @@ EOF
         cleanup_test_key
         if ask_yn "Настроить passwordless sudo для ${TARGET_USER}?"; then
             local SUDOERS_FILE="/etc/sudoers.d/${TARGET_USER}"
+            if [ "$USFC_DRY_RUN" = true ]; then
+                # visudo проверял бы несуществующий файл и сообщил про ошибку
+                # синтаксиса — соврал бы там, где всё в порядке
+                log_info "[сухой прогон] запись ${SUDOERS_FILE} с проверкой через visudo"
+                return 0
+            fi
             echo "${TARGET_USER} ALL=(ALL) NOPASSWD:ALL" > "${SUDOERS_FILE}.tmp"
             if visudo -c -f "${SUDOERS_FILE}.tmp" >/dev/null 2>&1; then
                 mv "${SUDOERS_FILE}.tmp" "$SUDOERS_FILE"

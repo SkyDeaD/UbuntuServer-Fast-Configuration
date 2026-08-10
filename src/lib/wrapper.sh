@@ -37,7 +37,7 @@ install_usfc_wrapper() {
         need_block=true
     fi
     [ "$need_block" = false ] && return 0
-    cat >> "$bashrc" <<'EOF'
+    append_file "$bashrc" <<'EOF'
 
 # >>> vps-setup:self >>>
 usfc() {

@@ -89,6 +89,7 @@ run_noninteractive() {
         log_info "Сухой прогон закончен: система не изменилась"
         return 0
     fi
+    backup_hint
     if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
         return 1
     fi
@@ -111,6 +112,11 @@ main() {
         profile_list
         exit 0
     fi
+    case "$USFC_ACTION" in
+        audit)   show_audit; exit 0 ;;
+        backups) backup_list; exit $? ;;
+        restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
+    esac
     if [ -n "$USFC_CONFIG_FILE" ]; then
         load_config "$USFC_CONFIG_FILE" || exit 2
     fi
@@ -174,6 +180,7 @@ main() {
             [Qq]) echo ""; log_info "Пока. Повторный запуск: usfc"; break ;;
             [Hh]) show_aliases_help ;;
             # "?" как синоним I: привычнее для тех, кто ищет справку вслепую
+            [Dd]) show_audit; pause ;;
             [Ii]|'?') show_item_help ;;
             # R когда-то открывала отдельный экран отката. Теперь откат живёт
             # в той же справке, но клавишу принимаем — она у людей в пальцах
@@ -213,7 +220,7 @@ main() {
                 valid=("${dedup[@]}")
 
                 if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, U, Q"
+                    log_error "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, D, U, Q"
                     sleep 1
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
@@ -320,6 +327,7 @@ main() {
     done
 
     print_relogin_hint
+    backup_hint
 
     if [ -f /var/run/reboot-required ]; then
         echo ""

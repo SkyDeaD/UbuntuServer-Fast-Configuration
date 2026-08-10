@@ -41,7 +41,7 @@ apply_tmux() {
     if [ -f "$TMUX_CONF" ]; then
         log_info ".tmux.conf уже существует — не трогаю"
     elif ask_yn "Положить базовый .tmux.conf (мышь, история 10000, статус-бар)?"; then
-        cat > "$TMUX_CONF" <<'EOF'
+        write_file "$TMUX_CONF" <<'EOF'
 set -g mouse on
 set -g history-limit 10000
 set -g status-bg colour234
