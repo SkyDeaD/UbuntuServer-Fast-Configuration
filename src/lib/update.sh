@@ -12,11 +12,26 @@
 UPDATE_CHECK_FILE=""
 UPDATE_CHECK_PID=""
 
+# Фоновый запрос идёт в подоболочке, игнорирующей INT. Без этого Ctrl+C
+# убивал проверку на лету: фоновая команда живёт в ТОЙ ЖЕ группе процессов,
+# что и скрипт (проверено: `ps -o pgid=` даёт одно число для обоих), а Ctrl+C
+# шлёт сигнал всей группе. Пользователь жал Ctrl+C, а получал «нет сети».
 start_update_check() {
     [ -n "${USFC_NO_UPDATE:-}" ] && return 0
     UPDATE_CHECK_FILE="$(mktemp)"
-    curl -fsSL --max-time 5 "${REPO_RAW_BASE}/VERSION" -o "$UPDATE_CHECK_FILE" 2>/dev/null &
+    ( trap '' INT; curl -fsSL --max-time 5 "${REPO_RAW_BASE}/VERSION" \
+        -o "$UPDATE_CHECK_FILE" 2>/dev/null ) &
     UPDATE_CHECK_PID=$!
+}
+
+# Синхронная попытка — вторая и последняя. Одна фоновая проверка не переживала
+# ничего: ни Ctrl+C, ни моргнувшую сеть, ни случайный 429 от GitHub, — и до
+# следующего запуска пользователь оставался без проверки вовсе.
+REPLY_REMOTE_VERSION=''
+fetch_remote_version() {
+    REPLY_REMOTE_VERSION="$(curl -fsSL --retry 1 --connect-timeout 5 --max-time 15 \
+        "${REPO_RAW_BASE}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+    [ -n "$REPLY_REMOTE_VERSION" ]
 }
 
 # ── Транзакционная установка новой версии ─────────────────────────────────────
@@ -149,10 +164,20 @@ check_for_update() {
         rm -f "$UPDATE_CHECK_FILE"
     fi
 
+    # Пусто — пробуем ещё раз, уже синхронно. Причину при этом не выдумываем:
+    # прежний текст называл сеть и отсутствие файла, хотя не проверял ни того,
+    # ни другого, — и врал ровно в том случае, когда проверку просто прервали
     if [ -z "$remote_version" ]; then
-        log_warn_t "Не удалось проверить обновления (нет сети или файла VERSION в репо)" \
-"Could not check for updates (no network, or no VERSION file in the repo)"
-        return 0
+        log_info_t "Проверяю обновления ещё раз..." "Retrying the update check..."
+        if fetch_remote_version; then
+            remote_version="$REPLY_REMOTE_VERSION"
+        else
+            log_warn_t "Не удалось проверить обновления — остаюсь на ${VERSION}" \
+"Could not check for updates — staying on ${VERSION}"
+            log_info_t "Отключить проверку: ${BOLD}usfc --no-update${NC}" \
+"Skip the check with: ${BOLD}usfc --no-update${NC}"
+            return 0
+        fi
     fi
 
     if [ "$remote_version" = "$VERSION" ]; then
