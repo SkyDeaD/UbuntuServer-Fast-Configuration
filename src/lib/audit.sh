@@ -79,10 +79,56 @@ audit_memory() {
     fi
 
     if [ "$SWAP_ACTIVE" = true ] || [ "$ZRAM_ACTIVE" = true ]; then
-        _audit_t ok "Подкачка есть${ZRAM_ACTIVE:+ (zram)}" "Swap is present${ZRAM_ACTIVE:+ (zram)}"
+        # НЕ ${ZRAM_ACTIVE:+ (zram)}: эта подстановка срабатывает на любую
+        # непустую строку, а там лежит слово «false». Пометка (zram) стояла
+        # всегда — в том числе на машине, где zram выключен или сломан
+        local kind=""
+        [ "$ZRAM_ACTIVE" = true ] && kind=" (zram)"
+        _audit_t ok "Подкачка есть${kind}" "Swap is present${kind}"
     else
         _audit_t warn "Подкачки нет совсем" "No swap at all" "Пик нагрузки убьёт процесс вместо того, чтобы притормозить. Пункт $(item_number zram)" "A load spike kills a process instead of slowing down. Item $(item_number zram)"
     fi
+
+    audit_zram
+}
+
+# ── zram: включён, но не работает ─────────────────────────────────────────────
+# Отдельно от строки про подкачку, потому что одно другое маскирует: на машине
+# с рабочим swap-файлом и падающим zram аудит бодро писал «подкачка есть»
+# и молчал о том, что половина настройки не работает.
+#
+# Молчим на машинах, где zram не включали: сообщать «zram не настроен» — работа
+# пункта меню, а не аудита. Аудит говорит только о том, что сломано.
+audit_zram() {
+    if [ "$ZRAM_ACTIVE" = true ]; then
+        _audit_t ok "zram работает" "zram is running"
+        return 0
+    fi
+    systemctl is-enabled zramswap.service >/dev/null 2>&1 || return 0
+
+    zram_module_state
+    case "$REPLY_ZRAM_MOD" in
+        container)
+            _audit_t warn "zram включён, но не работает: машина в контейнере" \
+                          "zram is enabled but not running: this machine is a container" \
+                          "Ядро общее с хозяином, модуль туда не загрузить. Выключить: systemctl disable --now zramswap" \
+                          "The kernel is shared with the host, the module cannot be loaded. Turn it off: systemctl disable --now zramswap" ;;
+        stale)
+            _audit_t warn "zram включён, но не работает: ядро обновлено без перезагрузки" \
+                          "zram is enabled but not running: the kernel was upgraded without a reboot" \
+                          "Каталога модулей для $(uname -r) больше нет — нужна перезагрузка" \
+                          "The module directory for $(uname -r) is gone — a reboot is needed" ;;
+        absent)
+            _audit_t warn "zram включён, но не работает: модуля ядра нет" \
+                          "zram is enabled but not running: the kernel module is missing" \
+                          "Служба падает при каждой загрузке. Пункт $(item_number zram) доставит недостающий пакет" \
+                          "The service fails on every boot. Item $(item_number zram) will pull in the missing package" ;;
+        *)
+            _audit_t warn "zram включён, но устройство не поднято" \
+                          "zram is enabled but no device is up" \
+                          "Причина в журнале: journalctl -u zramswap -n 20 --no-pager" \
+                          "The reason is in the journal: journalctl -u zramswap -n 20 --no-pager" ;;
+    esac
 }
 
 # ── Упавшие юниты ─────────────────────────────────────────────────────────────

@@ -69,6 +69,9 @@ dry_run_enable() {
     fallocate(){ _dry_say "fallocate $*"; }
     dd()       { _dry_say "dd $*"; }
     ufw()      { _dry_say "ufw $*"; }
+    # modprobe грузит модуль в ядро — это изменение состояния машины.
+    # modinfo рядом не подменяем: он только ищет файл модуля и ничего не делает
+    modprobe() { _dry_say "modprobe $*"; }
     add-apt-repository() { _dry_say "add-apt-repository $*"; }
 
     # rm не трогаем: он в основном убирает временные файлы, и запрет
