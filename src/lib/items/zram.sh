@@ -43,6 +43,111 @@ usfc_item_rollback zram "sudo apt purge zram-tools earlyoom
      sudo rm -f /etc/sysctl.d/99-zram.conf && sudo sysctl --system
      # removing swap only makes sense if you are certain memory is plentiful"
 
+# Оставлять zramswap.service в failed нельзя: он краснеет в `systemctl status`
+# при каждой загрузке и уводит внимание от настоящих поломок. Именно по этой
+# красной строке проблема с отсутствующим модулем и обнаружилась.
+zram_stand_down() {
+    systemctl is-enabled zramswap.service >/dev/null 2>&1 || return 0
+    log_info_t "Выключаю zramswap.service, чтобы он не падал при каждой загрузке" \
+"Disabling zramswap.service so it stops failing on every boot"
+    systemctl disable --now zramswap >/dev/null 2>&1 || true
+    # Одного disable мало: состояние failed у юнита остаётся записанным, и
+    # `systemctl --failed` показывает его дальше — ровно ту красную строку,
+    # ради которой всё это и делалось. Проверено на живой машине
+    systemctl reset-failed zramswap.service >/dev/null 2>&1 || true
+}
+
+# zram_ensure_module — 0, если zram на этой машине поднять реально (возможно,
+# после установки недостающего пакета). 1 — нельзя, причина уже напечатана,
+# и вызывающий спокойно идёт дальше к свопу и sysctl.
+#
+# Проверяем ДО установки zram-tools: ставить пакет, который заведомо не
+# заработает, и оставлять после себя падающую службу — худший из исходов.
+zram_ensure_module() {
+    local kver pkg ru_size='' en_size=''
+    zram_module_state
+    case "$REPLY_ZRAM_MOD" in
+        ok) return 0 ;;
+        container)
+            log_warn_t "Машина работает в контейнере: ядро у неё общее с хозяином, и загрузить в него модуль zram нельзя" \
+"This machine runs in a container: it shares the host kernel, and the zram module cannot be loaded into it"
+            log_info_t "zram здесь невозможен в принципе — резервный swap-файл и sysctl настрою как обычно" \
+"zram is simply not possible here — the backup swap file and sysctl will be set up as usual"
+            zram_stand_down
+            return 1 ;;
+        stale)
+            kver="$(uname -r)"
+            log_warn_t "Ядро обновлено, а машина всё ещё работает на ${BOLD}${kver}${NC} — каталога модулей для него больше нет" \
+"The kernel was upgraded but the machine still runs ${BOLD}${kver}${NC} — its module directory is gone"
+            log_info_t "Перезагрузите сервер и прогоните пункт ещё раз" \
+"Reboot the server and run this item again"
+            zram_stand_down
+            return 1 ;;
+    esac
+
+    kver="$(uname -r)"
+    pkg="linux-modules-extra-${kver}"
+    log_warn_t "Модуля ядра zram нет в /lib/modules/${kver}" \
+"The zram kernel module is missing from /lib/modules/${kver}"
+    log_info_t "На части образов Ubuntu он лежит в отдельном пакете модулей, которого на облачных образах обычно не бывает" \
+"On some Ubuntu images it lives in a separate kernel-modules package that cloud images usually do not ship"
+
+    ensure_apt_updated
+    if ! pkg_candidate_mb "$pkg"; then
+        # Причину не называем: доступных фактов ровно два — модуля нет и пакета
+        # нет. Почему именно, отсюда не видно, а угаданный диагноз в сообщении
+        # живёт дольше и врёт убедительнее, чем его отсутствие
+        log_error_t "Модуля нет, и пакета ${pkg} в apt тоже нет — доставать неоткуда" \
+"The module is missing and apt has no ${pkg} either — there is nowhere to get it from"
+        log_info_t "Так бывает с ядрами, собранными провайдером. Посмотреть своё: ${BOLD}uname -r${NC}, ${BOLD}apt policy linux-image-generic${NC}" \
+"This happens with provider-built kernels. Check yours: ${BOLD}uname -r${NC}, ${BOLD}apt policy linux-image-generic${NC}"
+        zram_stand_down
+        return 1
+    fi
+    if [ "$REPLY_PKG_MB" -gt 0 ]; then
+        ru_size=", скачать ${REPLY_PKG_MB} МБ"
+        en_size=", ${REPLY_PKG_MB} MB to download"
+    fi
+    if ! ask_yn_t "Установить ${pkg}${ru_size}?" "Install ${pkg}${en_size}?"; then
+        log_info_t "Пропускаю zram — резервный swap-файл и sysctl настрою как обычно" \
+"Skipping zram — the backup swap file and sysctl will be set up as usual"
+        zram_stand_down
+        return 1
+    fi
+    if ! ensure_pkg "модули ядра" "$pkg"; then
+        log_error_t "Установка ${pkg} не удалась" "Installing ${pkg} failed"
+        zram_stand_down
+        return 1
+    fi
+    # В сухом прогоне пакет не ставился, модуля не появится, и общая ветка
+    # ниже честно объявила бы неудачу — про установку, которой не было
+    if [ "$USFC_DRY_RUN" = true ]; then
+        log_info_t "Сухой прогон: дальше считаю, что модуль появился" \
+"Dry run: assuming the module is available from here on"
+        return 0
+    fi
+    modprobe zram 2>/dev/null || true
+    zram_module_state
+    if [ "$REPLY_ZRAM_MOD" != ok ]; then
+        log_error_t "Пакет установлен, но модуль zram так и не появился — скорее всего нужна перезагрузка" \
+"The package is installed but the zram module still is not there — a reboot is most likely needed"
+        zram_stand_down
+        return 1
+    fi
+    log_success_t "Модуль zram доступен" "The zram module is available"
+    return 0
+}
+
+# Печатается, когда zram-tools стоит и настроен, а устройство не поднялось.
+# Модуль к этому моменту уже проверен, поэтому причину не выдумываем, а
+# отправляем туда, где она написана, — в журнал самой службы.
+zram_report_start_failure() {
+    log_error_t "Не удалось поднять zram" "Could not bring zram up"
+    log_info_t "Что говорит служба: ${BOLD}journalctl -u zramswap -n 20 --no-pager${NC}" \
+"What the service says: ${BOLD}journalctl -u zramswap -n 20 --no-pager${NC}"
+    zram_stand_down
+}
+
 status_zram() {
     local zram_ok=false swap_ok=false
     local n t s u p
@@ -90,8 +195,7 @@ apply_zram() {
                         log_success_t "zram перенастроен (${zram_percent}% RAM)" \
 "zram reconfigured (${zram_percent}% of RAM)"
                     else
-                        log_error_t "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap" \
-"Could not bring zram up — try by hand: systemctl restart zramswap"
+                        zram_report_start_failure
                     fi
                 else
                     log_error_t "Установка zram-tools не удалась" \
@@ -100,26 +204,30 @@ apply_zram() {
             fi
         fi
     elif ask_yn_t "Установить и настроить zram (lz4, приоритет 100)?" "Install and configure zram (lz4, priority 100)?"; then
-        local zram_percent
-        zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-75}")"
-        if ensure_pkg "zram-tools" zram-tools; then
-            systemctl stop zramswap 2>/dev/null
-            swapoff /dev/zram0 2>/dev/null || true
-            printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
-            if ! systemctl start zramswap; then
-                sleep 2
-                systemctl start zramswap
-            fi
-            if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
-                log_success_t "zram-tools установлен и настроен (${zram_percent}% RAM)" \
+        # Модуль проверяем ПЕРВЫМ делом: без него zram-tools встанет, служба
+        # будет падать при каждой загрузке, а пользователь получит совет
+        # «попробуйте вручную», который заведомо не поможет
+        if zram_ensure_module; then
+            local zram_percent
+            zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-75}")"
+            if ensure_pkg "zram-tools" zram-tools; then
+                systemctl stop zramswap 2>/dev/null
+                swapoff /dev/zram0 2>/dev/null || true
+                printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
+                if ! systemctl start zramswap; then
+                    sleep 2
+                    systemctl start zramswap
+                fi
+                if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
+                    log_success_t "zram-tools установлен и настроен (${zram_percent}% RAM)" \
 "zram-tools installed and configured (${zram_percent}% of RAM)"
+                else
+                    zram_report_start_failure
+                fi
             else
-                log_error_t "Не удалось поднять zram — попробуйте вручную: systemctl restart zramswap" \
-"Could not bring zram up — try by hand: systemctl restart zramswap"
-            fi
-        else
-            log_error_t "Установка zram-tools не удалась" \
+                log_error_t "Установка zram-tools не удалась" \
 "Installing zram-tools failed"
+            fi
         fi
     fi
 
