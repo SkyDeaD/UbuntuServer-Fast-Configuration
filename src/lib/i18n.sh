@@ -61,22 +61,49 @@ usfc_lang_save() {
     }
 }
 
-# Вопрос при первом запуске. Двуязычный по необходимости: на этом шаге ещё
+# Список языков. Двуязычный по необходимости: при первом запуске ещё
 # неизвестно, какой язык человек понимает, и спросить на одном — значит
 # половине пользователей показать непонятное.
-usfc_ask_language() {
+#
+# Один и тот же список и при первом запуске, и при смене из меню: разведи их
+# по двум функциям — и они разойдутся при первой же правке.
+#
+# _usfc_lang_options <помечать ли текущий>
+_usfc_lang_options() {
+    local cur_ru='' cur_en=''
+    if [ "$1" = true ]; then
+        t "(сейчас)" "(current)"
+        case "$USFC_LANG" in
+            ru) cur_ru="  ${DIM}${REPLY_T}${NC}" ;;
+            en) cur_en="  ${DIM}${REPLY_T}${NC}" ;;
+        esac
+    fi
     echo ""
     echo -e "  ${BOLD}Язык интерфейса${NC}  ${DIM}/${NC}  ${BOLD}Interface language${NC}"
-    echo -e "    ${CYAN}${BOLD}1${NC}) Русский"
-    echo -e "    ${CYAN}${BOLD}2${NC}) English"
+    echo -e "    ${CYAN}${BOLD}1${NC}) Русский${cur_ru}"
+    echo -e "    ${CYAN}${BOLD}2${NC}) English${cur_en}"
     echo ""
+}
+
+# Ответ → REPLY_LANG (ru|en), либо пусто, если не разобрали
+REPLY_LANG=''
+_usfc_lang_parse() {
+    case "$1" in
+        1|r|R|ru|RU|Ru|рус|русский|Русский) REPLY_LANG=ru ;;
+        2|e|E|en|EN|En|english|English)     REPLY_LANG=en ;;
+        *)                                  REPLY_LANG='' ;;
+    esac
+}
+
+# Вопрос при первом запуске: пустой ответ и мусор дают русский — на этом шаге
+# отменять нечего, язык нужен прямо сейчас.
+usfc_ask_language() {
+    _usfc_lang_options false
     local choice
     echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[1]:${NC} "
     read -r choice </dev/tty
-    case "$choice" in
-        2|e|en|E|EN|english|English) USFC_LANG=en ;;
-        *)                           USFC_LANG=ru ;;
-    esac
+    _usfc_lang_parse "$choice"
+    USFC_LANG="${REPLY_LANG:-ru}"
     usfc_lang_save "$USFC_LANG"
     echo ""
     t "Язык сохранён. Сменить потом — клавиша L в меню." \
@@ -84,18 +111,48 @@ usfc_ask_language() {
     log_info "$REPLY_T"
 }
 
-# Переключение из меню. Перезапускаем себя, а не правим переменные на лету:
-# названия и описания пунктов складываются в массивы при загрузке модулей
-# (usfc_item), и поменять язык без пересборки реестра значило бы обновить
-# половину экрана. exec заодно гарантирует, что не осталось ничего от
-# прежнего языка.
+# Смена языка из меню.
+#
+# Раньше это был слепой тумблер: брал «противоположный» язык, сохранял и сразу
+# exec-ал. Ни вопроса, ни сообщения — а сообщение и не помогло бы, exec
+# перерисовывает экран, и любой вывод перед ним мгновенно исчезает. Нажал —
+# и гадаешь, что произошло. Плюс «противоположный» перестанет иметь смысл
+# на третьем языке. Поэтому здесь тот же список, что при первом запуске,
+# только с пометкой текущего выбора и с отменой по Enter.
+#
+# Перезапускаем себя, а не правим переменные на лету: названия и описания
+# пунктов складываются в массивы при загрузке модулей (usfc_item), и смена
+# языка без пересборки реестра обновила бы половину экрана. exec заодно
+# гарантирует, что от прежнего языка ничего не осталось.
 usfc_switch_language() {
-    local new=ru
-    [ "$USFC_LANG" = ru ] && new=en
-    usfc_lang_save "$new"
+    _usfc_lang_options true
+    local choice
+    t "Enter — отмена" "Enter to cancel"
+    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[${REPLY_T}]:${NC} "
+    read -r choice </dev/tty
+
+    if [ -z "$choice" ]; then
+        t "Отменено, язык не менялся" "Cancelled, language unchanged"
+        log_info "$REPLY_T"
+        return 0
+    fi
+    _usfc_lang_parse "$choice"
+    if [ -z "$REPLY_LANG" ]; then
+        t "Не понял ответ «${choice}» — язык не менялся" \
+          "Did not understand ${choice} — language unchanged"
+        log_warn "$REPLY_T"
+        return 0
+    fi
+    if [ "$REPLY_LANG" = "$USFC_LANG" ]; then
+        t "Этот язык уже выбран" "That language is already selected"
+        log_info "$REPLY_T"
+        return 0
+    fi
+
+    usfc_lang_save "$REPLY_LANG" || return 0
     # --no-update: обновление уже проверялось на этом запуске, второй раз
     # спрашивать про него при простой смене языка незачем
-    USFC_LANG="$new" USFC_NO_UPDATE=1 exec "$SCRIPT_PATH"
+    USFC_LANG="$REPLY_LANG" USFC_NO_UPDATE=1 exec "$SCRIPT_PATH"
 }
 
 REPLY_T=''
