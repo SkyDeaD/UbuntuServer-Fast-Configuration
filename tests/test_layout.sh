@@ -401,6 +401,24 @@ rm -f "$cf_tmp"
 if cf_creds_world_readable; then got=опасно; else got=безопасно; fi
 check "cf_creds_world_readable(файла нет)" "$got" "безопасно"
 
+# ── что сканируют статические проверки ───────────────────────────────────────
+# Загрузчик И ВСЕ МОДУЛИ. Раньше здесь стоял один "$SETUP", и после разбиения
+# монолита в 4.0.0 запрет `| grep -q` замолчал: в загрузчике такого кода нет
+# по определению, а вся логика уехала в lib/. Проверено намеренной регрессией —
+# `grep -q` в модуле тест не заметил. Список берём из манифеста, а не глобом:
+# так он не разойдётся с тем, что реально грузится.
+SCAN_SRC="$(dirname "$SETUP")"
+SCAN_FILES=("$SETUP")
+while IFS= read -r _m || [ -n "$_m" ]; do
+    case "$_m" in ''|'#'*) continue ;; esac
+    [ -f "${SCAN_SRC}/${_m}" ] && SCAN_FILES+=("${SCAN_SRC}/${_m}")
+done < "${SCAN_SRC}/MODULES"
+if [ "${#SCAN_FILES[@]}" -lt 10 ]; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: под статические проверки попало ${#SCAN_FILES[@]} файлов — манифест не прочитался"
+fi
+CHECKED=$((CHECKED + 1))
+
 # ── запрет `| grep -q` под set -o pipefail ──────────────────────────────────
 # grep -q выходит на первом совпадении, продюсер получает SIGPIPE и умирает с
 # кодом 141, а pipefail делает 141 статусом всего пайплайна. Условие становится
@@ -408,7 +426,7 @@ check "cf_creds_world_readable(файла нет)" "$got" "безопасно"
 # сидел фолбэк Docker: «нет пакетов под 'noble' — переключаюсь на noble»
 # печаталось на КАЖДОЙ машине. Ошибка не воспроизводится на коротком выводе,
 # поэтому ловим её запретом самого шаблона, а не поведением.
-qgrep_hits="$(grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' "$SETUP" | grep -v '^[0-9]*:#' || true)"
+qgrep_hits="$(grep -nE '\|[[:space:]]*grep[[:space:]]+-[A-Za-z]*q' "${SCAN_FILES[@]}" | grep -v ':[0-9]*:[[:space:]]*#' || true)"
 if [ -n "$qgrep_hits" ]; then
     FAIL=$((FAIL + 1))
     echo "FAIL: '| grep -q' под pipefail — обычный grep + >/dev/null:"
@@ -427,6 +445,30 @@ sigpipe_demo="$(bash -c 'set -uo pipefail; seq 1 200000 2>/dev/null | grep -q "^
 if [ "$sigpipe_demo" = "0" ]; then
     FAIL=$((FAIL + 1))
     echo "FAIL: grep -q в пайплайне больше не ломает статус — запрет выше устарел, перепроверь"
+fi
+CHECKED=$((CHECKED + 1))
+
+# ── цвет в printf передаётся только через %b ────────────────────────────────
+# Цвета заданы строками с escape-последовательностями (DIM='\033[2m'), а printf
+# разворачивает их лишь в САМОМ формате и в %b. Через %s на экран уезжает
+# «\033[2m[ 1/38]\033[0m lib/core.sh» — ровно это и печатал прогресс
+# самообновления, причём видно это было только во время настоящего обновления.
+#
+# Правило: если цветовая переменная идёт аргументом, в формате обязан быть %b.
+pb_hits="$(grep -nE 'printf[^#]*"\$(DIM|NC|BOLD|GREEN|RED|YELLOW|CYAN)"' "${SCAN_FILES[@]}" \
+           | grep -v '%b' | grep -v ':[0-9]*:[[:space:]]*#' || true)"
+if [ -n "$pb_hits" ]; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: цвет в printf аргументом, но в формате нет %b — уедет буквально:"
+    printf '%s\n' "$pb_hits" | sed 's/^/      /'
+fi
+CHECKED=$((CHECKED + 1))
+
+# И сам механизм: %s не разворачивает escape, %b разворачивает
+esc_demo="$(printf '%s' '\033[2m' | wc -c | tr -d ' ')"
+if [ "$esc_demo" != "7" ]; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: printf %s внезапно разворачивает escape — запрет выше устарел, перепроверь"
 fi
 CHECKED=$((CHECKED + 1))
 

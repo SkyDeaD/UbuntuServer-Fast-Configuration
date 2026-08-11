@@ -170,7 +170,10 @@ install_update() {
 "Downloading modules (${total})"
     for m in "${REPLY_MANIFEST[@]}"; do
         i=$((i + 1))
-        printf '  %s[%2d/%2d]%s %s' "$DIM" "$i" "$total" "$NC" "$m"
+        # %b, а не %s: цвета заданы как '\033[2m', и printf разворачивает
+        # такие escape-последовательности только в формате и в %b. Через %s
+        # строка уезжала на экран буквально — «\033[2m[ 1/38]\033[0m lib/core.sh»
+        printf '  %b[%2d/%2d]%b %s' "$DIM" "$i" "$total" "$NC" "$m"
         if usfc_fetch_to "$m" "${stage}/${m}"; then
             printf ' %b✓%b\n' "$GREEN" "$NC"
         else
