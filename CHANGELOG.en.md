@@ -7,17 +7,12 @@ Every notable change to this project is documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [semantic versioning](https://semver.org/).
 
-## [Unreleased]
+## [4.1.0] — 2026-08-11
+
+zram that silently did not work on cloud images, an honest uninstall, and an
+English CHANGELOG.
 
 ### Added
-
-- **`CHANGELOG.en.md`** — the last document in the repository without an
-  English counterpart. Sections, versions and entries match the Russian file
-  one to one, and there is a language switcher between them.
-- **The notes for all six releases are now bilingual and half as long**:
-  Russian on top, English under `<details>`. They were 520–730 words per
-  release and are now 230–265 per language — the filler is gone, the facts and
-  measurements stayed.
 
 - **The `U` key now removes usfc completely.** Previously only
   `/opt/vps-setup` and the `usfc` command went away, leaving the log, the
@@ -40,6 +35,14 @@ and the project follows [semantic versioning](https://semver.org/).
   items, not to the script. Running from a cloned repository is guarded
   separately: `USFC_ROOT` points at the working copy there, and a "remove the
   script" button must not delete it.
+
+- **`CHANGELOG.en.md`** — the last document in the repository without an
+  English counterpart. Sections, versions and entries match the Russian file
+  one to one, and there is a language switcher between them.
+- **The notes for all six releases are now bilingual and half as long**:
+  Russian on top, English under `<details>`. They were 520–730 words per
+  release and are now 230–265 per language — the filler is gone, the facts and
+  measurements stayed.
 
 ### Fixed
 
@@ -411,6 +414,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[4.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v3.0.1...v4.0.0
 [3.0.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v3.0.0...v3.0.1
