@@ -60,6 +60,52 @@ read_swap_state() {
     done < <(swapon --show --noheadings --raw 2>/dev/null)
 }
 
+# ── Доступен ли вообще модуль ядра zram ───────────────────────────────────────
+# Появилось не из осторожности, а по факту: на VPS с ядром 6.8.0-137-generic
+# zramswap.service падал при каждой загрузке —
+#
+#     modprobe: FATAL: Module zram not found in directory /lib/modules/6.8.0-137-generic
+#     Error: inserting the zram kernel module
+#
+# — а скрипт про это знал ровно одно: «не удалось поднять zram, попробуйте
+# вручную». Совет бесполезный: вручную выйдет то же самое, потому что модуля
+# на диске нет. На части образов Ubuntu zram.ko лежит не в основном пакете
+# модулей, а в linux-modules-extra, которого на облачных образах не бывает.
+#
+# Проверка строго читающая: modinfo только ищет файл модуля и ничего не грузит,
+# поэтому её безопасно звать и из аудита, и из сухого прогона.
+#
+# Состояния в REPLY_ZRAM_MOD:
+#   ok        — модуль загружен, встроен в ядро или лежит на диске
+#   container — машина в контейнере, своего ядра у неё нет и модули не грузятся
+#   stale     — каталога модулей для текущего ядра нет: ядро обновили,
+#               а перезагрузиться забыли
+#   absent    — модуля нет, но машина своё ядро имеет: поправимо пакетом
+# Пути вынесены в переменные ради tests/test_zram_module.sh: пять состояний
+# иначе воспроизводились бы только на пяти разных машинах, то есть не
+# проверялись бы вовсе. В работе всегда значения по умолчанию.
+USFC_SYSFS="${USFC_SYSFS:-/sys}"
+USFC_MODULES_DIR="${USFC_MODULES_DIR:-/lib/modules}"
+
+REPLY_ZRAM_MOD=''
+zram_module_state() {
+    # Уже поднят или вкомпилирован в ядро (CONFIG_ZRAM=y) — искать нечего
+    if [ -e "${USFC_SYSFS}/class/zram-control" ] || [ -e "${USFC_SYSFS}/block/zram0" ]; then
+        REPLY_ZRAM_MOD=ok; return 0
+    fi
+    if modinfo zram >/dev/null 2>&1; then
+        REPLY_ZRAM_MOD=ok; return 0
+    fi
+    if systemd-detect-virt --container --quiet 2>/dev/null; then
+        REPLY_ZRAM_MOD=container; return 0
+    fi
+    if [ ! -d "${USFC_MODULES_DIR}/$(uname -r)" ]; then
+        REPLY_ZRAM_MOD=stale; return 0
+    fi
+    REPLY_ZRAM_MOD=absent
+    return 0
+}
+
 # "1.9G" / "12.1M" / "512K" / "0B" → целые МБ. swapon --raw печатает именно так
 human_to_mb() {
     local v="${1:-0}" num unit
