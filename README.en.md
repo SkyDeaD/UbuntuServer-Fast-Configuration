@@ -100,7 +100,7 @@ Color is disabled by the `NO_COLOR` variable (its value does not matter, only it
 
 Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
 
-What changed between versions — see [CHANGELOG.md](CHANGELOG.md).
+What changed between versions — see [CHANGELOG.en.md](CHANGELOG.en.md).
 
 ## What each item does
 
