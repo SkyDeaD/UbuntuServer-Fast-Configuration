@@ -77,6 +77,23 @@ English CHANGELOG.
   The tag came from a `${ZRAM_ACTIVE:+ …}` substitution, which fires on any
   non-empty string — including the word `false`, i.e. always. Plus a separate
   audit line about zram: enabled but not running, and why.
+- **The self-update progress printed escape sequences literally:**
+
+  ```
+  \033[2m[ 1/38]\033[0m lib/core.sh ✓
+  ```
+
+  The single place in the whole codebase where a colour reached `printf` via
+  `%s` instead of `%b`: colours are strings like `'\033[2m'`, and printf
+  expands those only in the format itself and in `%b`. It was visible only
+  during a real update, which is how it survived into a release.
+- **The test that should have caught this stayed silent.** The `| grep -q` ban
+  added in 3.0.1 scanned only `src/setup.sh` — and went quiet after the
+  monolith was split in 4.0.0: all the logic moved into `lib/`, and the loader
+  has no such code by definition. Verified with a deliberate regression: a
+  `grep -q` inside a module went unnoticed. Both static checks now scan the
+  loader and every module from the manifest, and both were verified by
+  breaking them.
 
 ## [4.0.1] — 2026-08-10
 
