@@ -115,6 +115,9 @@ apply_cli() {
             echo "alias scat='sudo batcat --paging=never'"
         fi
         command -v fdfind &>/dev/null && echo "alias fd='fdfind'"
+        if command -v btop &>/dev/null then
+            echo "alias htop='btop'"
+        fi
         # эти две строки проверяют наличие сами, уже в момент запуска оболочки
         echo 'command -v zoxide &>/dev/null && eval "$(zoxide init bash)"'
         echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
