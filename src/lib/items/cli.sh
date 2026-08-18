@@ -4,7 +4,7 @@
 
 # Пакеты CLI-набора вынесены в переменную: их перечисляли в трёх местах
 # (status_cli, apply_cli, установка), и списки уже начинали расходиться
-CLI_PKGS="bat btop fd-find ripgrep zoxide ncdu"
+CLI_PKGS="bat fd-find ripgrep zoxide ncdu"
 # eza приехал в Debian только с trixie. На bookworm его нет, и без этой ветки
 # пункт вечно показывал бы «не хватает: eza» — состояние, которое пользователь
 # не может исправить, потому что пакета попросту не существует
@@ -115,9 +115,6 @@ apply_cli() {
             echo "alias scat='sudo batcat --paging=never'"
         fi
         command -v fdfind &>/dev/null && echo "alias fd='fdfind'"
-        if command -v btop &>/dev/null; then
-            echo "alias htop='btop'"
-        fi
         # эти две строки проверяют наличие сами, уже в момент запуска оболочки
         echo 'command -v zoxide &>/dev/null && eval "$(zoxide init bash)"'
         echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
