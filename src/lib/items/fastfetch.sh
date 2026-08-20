@@ -63,7 +63,8 @@ apply_fastfetch() {
             # о ту же блокировку dpkg. Добавляем только репозиторий, а списки
             # обновляем своим apt_get, у которого таймаут уже есть.
             run_logged "PPA fastfetch" add-apt-repository -y -n ppa:zhangsongcui3371/fastfetch
-            run_logged "Списки пакетов PPA" apt_get update -qq
+            t "Списки пакетов PPA" "PPA package lists"
+    run_logged "$REPLY_T" apt_get update -qq
             if run_logged "fastfetch" apt_get install -y fastfetch; then
                 refresh_pkg_cache
                 log_info_t "Версия: $(fastfetch --version 2>/dev/null)" \

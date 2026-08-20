@@ -58,6 +58,14 @@ resolve_autostart() {
     ask_yn "$2" N
 }
 
+# resolve_autostart_t <имя_переменной> <ru> <en> — то же, но с парой языков.
+# Отдельная обёртка, а не t() в каждом из двух мест вызова: симметрично
+# ask_yn_t/ask_value_t, и вопрос нельзя случайно оставить одноязычным
+resolve_autostart_t() {
+    t "$2" "$3"
+    resolve_autostart "$1" "$REPLY_T"
+}
+
 # service_units <docker|nginx> → REPLY_UNITS, все юниты сервиса разом.
 #
 # Для Docker их два, и это не формальность: docker.service поднимается

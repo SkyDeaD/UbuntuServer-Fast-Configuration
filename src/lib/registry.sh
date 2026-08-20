@@ -60,7 +60,7 @@ _usfc_item_idx() {
     for i in "${!ITEM_IDS[@]}"; do
         [ "${ITEM_IDS[$i]}" = "$1" ] && { REPLY_ITEM_IDX="$i"; return 0; }
     done
-    echo "usfc_item: пункт '$1' не зарегистрирован" >&2
+    echo "usfc_item: пункт '$1' не зарегистрирован" >&2   # i18n-ok: для разработчика, ловится в CI
     return 1
 }
 

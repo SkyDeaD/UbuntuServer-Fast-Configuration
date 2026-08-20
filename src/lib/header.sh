@@ -61,16 +61,25 @@ build_header_info() {
     [[ "$free_mb" =~ ^[0-9]+$ ]] || free_mb=0
     up_s="$(< /proc/uptime)"; up_s="${up_s%%.*}"
     [[ "$up_s" =~ ^[0-9]+$ ]] || up_s=0
-    if   [ "$up_s" -ge 86400 ]; then up_txt="$((up_s / 86400)) дн $(( (up_s % 86400) / 3600 )) ч"
-    elif [ "$up_s" -ge 3600 ];  then up_txt="$((up_s / 3600)) ч $(( (up_s % 3600) / 60 )) мин"
-    else                             up_txt="$((up_s / 60)) мин"
+    # Единицы времени берём через t() ДО сборки строки: шапка рисуется на каждом
+    # кадре меню, и подстановка $(...) на каждую единицу вернула бы форки
+    local u_d u_h u_m
+    t "дн" "d";  u_d="$REPLY_T"
+    t "ч"  "h";  u_h="$REPLY_T"
+    t "мин" "m"; u_m="$REPLY_T"
+    if   [ "$up_s" -ge 86400 ]; then up_txt="$((up_s / 86400)) ${u_d} $(( (up_s % 86400) / 3600 )) ${u_h}"
+    elif [ "$up_s" -ge 3600 ];  then up_txt="$((up_s / 3600)) ${u_h} $(( (up_s % 3600) / 60 )) ${u_m}"
+    else                             up_txt="$((up_s / 60)) ${u_m}"
     fi
+    local lbl_disk lbl_free
+    t "Диск" "Disk";        lbl_disk="$REPLY_T"
+    t "свободно" "free";    lbl_free="$REPLY_T"
 
     HEADER_INFO=(
         "${BOLD}${host}${NC}"
         "${DIM}${os:-Linux}${NC}"
         "${DIM}RAM${NC}    $(fmt_size_mb "$ram_mb")"
-        "${DIM}Диск${NC}   $(fmt_size_mb "$free_mb") свободно"
+        "${DIM}${lbl_disk}${NC}   $(fmt_size_mb "$free_mb") ${lbl_free}"
         "${DIM}Uptime${NC} ${up_txt}"
     )
 }
@@ -97,7 +106,10 @@ build_progress() {
     for ((i = 0; i < cells; i++)); do
         if [ "$i" -lt "$filled" ]; then bar+="$ch_full"; else bar+="$ch_empty"; fi
     done
-    REPLY_PROGRESS="${DIM}применено${NC} ${BOLD}${done}${NC}${DIM} из ${total}${NC}  ${GREEN}${bar:0:filled}${NC}${DIM}${bar:filled}${NC}"
+    local w_done w_of
+    t "применено" "applied"; w_done="$REPLY_T"
+    t "из" "of";             w_of="$REPLY_T"
+    REPLY_PROGRESS="${DIM}${w_done}${NC} ${BOLD}${done}${NC}${DIM} ${w_of} ${total}${NC}  ${GREEN}${bar:0:filled}${NC}${DIM}${bar:filled}${NC}"
 }
 
 show_header() {

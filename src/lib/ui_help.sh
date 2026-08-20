@@ -18,16 +18,20 @@ show_aliases_help() {
     col3=$(( inner_w - (col1 + 2) - (col2 + 2) - 6 ))
     [ "$col3" -lt 10 ] && col3=10
 
-    local rows=(
-        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)"
-        "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la"
-        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами"
-        "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь"
-        "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера"
-        "catp|batcat|то же, с пейджером (для длинных файлов)"
-        "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root"
-        "fd|fdfind|быстрый поиск файлов, замена find"
-        "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само"
+    # Формат: алиас | реальная команда | описание ru | описание en.
+    # Четвёртое поле, а не отдельный массив под каждый язык: два параллельных
+    # массива пришлось бы держать синхронными руками, и они разъехались бы —
+    # ровно та беда, от которой в 4.0.0 уходили в реестре пунктов
+    local rows=(   # i18n-ok: английская пара — четвёртое поле каждой строки
+        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)|file list with icons (ls replacement)"
+        "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la|detailed list, like ls -la"
+        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами|list including hidden files"
+        "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь|directory tree, 2 levels deep"
+        "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера|file with syntax highlighting, no pager"
+        "catp|batcat|то же, с пейджером (для длинных файлов)|the same, with a pager (for long files)"
+        "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root|cat for files only root can read"
+        "fd|fdfind|быстрый поиск файлов, замена find|fast file search, a find replacement"
+        "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само|opens the menu, .bashrc reloads itself"
     )
 
     box_line "$DIM" '╭' '┬' '╮' "$col1" "$col2" "$col3"
@@ -40,9 +44,10 @@ show_aliases_help() {
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
         "$h1" "$h2" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
-    local row alias cmd desc cmd_t desc_t cmd_pad desc_pad a_t
+    local row alias cmd desc desc_en cmd_t desc_t cmd_pad desc_pad a_t
     for row in "${rows[@]}"; do
-        IFS='|' read -r alias cmd desc <<< "$row"
+        IFS='|' read -r alias cmd desc desc_en <<< "$row"
+        [ "$USFC_LANG" = en ] && desc="$desc_en"
         truncate_colored "$cmd" "$col2";  cmd_t="$REPLY_TRUNC"
         truncate_colored "$desc" "$col3"; desc_t="$REPLY_TRUNC"
         # руками, не через pad_title(): та форсирует минимум 1 пробел паддинга,

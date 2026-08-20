@@ -60,7 +60,8 @@ apply_nginx() {
         if ! ask_yn_t "Установить nginx-full?" "Install nginx-full?"; then return; fi
         # спрашиваем ДО установки: ответ решает, дать ли postinst поднять сервис
         local autostart=false
-        resolve_autostart NGINX_AUTOSTART "Запустить nginx и включить автозапуск?" && autostart=true
+        resolve_autostart_t NGINX_AUTOSTART "Запустить nginx и включить автозапуск?" \
+            "Start nginx and enable autostart?" && autostart=true
         ensure_apt_updated
         with_no_service_start run_logged "nginx-full" apt_get install -y nginx-full || return 1
         refresh_pkg_cache
