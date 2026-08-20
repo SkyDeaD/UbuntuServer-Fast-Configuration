@@ -69,7 +69,8 @@ apply_cli() {
             # shellcheck disable=SC2086
             snapshot_pkgs $CLI_PKGS
             # shellcheck disable=SC2086
-            run_logged "CLI-утилиты (${CLI_PKGS// /, })" apt_get install -y $CLI_PKGS
+            t "CLI-утилиты (${CLI_PKGS// /, })" "CLI tools (${CLI_PKGS// /, })"
+    run_logged "$REPLY_T" apt_get install -y $CLI_PKGS
             refresh_pkg_cache
             if ! command -v starship &>/dev/null; then
                 run_logged "starship" bash -c 'curl -sS https://starship.rs/install.sh | sh -s -- -y'

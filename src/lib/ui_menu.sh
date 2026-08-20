@@ -196,9 +196,10 @@ process_item() {
     if item_supports_disable "$id" && item_applied "$id"; then
         # У nginx и Docker disable_* — переключатель (см. комментарий там же),
         # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
-        local verb="Отключить"
+        local verb
+        t "Отключить" "Disable"; verb="$REPLY_T"
         case "$id" in
-            nginx|docker) service_is_up "$id" || verb="Включить" ;;
+            nginx|docker) service_is_up "$id" || { t "Включить" "Enable"; verb="$REPLY_T"; } ;;
         esac
         echo -e "  ${prefix}${CYAN}${BOLD}▸ ${verb}: ${title}${NC}"
         hr
@@ -227,12 +228,12 @@ summary_record() {
     local idx="$1" rc="$2" secs="$3"
     local id="${ITEM_IDS[$((idx-1))]}" title="${ITEM_TITLES[$((idx-1))]}" result
     if [ "$rc" -ne 0 ]; then
-        result="${RED}✗ ошибка${NC}"
+        t "✗ ошибка" "✗ failed"; result="${RED}${REPLY_T}${NC}"
         SUMMARY_FAILED+=("$title")
     elif "status_${id}" >/dev/null 2>&1; then
-        result="${GREEN}✓ готово${NC}"
+        t "✓ готово" "✓ done"; result="${GREEN}${REPLY_T}${NC}"
     else
-        result="${DIM}— пропущено${NC}"
+        t "— пропущено" "— skipped"; result="${DIM}${REPLY_T}${NC}"
     fi
     SUMMARY_TITLES+=("$title")
     SUMMARY_RESULTS+=("$result")

@@ -105,7 +105,7 @@ zram_ensure_module() {
         return 1
     fi
     if [ "$REPLY_PKG_MB" -gt 0 ]; then
-        ru_size=", скачать ${REPLY_PKG_MB} МБ"
+        ru_size=", скачать ${REPLY_PKG_MB} МБ"   # i18n-ok: пара — en_size строкой ниже
         en_size=", ${REPLY_PKG_MB} MB to download"
     fi
     if ! ask_yn_t "Установить ${pkg}${ru_size}?" "Install ${pkg}${en_size}?"; then
@@ -114,7 +114,8 @@ zram_ensure_module() {
         zram_stand_down
         return 1
     fi
-    if ! ensure_pkg "модули ядра" "$pkg"; then
+    t "модули ядра" "kernel modules"
+    if ! ensure_pkg "$REPLY_T" "$pkg"; then
         log_error_t "Установка ${pkg} не удалась" "Installing ${pkg} failed"
         zram_stand_down
         return 1

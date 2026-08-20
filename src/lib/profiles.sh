@@ -149,7 +149,7 @@ usfc_check_profile_names() {
     for name in "${!USFC_PROFILES[@]}"; do
         for id in "${ITEM_IDS[@]}"; do
             if [ "$name" = "$id" ]; then
-                echo "usfc: имя профиля '${name}' совпадает с id пункта" >&2
+                echo "usfc: имя профиля '${name}' совпадает с id пункта" >&2   # i18n-ok: проверка для CI
                 bad=1
             fi
         done

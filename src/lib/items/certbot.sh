@@ -244,7 +244,8 @@ status_certbot() {
     if [ "$has_cf" = true ]; then
         plugins="${plugins}${plugins:+, }CF"
     else
-        plugins="${plugins}${plugins:+, }без CF"
+        t "без CF" "no CF"
+        plugins="${plugins}${plugins:+, }${REPLY_T}"
     fi
     echo -e "${GREEN}✓ certbot + ${plugins}${NC}"; return 0
 }
