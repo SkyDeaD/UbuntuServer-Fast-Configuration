@@ -6,8 +6,8 @@ show_aliases_help() {
     refresh_term_width
     show_header
     t "Алиасы" "Aliases"; local _h="$REPLY_T"
-    t "(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)" \
-      "(usfc is added on first run; ls/ll/la/lt/cat/catp/scat/fd come from the CLI tools item)"
+    t "(usfc — сам при первом запуске; остальные — пункт «CLI-утилиты»)" \
+      "(usfc is added on first run; the rest come from the CLI tools item)"
     echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
     echo ""
 
@@ -31,6 +31,7 @@ show_aliases_help() {
         "catp|batcat|то же, с пейджером (для длинных файлов)|the same, with a pager (for long files)"
         "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root|cat for files only root can read"
         "fd|fdfind|быстрый поиск файлов, замена find|fast file search, a find replacement"
+        "htop|btop|монитор процессов, наглядная замена htop|process monitor, a much nicer htop"
         "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само|opens the menu, .bashrc reloads itself"
     )
 
@@ -38,6 +39,11 @@ show_aliases_help() {
     t "Что делает" "What it does"; local hdr3="$REPLY_T" hdr3_pad h1 h2
     # col3 динамический (зависит от TERM_W) и на узких терминалах может
     # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
+    # Заголовок обрезаем ТАК ЖЕ, как строки данных. Раньше здесь считался
+    # только паддинг: по-русски «Что делает» ровно 10 символов и в col3 влезало
+    # всегда, а английское «What it does» — 12, и на TERM_W=58 рамка уезжала
+    # на два символа. Экран алиасов был единственным без проверки ширины
+    truncate_colored "$hdr3" "$col3"; hdr3="$REPLY_TRUNC"
     visible_len "$hdr3"; hdr3_pad=$((col3 - REPLY_LEN)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
     t "Алиас" "Alias"; pad_title "$REPLY_T" "$col1";            h1="$REPLY_PAD"
     t "Реальная команда" "Real command"; pad_title "$REPLY_T" "$col2"; h2="$REPLY_PAD"

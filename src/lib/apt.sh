@@ -25,6 +25,7 @@ declare -A PKG_DESC=(   # i18n-ok: английская пара — PKG_DESC_EN
     [ripgrep]="быстрый поиск по содержимому файлов"
     [zoxide]="«умный» cd, прыгает по часто используемым каталогам"
     [ncdu]="показывает, что именно занимает место на диске"
+    [btop]="монитор процессов и нагрузки, наглядная замена htop"
 )
 
 # Вторая карта, а не «ru|en» в одной строке: PKG_DESC читается ещё и тестом
@@ -49,6 +50,7 @@ declare -A PKG_DESC_EN=(
     [ripgrep]="fast search through file contents"
     [zoxide]="a smarter cd that jumps to frequently used directories"
     [ncdu]="shows what exactly is eating your disk space"
+    [btop]="process and load monitor, a much nicer htop"
 )
 
 # ═══════════════════════════════════════════════════════════════

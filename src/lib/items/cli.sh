@@ -4,7 +4,10 @@
 
 # Пакеты CLI-набора вынесены в переменную: их перечисляли в трёх местах
 # (status_cli, apply_cli, установка), и списки уже начинали расходиться
-CLI_PKGS="bat fd-find ripgrep zoxide ncdu"
+CLI_PKGS="bat fd-find ripgrep zoxide ncdu btop"
+# Версия блока алиасов в ~/.bashrc. Поднимать при КАЖДОМ изменении его
+# содержимого — по ней apply_cli понимает, что блок надо переписать
+CLI_BLOCK_MARK="# usfc:cli-block v2"
 # eza приехал в Debian только с trixie. На bookworm его нет, и без этой ветки
 # пункт вечно показывал бы «не хватает: eza» — состояние, которое пользователь
 # не может исправить, потому что пакета попросту не существует
@@ -19,7 +22,8 @@ usfc_item cli база "CLI-утилиты + starship" \
 
 usfc_item_full cli "Современные замены классических утилит: eza вместо ls с иконками, bat вместо
 cat с подсветкой, fd вместо find, ripgrep для поиска по содержимому, zoxide —
-«умный» cd, ncdu для разбора места на диске. Плюс промпт starship.
+«умный» cd, ncdu для разбора места на диске, btop вместо htop. Плюс промпт
+starship.
 
 Всё вместе, потому что это один и тот же слой «как выглядит и ощущается
 терминал». Алиасы в .bashrc и eval-строки для zoxide/starship пишутся сразу
@@ -27,16 +31,16 @@ cat с подсветкой, fd вместо find, ripgrep для поиска �
 "Modern replacements for the classic tools: eza instead of ls with icons, bat
 instead of cat with syntax highlighting, fd instead of find, ripgrep for
 searching file contents, zoxide as a smarter cd, ncdu for finding what ate
-the disk. Plus the starship prompt.
+the disk, btop instead of htop. Plus the starship prompt.
 
 All in one item, because this is a single layer: how the terminal looks and
 feels. Aliases in .bashrc and the eval lines for zoxide/starship are written
 by the same item. The alias list is on screen H."
 
 
-usfc_item_rollback cli "sudo apt purge eza bat fd-find ripgrep zoxide ncdu
+usfc_item_rollback cli "sudo apt purge eza bat fd-find ripgrep zoxide ncdu btop
      sudo rm -f \"\$(command -v starship)\"   # если ставился этим же пунктом" \
-"sudo apt purge eza bat fd-find ripgrep zoxide ncdu
+"sudo apt purge eza bat fd-find ripgrep zoxide ncdu btop
      sudo rm -f \"\$(command -v starship)\"   # if it was installed by this item"
 
 status_cli() {
@@ -79,10 +83,19 @@ apply_cli() {
             show_pkg_report $CLI_PKGS
         fi
     else
-        log_success_t "eza/bat/fd/ripgrep/zoxide/ncdu/starship уже установлены" \
-"eza/bat/fd/ripgrep/zoxide/ncdu/starship are already installed"
+        # Список берём из переменной, а не перечисляем руками: захардкоженная
+        # строка уже разошлась бы с CLI_PKGS на добавлении btop
+        log_success_t "${CLI_PKGS// /, } и starship уже установлены" \
+"${CLI_PKGS// /, } and starship are already installed"
     fi
 
+    cli_write_aliases
+}
+
+# Запись блока алиасов в ~/.bashrc вынесена из apply_cli отдельно:
+# иначе её не проверить тестом, не ставя при этом полтора десятка пакетов.
+# Тест — tests/test_cli_block.sh.
+cli_write_aliases() {
     # Алиасы и промпт пишем сразу следом — не отдельным пунктом меню, но
     # КАЖДЫЙ только если его утилита реально стоит. Прежняя проверка была
     # «нет ни eza, ни batcat» и пропускала смешанный случай: на Debian 12
@@ -96,14 +109,25 @@ apply_cli() {
         return
     fi
     local BASHRC="${TARGET_HOME}/.bashrc"
+    # Версия блока, а не «блок вообще есть». Прежняя проверка выходила по факту
+    # наличия маркера, и добавленный позже алиас не доезжал НИ ДО ОДНОЙ уже
+    # настроенной машины — молча, потому что пункт при этом рапортовал успех.
+    # Тот же приём уже применён для блока обёртки в lib/wrapper.sh.
+    # Поднимать номер при каждом изменении содержимого блока.
     if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
-        log_info_t "Алиасы CLI-утилит в .bashrc уже есть" \
+        if grep -qF "$CLI_BLOCK_MARK" "$BASHRC" 2>/dev/null; then
+            log_info_t "Алиасы CLI-утилит в .bashrc уже есть" \
 "CLI aliases are already in .bashrc"
-        return
+            return
+        fi
+        log_info_t "Блок алиасов в .bashrc устарел — переписываю" \
+"The alias block in .bashrc is outdated — rewriting it"
+        sed -i '/# >>> vps-setup:cli >>>/,/# <<< vps-setup:cli <<</d' "$BASHRC"
     fi
     {
         echo ""
         echo "# >>> vps-setup:cli >>>"
+        echo "$CLI_BLOCK_MARK"
         if command -v eza &>/dev/null; then
             echo "alias ls='eza --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'"
             echo "alias ll='eza -lah --icons --group-directories-first'"
@@ -116,7 +140,10 @@ apply_cli() {
             echo "alias scat='sudo batcat --paging=never'"
         fi
         command -v fdfind &>/dev/null && echo "alias fd='fdfind'"
-        # эти две строки проверяют наличие сами, уже в момент запуска оболочки
+        # Ниже — проверки в момент ЗАПУСКА ОБОЛОЧКИ, а не установки: так алиас
+        # не превратится в ссылку на несуществующую команду, если пакет потом
+        # удалят. htop при этом остаётся установленным и доступен как \htop
+        echo 'command -v btop &>/dev/null && alias htop="btop"'
         echo 'command -v zoxide &>/dev/null && eval "$(zoxide init bash)"'
         echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
         echo "# <<< vps-setup:cli <<<"
