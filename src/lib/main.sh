@@ -136,7 +136,7 @@ main() {
         exit 0
     fi
     case "$USFC_ACTION" in
-        audit)   show_audit; exit 0 ;;
+        audit)   if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi; exit 0 ;;
         backups) backup_list; exit $? ;;
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
     esac
