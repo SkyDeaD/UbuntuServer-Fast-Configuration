@@ -70,6 +70,9 @@ jobs:
       - name: Неинтерактивный режим и профили
         run: |
           docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -c '
+            # python3 нужен tests/test_audit.sh: он разбирает и проверяет JSON
+            apt-get update -qq >/dev/null 2>&1
+            apt-get install -y -qq python3 >/dev/null 2>&1
             mkdir -p /opt/vps-setup && cp -r /w/src/. /opt/vps-setup/
             chmod +x /opt/vps-setup/setup.sh
             ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
