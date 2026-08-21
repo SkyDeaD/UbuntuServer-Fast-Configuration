@@ -93,7 +93,7 @@ show_menu() {
     # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
     # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
     local legend_w=$((inner_w - 4)) line
-    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend2b legend3 legend4
+    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend2b legend2c legend3 legend4
     t "Выбор:" "Choose:";     pad_title "$REPLY_T" 10; lbl_choice="$REPLY_PAD"
     t "Разделы:" "Sections:"; pad_title "$REPLY_T" 10; lbl_sections="$REPLY_PAD"
     t "Команды:" "Keys:";     pad_title "$REPLY_T" 10; lbl_commands="$REPLY_PAD"
@@ -111,6 +111,13 @@ show_menu() {
     t "— выключается повторным выбором; удалить остальное — экран" \
       "— toggles off when picked again; how to remove the rest — screen"
     legend2b="${lbl_blank}${CYAN}⇄${NC}${DIM} ${REPLY_T} ${NC}${CYAN}${BOLD}I${NC}"
+    # Предпросмотр живёт в блоке «Выбор», а не среди команд: он требует номера
+    # пункта, и там ему место по смыслу. Плюс сетка «Команды» рассчитана на пять
+    # ячеек — шестая на узком терминале молча обрезалась бы, а рамка при этом
+    # осталась бы ровной, то есть тест ширин этого не заметил бы
+    t "— предпросмотр: что пункт сделал бы, ничего не меняя" \
+      "— preview: what the item would do, changing nothing"
+    legend2c="${lbl_blank}${CYAN}${BOLD}V 5${NC}${DIM} ${REPLY_T}${NC}"
 
     # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
     # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
@@ -172,7 +179,7 @@ show_menu() {
     t "выход" "quit"
     legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${g5}${CYAN}${BOLD}Q${NC} ${REPLY_T}"
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
-    for line in "$legend1" "$legend2" "$legend2b" "$legend3" "$legend4"; do
+    for line in "$legend1" "$legend2" "$legend2b" "$legend2c" "$legend3" "$legend4"; do
         local ltrunc lpad
         truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
         visible_len "$ltrunc"
@@ -187,6 +194,36 @@ show_menu() {
 # process_item <номер> [позиция-в-пачке] [всего-в-пачке]
 # Два последних аргумента нужны только для шапки "[3/7]" в пакетном режиме.
 # Возвращает код возврата apply_*/disable_* — на нём строится итоговая сводка.
+# preview_item <номер> — показать, что пункт СДЕЛАЛ БЫ, ничего не делая.
+#
+# Пункт идёт в ПОДОБОЛОЧКЕ, и это главное решение здесь. dry_run_enable
+# определяет два десятка функций-заглушек и обратно их не снимает; снимать
+# руками пришлось бы двумя новыми механизмами — автосписком подменённых имён
+# и сохранением оригинала log_success, который подменяется как функция, а не
+# как внешняя команда. Оба тонкие и ломаются молча. Подоболочка же гарантирует
+# уборку по построению: вместе с ней умирают и заглушки, и все побочные
+# переменные, которые пункт мог тронуть, — APT_UPDATED, TARGET_USER после
+# switch_target_user, POLICY_RC_D_OURS, кэш пакетов, предзаданные ответы.
+#
+# Зовём process_item, а не apply_$id: у ⇄-пунктов он уходит в disable_$id,
+# и честный предпросмотр обязан показать ту ветку, которая реально сработала бы.
+preview_item() {
+    local idx="$1"
+    if ! [[ "$idx" =~ ^[0-9]+$ ]] || [ "$idx" -lt 1 ] || [ "$idx" -gt "${#ITEM_IDS[@]}" ]; then
+        log_warn_t "Нужен номер пункта от 1 до ${#ITEM_IDS[@]}" \
+"Give an item number between 1 and ${#ITEM_IDS[@]}"
+        return 1
+    fi
+    show_header
+    log_info_t "Предпросмотр: показываю, что было бы сделано, и ничего не меняю" \
+"Preview: showing what would be done, changing nothing"
+    ( USFC_DRY_RUN=true; dry_run_enable >/dev/null; process_item "$idx" )
+    # Пункт мог читать состояние системы на лету — кэшу статусов больше не верим
+    invalidate_statuses
+    reset_bulk_answers
+    return 0
+}
+
 process_item() {
     local idx="$1" pos="${2:-}" total="${3:-}"
     local id="${ITEM_IDS[$((idx-1))]}" title="${ITEM_TITLES[$((idx-1))]}" prefix=""
