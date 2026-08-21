@@ -97,5 +97,34 @@ if grep -F 'не проходит даже сейчас' /tmp/dryrun-ssh.log >/d
     fail=1
 fi
 
+# ── третья половина: предпросмотр из меню по КАЖДОМУ пункту ──────────────────
+# Клавиша V делает достижимым интерактивный путь любого пункта, включая те,
+# что `--apply all` отфильтровывает. Здесь и вылезали cp/mv/ssh-keygen.
+prev_before="$(snapshot)"
+USFC_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1091
+    source /opt/vps-setup/setup.sh
+    TARGET_USER=nobody; TARGET_HOME=/nonexistent
+    for i in $(seq 1 "${#ITEM_IDS[@]}"); do
+        preview_item "$i" || exit 1
+    done
+    # Сухой режим обязан выключиться вместе с подоболочкой: заглушки не должны
+    # пережить предпросмотр, иначе следующее РЕАЛЬНОЕ применение ничего не сделает
+    [ "$USFC_DRY_RUN" = false ] || { echo "USFC_DRY_RUN остался true" >&2; exit 1; }
+    [ -z "$(declare -F usermod)" ] || { echo "заглушка usermod пережила предпросмотр" >&2; exit 1; }
+    [ -z "$(declare -F cp)" ]      || { echo "заглушка cp пережила предпросмотр" >&2; exit 1; }
+' > /tmp/preview.log 2>&1
+prev_rc=$?
+
+if [ "$prev_before" != "$(snapshot)" ]; then
+    echo "FAIL: предпросмотр изменил систему" >&2
+    fail=1
+fi
+if [ "$prev_rc" -ne 0 ]; then
+    echo "FAIL: предпросмотр вернул ${prev_rc}" >&2
+    tail -12 /tmp/preview.log >&2
+    fail=1
+fi
+
 [ "$fail" -eq 0 ] && echo "сухой прогон: система не изменилась, код возврата 0"
 exit "$fail"
