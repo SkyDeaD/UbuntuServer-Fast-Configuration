@@ -44,6 +44,8 @@ curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configura
 
 Installs itself as the `usfc` command and opens the menu right away — no waiting: `apt update` no longer runs at startup, it's pulled in lazily and only before an actual install. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
 
+On the very first run it asks a single question — "what is this server for?" — and turns the answer into a ready-made profile. You can decline right away: the fifth option opens the regular menu.
+
 <div align="center">
 
 <img width="300" height="252" alt="2026-07-15_23-02" src="https://github.com/user-attachments/assets/0d7c5bb1-16e0-42d0-a886-03467955772e" />
@@ -55,7 +57,7 @@ Installs itself as the `usfc` command and opens the menu right away — no waiti
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `I` (or `?`, and `R` too) — per-item help and rollback: what each item does, its current status, how to switch it off and how to remove it entirely. `H` — alias reference, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`, and `R` too) — per-item help and rollback: what each item does, its current status, how to switch it off and how to remove it entirely. `H` — alias reference, `U` — remove `usfc` itself.
 
 Items marked with `⇄` in the table switch off by picking them again: the script sees the setting is applied and offers the opposite action. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
 
@@ -85,12 +87,16 @@ usfc --no-update   # do not check for usfc updates
 usfc --verbose     # raw command output instead of the spinner
 usfc --lang ru     # Russian interface for this run
 usfc --audit       # check the server's state, changing nothing
+usfc --audit --json  # the same, machine-readable: monitoring, Ansible, cron
 usfc --list        # profiles and item ids
 usfc --apply web   # apply a set of items without the menu
+usfc --apply zram --yes   # and stop asking along the way (with --apply only)
 usfc --dry-run     # show what would be done
 usfc --backups     # config snapshots
 usfc --restore     # restore configs from a snapshot
 ```
+
+`--yes` works **only together with `--apply`**, and only on the questions of the items being applied. It cannot be global: of the 62 questions, 24 have a protective "no" default, among them removing usfc itself, stopping nginx and Docker, and disabling unattended-upgrades.
 
 `USFC_APT_LOCK_TIMEOUT` (300 s by default) controls how long to wait for the dpkg lock. The wait is needed because on a freshly booted server `apt-daily.timer` starts `unattended-upgrades`, which holds `/var/lib/dpkg/lock-frontend` for minutes — without waiting, every install would fail instantly with `E: Could not get lock`.
 
@@ -181,6 +187,19 @@ usfc --apply all --dry-run        # show what would be done
 usfc --config /etc/usfc.conf      # answers from a file
 usfc --list                       # available profiles and ids
 ```
+
+Arguments can be handed **to the installer itself** — then no menu opens, and no terminal is needed for it. This is the path for cloud-init and Ansible:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
+  | sudo bash -s -- --apply web
+
+# from a branch, with answers from a file, with a preview — all the same
+curl -fsSL .../install.sh | sudo bash -s -- --branch dev --apply zram --yes
+curl -fsSL .../install.sh | sudo bash -s -- --apply all --dry-run
+```
+
+The installer keeps only `--branch` and `--help` for itself; everything else goes to `usfc`. An explicit `--` hands even those two down.
 
 Profiles: `minimal`, `web`, `dockerhost`, `secure`. Exit codes are made for CI: `0` — applied, `1` — some items failed, `2` — could not work out what to apply.
 
