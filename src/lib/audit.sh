@@ -102,6 +102,7 @@ audit_memory() {
 audit_zram() {
     if [ "$ZRAM_ACTIVE" = true ]; then
         _audit_t ok "zram работает" "zram is running"
+        audit_sysctl
         return 0
     fi
     systemctl is-enabled zramswap.service >/dev/null 2>&1 || return 0
@@ -129,6 +130,27 @@ audit_zram() {
                           "Причина в журнале: journalctl -u zramswap -n 20 --no-pager" \
                           "The reason is in the journal: journalctl -u zramswap -n 20 --no-pager" ;;
     esac
+}
+
+# Рекомендованные значения под zram. Спрашиваются пунктом и легко остаются
+# неприменёнными: до 4.2.0 в пакетном прогоне вопрос вообще не показывался.
+# В статус пункта это не входит осознанно — иначе у отказавшегося пункт
+# навсегда застрял бы в «настроено частично». Проверяем только когда zram
+# реально работает: без него совет про swappiness — шум.
+audit_sysctl() {
+    local sw vfs
+    sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null)"
+    vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null)"
+    [[ "$sw" =~ ^[0-9]+$ ]] && [[ "$vfs" =~ ^[0-9]+$ ]] || return 0
+    if [ "$sw" = 80 ] && [ "$vfs" = 50 ]; then
+        _audit_t ok "sysctl под zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
+                    "sysctl for zram: swappiness=${sw}, vfs_cache_pressure=${vfs}"
+    else
+        _audit_t warn "sysctl не под zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
+                      "sysctl not tuned for zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
+                      "Рекомендуется 80 и 50 — своп в памяти быстрый. Пункт $(item_number zram)" \
+                      "80 and 50 are recommended — swap in RAM is fast. Item $(item_number zram)"
+    fi
 }
 
 # ── Упавшие юниты ─────────────────────────────────────────────────────────────

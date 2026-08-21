@@ -25,6 +25,7 @@ run_items() {
 reset_bulk_answers() {
     ZRAM_BULK_PERCENT=""
     SWAP_BULK_MB=""
+    SYSCTL_BULK=""
     # shellcheck disable=SC2034  # читаются в apply_nginx/apply_docker
     NGINX_AUTOSTART=""
     # shellcheck disable=SC2034
@@ -318,6 +319,27 @@ main() {
                                             log_info_t "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ" \
 "Swap ${SWAP_PATH}: currently ${SWAP_SIZE_MB} MB, recommended ${sw_want} MB"
                                             SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$sw_want")"
+                                        fi
+                                    fi
+                                    # sysctl — такая же рекомендация пункта, как
+                                    # процент zram, и спрашивать её надо здесь же.
+                                    # В пакетном прогоне ask_yn вопросов не задаёт,
+                                    # а прежний дефолт вычислялся из текущих
+                                    # значений и выпадал в «нет» на любой машине,
+                                    # где их хоть немного трогали, — рекомендация
+                                    # тихо не применялась
+                                    local cur_sw cur_vfs
+                                    cur_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
+                                    cur_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
+                                    if ! { [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; }; then
+                                        echo ""
+                                        log_info_t "Сейчас swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. Под zram рекомендуются 80 и 50: своп быстрый, и отдавать в него страницы охотнее выгодно" \
+"Currently swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. With zram 80 and 50 are recommended: swap is fast here, so paging out more eagerly pays off"
+                                        if ask_yn_t "Применить рекомендованные значения sysctl?" \
+                                                    "Apply the recommended sysctl values?"; then
+                                            SYSCTL_BULK=Y
+                                        else
+                                            SYSCTL_BULK=N
                                         fi
                                     fi
                                     ;;

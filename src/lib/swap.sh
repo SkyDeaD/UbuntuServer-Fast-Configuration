@@ -85,6 +85,9 @@ read_swap_state() {
 # иначе воспроизводились бы только на пяти разных машинах, то есть не
 # проверялись бы вовсе. В работе всегда значения по умолчанию.
 USFC_SYSFS="${USFC_SYSFS:-/sys}"
+# Тем же швом читаются vm.swappiness и vm.vfs_cache_pressure: подставить
+# их значения иначе можно только на настоящей машине с нужным ядром
+USFC_PROC_VM="${USFC_PROC_VM:-/proc/sys/vm}"
 USFC_MODULES_DIR="${USFC_MODULES_DIR:-/lib/modules}"
 
 REPLY_ZRAM_MOD=''
