@@ -29,6 +29,7 @@ On anything else the script refuses to act: it checks the distribution at startu
 - [What each item does](#what-each-item-does)
 - [Server audit](#server-audit)
 - [Non-interactive use](#non-interactive-use)
+- [All flags](#all-flags)
 - [Config snapshots and rollback](#config-snapshots-and-rollback)
 - [Interface language](#interface-language)
 - [Customization](#customization)
@@ -81,22 +82,14 @@ Decline and nothing breaks: item **1 "Пользователь + sudo"** stays a
 ### Flags
 
 ```bash
-usfc --help        # this help
-usfc --version     # version
-usfc --no-update   # do not check for usfc updates
-usfc --verbose     # raw command output instead of the spinner
-usfc --lang ru     # Russian interface for this run
-usfc --audit       # check the server's state, changing nothing
-usfc --audit --json  # the same, machine-readable: monitoring, Ansible, cron
-usfc --list        # profiles and item ids
-usfc --apply web   # apply a set of items without the menu
-usfc --apply zram --yes   # and stop asking along the way (with --apply only)
-usfc --dry-run     # show what would be done
-usfc --backups     # config snapshots
-usfc --restore     # restore configs from a snapshot
+usfc --apply web          # apply a set of items without the menu
+usfc --audit --json       # the server's state, machine-readable
+usfc --apply zram --yes   # apply and stop asking
+usfc --dry-run            # show what would be done
+usfc --help               # every flag in one list
 ```
 
-`--yes` works **only together with `--apply`**, and only on the questions of the items being applied. It cannot be global: of the 62 questions, 24 have a protective "no" default, among them removing usfc itself, stopping nginx and Docker, and disabling unattended-upgrades.
+The full reference with ready-made commands is [below](#all-flags).
 
 `USFC_APT_LOCK_TIMEOUT` (300 s by default) controls how long to wait for the dpkg lock. The wait is needed because on a freshly booted server `apt-daily.timer` starts `unattended-upgrades`, which holds `/var/lib/dpkg/lock-frontend` for minutes — without waiting, every install would fail instantly with `E: Could not get lock`.
 
@@ -222,6 +215,137 @@ SWAP_MB=2048
 `--dry-run` shows what would happen and **does not change the system**. The interception does not live in individual functions but at the level of the commands themselves: `usermod`, `install`, `chmod`, `systemctl`, `swapon` and friends are shadowed for the duration of the run, and writes to system files all go through one shared point. Read-only calls (`systemctl is-active`, `sed` without `-i`) are passed through — without them the dry run would already lie about the current state.
 
 Completeness is verified by a test rather than by eye: a snapshot of the system before and after `--apply all --dry-run` must match.
+
+## All flags
+
+A reference for putting together the command you need. The short version is `usfc --help`.
+
+### Installing
+
+The installer keeps only `--branch` and `--help` for itself. Everything else goes to the installed `usfc`, and then **no menu opens** and no terminal is needed at all — this is the path for cloud-init and Ansible.
+
+```bash
+BASE=https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh
+
+curl -fsSL $BASE | sudo bash                              # install and open the menu
+curl -fsSL $BASE | sudo bash -s -- --apply web            # install and apply a profile right away
+curl -fsSL $BASE | sudo bash -s -- --branch dev           # install from the dev branch
+curl -fsSL $BASE | sudo bash -s -- --help                 # installer help
+curl -fsSL $BASE | sudo bash -s -- -- --branch feature/x  # hand --branch down to usfc
+```
+
+| Flag | What it does |
+|---|---|
+| `--branch <branch>`, `-b` | install from that branch, `main` by default |
+| `--help`, `-h` | installer help |
+| `--` | everything after it goes to `usfc`, even if it matches the installer's own flags |
+
+With no arguments and no terminal the installer does not try to open the menu: it says usfc is installed and exits zero.
+
+### Mode — what to do
+
+Exactly one of these. Without them the menu opens.
+
+| Flag | What it does |
+|---|---|
+| `--apply <what>` | apply items and exit, no menu |
+| `--audit` | show the server's state, changing nothing |
+| `--list` | show profiles and item ids |
+| `--backups` | show config snapshots |
+| `--restore [stamp]` | restore configs from a snapshot; without a stamp it asks which |
+| `--help`, `-h` | help |
+| `--version`, `-V` | version and exit |
+
+### Modifiers — how to do it
+
+These combine with the mode above.
+
+| Flag | What it does | Works with |
+|---|---|---|
+| `--dry-run` | show what would be done and change nothing | `--apply` |
+| `--yes`, `-y` | answer yes to the questions of the applied items | `--apply` only; for `--restore` it confirms the rollback |
+| `--config <file>` | take the answers from a file | `--apply` |
+| `--json` | print machine-readable output | `--audit` only |
+| `--lang ru\|en` | language for this run, not saved | anywhere |
+| `--no-update` | do not check for usfc updates | anywhere |
+| `--verbose` | raw command output instead of the spinner | anywhere |
+
+`--yes` is deliberately not global: of the 62 questions, 24 have a protective "no" default, among them removing usfc itself, stopping nginx and Docker, and disabling unattended-upgrades. Together with `--apply` those branches are unreachable — already applied items are skipped, and removal lives in the menu only.
+
+### What to put in `--apply`
+
+A profile, item ids separated by commas, or `all`.
+
+| Profile | What it includes |
+|---|---|
+| `minimal` | basepkgs cli unattended |
+| `web` | basepkgs cli docker nginx certbot fail2ban unattended zram ufw |
+| `dockerhost` | basepkgs cli docker dockerlog fail2ban unattended zram ufw |
+| `secure` | basepkgs fail2ban unattended sshhardening ufw |
+
+Item ids: `newuser` `basepkgs` `cli` `fastfetch` `tmux` `docker` `nginx` `certbot` `dockerlog` `fail2ban` `unattended` `zram` `sshhardening` `ufw`.
+
+`newuser` and `sshhardening` are skipped in non-interactive mode with an explicit message: a name and a password cannot be silently defaulted, and locking yourself out over someone else's config is not an acceptable price for automation. Already applied items are skipped, so re-running is a genuine no-op.
+
+### Answer file for `--config`
+
+```ini
+ITEMS=web
+NGINX_AUTOSTART=Y
+DOCKER_AUTOSTART=N
+ZRAM_PERCENT=75
+SWAP_MB=2048
+SYSCTL=Y
+CERTBOT_CF=N
+CF_TOKEN=
+```
+
+Parsed line by line, without `source`: stray keys are not executed, they produce a clear error.
+
+### Exit codes
+
+| Code | When |
+|---|---|
+| `0` | applied, or there was nothing to apply |
+| `1` | some items failed |
+| `2` | could not work out what to apply (a typo in a profile or id), or `--json` without `--audit` |
+
+### Environment variables
+
+| Variable | What it does |
+|---|---|
+| `USFC_APT_LOCK_TIMEOUT` | how long to wait for the dpkg lock, 300 s by default |
+| `USFC_BRANCH` | branch for the installer, same as `--branch` |
+| `USFC_LANG` | language for this run, same as `--lang` |
+| `NO_COLOR` | disable colour; its presence matters, not its value |
+
+### Ready-made commands
+
+```bash
+# bring up a web server on a clean machine in one line, no questions
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
+  | sudo bash -s -- --apply web --yes
+
+# see what would be done, and do nothing
+sudo usfc --apply all --dry-run
+
+# memory only: zram, swap and sysctl, without extra questions
+sudo usfc --apply zram --yes
+
+# deploy from your own answer file
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
+  | sudo bash -s -- --config /root/usfc.conf --apply all
+
+# audit into monitoring, daily from cron
+sudo usfc --audit --json > /var/lib/node_exporter/usfc.json
+
+# English interface for a single run
+sudo usfc --lang en --audit
+
+# roll configs back to the latest snapshot, from a script
+sudo usfc --backups
+sudo usfc --restore 20260821-050600-3691 --yes
+```
 
 ## Config snapshots and rollback
 
