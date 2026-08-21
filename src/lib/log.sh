@@ -81,9 +81,13 @@ _spin_wait() {
                         | grep -F 'Waiting for cache lock' | tail -n1)"
             if [ -n "$lock_line" ]; then
                 holder="${lock_line##*\(}"; holder="${holder%%)*}"
-                note=" ${YELLOW}— жду блокировку dpkg${NC}"
-                [ -n "$holder" ] && [ "$holder" != "$lock_line" ] && \
-                    note=" ${YELLOW}— жду: пакетный менеджер занят (${holder})${NC}"
+                t "— жду блокировку dpkg" "— waiting for the dpkg lock"
+                note=" ${YELLOW}${REPLY_T}${NC}"
+                if [ -n "$holder" ] && [ "$holder" != "$lock_line" ]; then
+                    t "— жду: пакетный менеджер занят (${holder})" \
+                      "— waiting: the package manager is busy (${holder})"
+                    note=" ${YELLOW}${REPLY_T}${NC}"
+                fi
             fi
         fi
         frame="${SPINNER_FRAMES:$((i % SPINNER_N)):1}"
@@ -117,7 +121,10 @@ _apt_stats_since() {
             size="${BASH_REMATCH[1]}"
         fi
     done < <(tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null)
-    [ -n "$pkgs" ] && [ "$pkgs" -gt 0 ] && REPLY_STATS="${pkgs} пакет(ов)"
+    if [ -n "$pkgs" ] && [ "$pkgs" -gt 0 ]; then
+        t "пакет(ов)" "package(s)"
+        REPLY_STATS="${pkgs} ${REPLY_T}"
+    fi
     [ -n "$size" ] && REPLY_STATS="${REPLY_STATS}${REPLY_STATS:+, }${size}"
 }
 
@@ -125,7 +132,8 @@ _apt_stats_since() {
 # в лог и показывая одну строку со спиннером. Возвращает код возврата команды.
 # ВАЖНО: только для НЕинтерактивных команд — спиннер затрёт любой вопрос.
 run_logged() {
-    local desc="${1:-Выполнение}"; shift
+    t "Выполнение" "Working"
+    local desc="${1:-$REPLY_T}"; shift
     [ "$#" -eq 0 ] && return 0
 
     # Сухой прогон. Перехват стоит именно здесь, а не в каждой apply_-функции:
@@ -133,7 +141,7 @@ run_logged() {
     # add-apt-repository. Размазывать проверку по три десятка мест значило бы
     # однажды забыть одно из них, причём молча
     if [ "$USFC_DRY_RUN" = true ]; then
-        printf '  %b[сухой прогон]%b %s\n' "$DIM" "$NC" "$*"
+        _dry_say "$*"
         return 0
     fi
 

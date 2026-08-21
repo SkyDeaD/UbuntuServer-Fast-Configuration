@@ -64,6 +64,26 @@ apply_sshhardening() {
     fi
     if ! ask_yn_t "Настроить SSH hardening для ${TARGET_USER} (ключи вместо пароля, запрет root-логина)?" "Set up SSH hardening for ${TARGET_USER} (keys instead of password, root login disabled)?" N; then return; fi
 
+    # Сухой прогон здесь заканчивается описанием, а не имитацией. Пункт держится
+    # на самопроверке: он заводит временный ключ, кладёт его в authorized_keys
+    # и реально ходит по ssh на localhost. С заглушенным ssh-keygen проверка
+    # провалилась бы и сообщила «вход по ключу не проходит даже сейчас» —
+    # то есть соврала бы про исправную машину. Пугать таким в режиме, который
+    # обещает ничего не менять, нельзя.
+    if [ "$USFC_DRY_RUN" = true ]; then
+        t "ssh-keygen: временный ключ для самопроверки входа" \
+          "ssh-keygen: a temporary key for the login self-check"; _dry_say "$REPLY_T"
+        t "запись /etc/ssh/sshd_config.d/10-hardening.conf" \
+          "writing /etc/ssh/sshd_config.d/10-hardening.conf"; _dry_say "$REPLY_T"
+        t "копия /etc/ssh/sshd_config рядом, с меткой времени" \
+          "a timestamped copy of /etc/ssh/sshd_config next to it"; _dry_say "$REPLY_T"
+        t "systemctl reload ssh и повторная самопроверка входа по ключу" \
+          "systemctl reload ssh and a second key-login self-check"; _dry_say "$REPLY_T"
+        log_info_t "Самопроверку входа в сухом прогоне не делаю: она требует настоящего ssh на localhost" \
+"Not running the login self-check in a dry run: it needs a real ssh to localhost"
+        return 0
+    fi
+
     ensure_ssh_dir "$TARGET_USER" "$TARGET_HOME" || { log_error_t "Не удалось подготовить ~/.ssh" \
 "Could not prepare ~/.ssh"; return 1; }
     local AUTH_KEYS="$REPLY_AUTHKEYS"

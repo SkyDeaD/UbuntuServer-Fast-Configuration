@@ -168,7 +168,10 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
       --audit           проверить состояние сервера (только чтение)
       --backups         показать снимки конфигов
       --restore [метка] восстановить конфиги из снимка
-  -y, --yes             не спрашивать подтверждения (нужен для --restore)
+  -y, --yes             отвечать «да» на вопросы применяемых пунктов.
+                        Действует только вместе с --apply; на --restore —
+                        подтверждение отката. Разрушительные ветки (удаление
+                        usfc, остановка сервисов) им не переключаются
 
   <что> — это профиль, список id или номеров:
       --apply web                 профиль
@@ -237,7 +240,10 @@ Non-interactive use (cloud-init, Ansible, provisioning scripts):
       --audit           check the server's current state (read-only)
       --backups         list config snapshots
       --restore [stamp] restore configs from a snapshot
-  -y, --yes             skip confirmation (required by --restore)
+  -y, --yes             answer yes to the questions of the applied items.
+                        Works only together with --apply; for --restore it
+                        confirms the rollback. Destructive branches (removing
+                        usfc, stopping services) are not flipped by it
 
   <what> is a profile, or a list of ids or numbers:
       --apply web                 a profile
@@ -291,6 +297,7 @@ parse_args() {
             --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1 ;;
             --list)       USFC_LIST_ONLY=true ;;
             --audit)      USFC_ACTION=audit ;;
+            --json)       USFC_AUDIT_JSON=true ;;
             --backups)    USFC_ACTION=backups ;;
             --restore)
                 USFC_ACTION=restore
@@ -317,6 +324,12 @@ parse_args() {
         shift
     done
     case "$USFC_LANG" in ru|en) ;; *) USFC_LANG=ru ;; esac
+    # --json сам по себе ничего не значит: он меняет ФОРМАТ аудита, а не режим
+    if [ "$USFC_AUDIT_JSON" = true ] && [ "$USFC_ACTION" != audit ]; then
+        echo "usfc: --json работает только вместе с --audit" >&2   # i18n-ok: пара строкой ниже
+        echo "usfc: --json only works together with --audit" >&2
+        exit 2
+    fi
     if [ "$want_help" = true ]; then show_usage; exit 0; fi
 }
 

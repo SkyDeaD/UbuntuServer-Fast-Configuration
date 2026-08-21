@@ -105,7 +105,7 @@ zram_ensure_module() {
         return 1
     fi
     if [ "$REPLY_PKG_MB" -gt 0 ]; then
-        ru_size=", скачать ${REPLY_PKG_MB} МБ"
+        ru_size=", скачать ${REPLY_PKG_MB} МБ"   # i18n-ok: пара — en_size строкой ниже
         en_size=", ${REPLY_PKG_MB} MB to download"
     fi
     if ! ask_yn_t "Установить ${pkg}${ru_size}?" "Install ${pkg}${en_size}?"; then
@@ -114,7 +114,8 @@ zram_ensure_module() {
         zram_stand_down
         return 1
     fi
-    if ! ensure_pkg "модули ядра" "$pkg"; then
+    t "модули ядра" "kernel modules"
+    if ! ensure_pkg "$REPLY_T" "$pkg"; then
         log_error_t "Установка ${pkg} не удалась" "Installing ${pkg} failed"
         zram_stand_down
         return 1
@@ -309,41 +310,7 @@ apply_zram() {
         fi
     fi
 
-    local cur_sw cur_vfs
-    cur_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
-    cur_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
-    if [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; then
-        log_success_t "sysctl уже настроен как рекомендуется" \
-"sysctl already matches the recommendation"
-    else
-        log_info_t "Сейчас: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(рекомендуется 80/50)${NC}" \
-"Currently: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(80/50 recommended)${NC}"
-        local sysctl_default=Y
-        [ "$cur_sw" != "60" ] || [ "$cur_vfs" != "100" ] && sysctl_default=N
-        if ask_yn_t "Применить рекомендованные значения sysctl?" "Apply the recommended sysctl values?" "$sysctl_default"; then
-            printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' | write_file /etc/sysctl.d/99-zram.conf
-            sysctl --system >/dev/null 2>&1
-            # Не верим на слово: перечитываем /proc. Раньше здесь безусловно
-            # печаталось «sysctl применён» сразу под строкой со СТАРЫМИ числами —
-            # и это читалось как «рекомендуется, но не сделано». Теперь видно
-            # результат, а если файл кто-то переопределяет — видно и это
-            local new_sw new_vfs
-            new_sw="$(cat /proc/sys/vm/swappiness 2>/dev/null || echo '?')"
-            new_vfs="$(cat /proc/sys/vm/vfs_cache_pressure 2>/dev/null || echo '?')"
-            if [ "$new_sw" = "80" ] && [ "$new_vfs" = "50" ]; then
-                log_success_t "sysctl применён: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}" \
-"sysctl applied: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}"
-            else
-                log_warn_t "sysctl не применился: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}" \
-"sysctl did not take effect: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}"
-                log_info_t "Что-то перебивает /etc/sysctl.d/99-zram.conf — смотри ${BOLD}sysctl --system${NC}" \
-"Something overrides /etc/sysctl.d/99-zram.conf — check ${BOLD}sysctl --system${NC}"
-            fi
-        else
-            log_info_t "Оставляю sysctl как есть (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})" \
-"Leaving sysctl alone (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})"
-        fi
-    fi
+    zram_apply_sysctl
 
     if systemctl is-enabled earlyoom &>/dev/null 2>&1; then
         log_success_t "earlyoom уже включён" \
@@ -368,5 +335,74 @@ disable_zram() {
         systemctl disable --now zramswap &>/dev/null || true
         log_success_t "zram выключен. swapfile (если есть) продолжает работать" \
 "zram disabled. The swapfile, if any, keeps working"
+    fi
+}
+
+# Блок вынесен из apply_zram отдельно, чтобы его можно было проверить
+# тестом, не поднимая zram и не трогая /proc. Тест — tests/test_sysctl.sh
+zram_apply_sysctl() {
+    local cur_sw cur_vfs
+    cur_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
+    cur_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
+    if [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; then
+        log_success_t "sysctl уже настроен как рекомендуется" \
+"sysctl already matches the recommendation"
+    else
+        log_info_t "Сейчас: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(рекомендуется 80/50)${NC}" \
+"Currently: swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs} ${DIM}(80/50 recommended)${NC}"
+        # Ответ из предзапроса, если он был: в пакетном прогоне ask_yn вопросов
+        # не задаёт, и решать за человека, глядя на текущие значения, — плохая
+        # замена тому, чтобы спросить заранее
+        local want_sysctl=false
+        if [ -n "$SYSCTL_BULK" ]; then
+            [ "$SYSCTL_BULK" = Y ] && want_sysctl=true
+        else
+            # Дефолт «да»: это рекомендация пункта, и на машине, где значения
+            # заводские или уже рекомендованные, спорить не о чем.
+            #
+            # «Нет» ставим, только когда значения НЕ заводские и НЕ
+            # рекомендованные, то есть их кто-то выставлял руками, — и тогда
+            # говорим об этом вслух, а не молча решаем за него.
+            #
+            # Прежняя строка была `[ A ] || [ B ] && default=N` и разбиралась
+            # как (A || B) && C: «нет» выпадало на ЛЮБОМ отклонении хоть одного
+            # значения. Плюс при исходе «да» функция возвращала 1, потому что
+            # последней командой оставался ложный [ ]
+            local sysctl_default=Y
+            if [ "$cur_sw" = '?' ] || [ "$cur_vfs" = '?' ]; then
+                log_warn_t "Не удалось прочитать текущие значения из /proc — по умолчанию не трогаю" \
+"Could not read the current values from /proc — leaving them alone by default"
+                sysctl_default=N
+            elif [ "$cur_sw" != 60 ] && [ "$cur_vfs" != 100 ]; then
+                log_info_t "Значения не заводские — похоже, их настраивали вручную" \
+"These are not the stock values — they look hand-tuned"
+                sysctl_default=N
+            fi
+            ask_yn_t "Применить рекомендованные значения sysctl?" \
+                     "Apply the recommended sysctl values?" "$sysctl_default" && want_sysctl=true
+        fi
+        if [ "$want_sysctl" = true ]; then
+            printf 'vm.swappiness=80\nvm.vfs_cache_pressure=50\n' | write_file /etc/sysctl.d/99-zram.conf
+            sysctl --system >/dev/null 2>&1
+            # Не верим на слово: перечитываем /proc. Раньше здесь безусловно
+            # печаталось «sysctl применён» сразу под строкой со СТАРЫМИ числами —
+            # и это читалось как «рекомендуется, но не сделано». Теперь видно
+            # результат, а если файл кто-то переопределяет — видно и это
+            local new_sw new_vfs
+            new_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
+            new_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
+            if [ "$new_sw" = "80" ] && [ "$new_vfs" = "50" ]; then
+                log_success_t "sysctl применён: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}" \
+"sysctl applied: swappiness ${cur_sw} → ${new_sw}, vfs_cache_pressure ${cur_vfs} → ${new_vfs}"
+            else
+                log_warn_t "sysctl не применился: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}" \
+"sysctl did not take effect: swappiness=${new_sw}, vfs_cache_pressure=${new_vfs}"
+                log_info_t "Что-то перебивает /etc/sysctl.d/99-zram.conf — смотри ${BOLD}sysctl --system${NC}" \
+"Something overrides /etc/sysctl.d/99-zram.conf — check ${BOLD}sysctl --system${NC}"
+            fi
+        else
+            log_info_t "Оставляю sysctl как есть (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})" \
+"Leaving sysctl alone (swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs})"
+        fi
     fi
 }

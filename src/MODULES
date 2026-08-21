@@ -15,6 +15,7 @@ lib/update.sh
 lib/swap.sh
 lib/sshkeys.sh
 lib/wrapper.sh
+lib/bulk.sh
 lib/registry.sh
 lib/profiles.sh
 lib/items/newuser.sh
@@ -35,6 +36,7 @@ lib/layout.sh
 lib/statecache.sh
 lib/ui_menu.sh
 lib/ui_help.sh
+lib/wizard.sh
 lib/audit.sh
 lib/cli.sh
 lib/main.sh

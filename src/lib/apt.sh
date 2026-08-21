@@ -5,7 +5,7 @@
 # Короткие описания — чтобы после установки было видно не только ЧТО приехало,
 # но и зачем оно нужно. Пишем руками по-русски: apt-cache show даёт английский
 # текст на несколько абзацев и вразнобой по стилю, в одну строку он не ложится.
-declare -A PKG_DESC=(
+declare -A PKG_DESC=(   # i18n-ok: английская пара — PKG_DESC_EN ниже
     [micro]="текстовый редактор в терминале, понятнее vim"
     [curl]="скачивание по HTTP из командной строки"
     [wget]="скачивание файлов, умеет докачку и рекурсию"
@@ -25,6 +25,32 @@ declare -A PKG_DESC=(
     [ripgrep]="быстрый поиск по содержимому файлов"
     [zoxide]="«умный» cd, прыгает по часто используемым каталогам"
     [ncdu]="показывает, что именно занимает место на диске"
+    [btop]="монитор процессов и нагрузки, наглядная замена htop"
+)
+
+# Вторая карта, а не «ru|en» в одной строке: PKG_DESC читается ещё и тестом
+# раскладки, и разделитель внутри значения ему пришлось бы разбирать.
+declare -A PKG_DESC_EN=(
+    [micro]="a terminal text editor that makes more sense than vim"
+    [curl]="downloading over HTTP from the command line"
+    [wget]="file downloads, handles resume and recursion"
+    [git]="version control system"
+    [nano]="simple editor, present on almost any server"
+    [unzip]="unpacking zip archives"
+    [htop]="interactive process and load monitor"
+    [bind9-dnsutils]="dig and nslookup — DNS diagnostics"
+    [jq]="parsing and filtering JSON in shell scripts"
+    [software-properties-common]="provides add-apt-repository for PPAs"
+    [ca-certificates]="root certificates, HTTPS does not work without them"
+    [gnupg]="verifying package and repository signatures"
+    [rsync]="syncing files and folders, including over SSH"
+    [eza]="an ls replacement: icons, colours, directory trees"
+    [bat]="a cat replacement with syntax highlighting"
+    [fd-find]="a find replacement — simpler syntax, noticeably faster"
+    [ripgrep]="fast search through file contents"
+    [zoxide]="a smarter cd that jumps to frequently used directories"
+    [ncdu]="shows what exactly is eating your disk space"
+    [btop]="process and load monitor, a much nicer htop"
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -109,7 +135,7 @@ show_pkg_report() {
             # виртуальным. Молчать об этом нельзя
             mark='✗'; color="$RED"
         fi
-        desc="${PKG_DESC[$p]:-}"
+        if [ "$USFC_LANG" = en ]; then desc="${PKG_DESC_EN[$p]:-}"; else desc="${PKG_DESC[$p]:-}"; fi
         truncate_colored "$desc" "$desc_w"; desc="$REPLY_TRUNC"
         pad_title "$p" "$name_w"
         printf "     %b%s%b %s${DIM}%s${NC}\n" "$color" "$mark" "$NC" "$REPLY_PAD" "$desc"
@@ -144,7 +170,7 @@ apt_get() {
     if [ "$USFC_DRY_RUN" = true ]; then
         case "${1:-}" in
             list|show|policy|search|-v|--version) ;;
-            *) printf '  %b[сухой прогон]%b apt-get %s\n' "$DIM" "$NC" "$*"; return 0 ;;
+            *) _dry_say "apt-get $*"; return 0 ;;
         esac
     fi
     apt-get -o DPkg::Lock::Timeout="$APT_LOCK_TIMEOUT" "$@"
@@ -180,7 +206,8 @@ ensure_apt_updated() {
         APT_UPDATED=true
         return 0
     fi
-    run_logged "Обновление списков пакетов apt" apt_get update -qq
+    t "Обновление списков пакетов apt" "Refreshing apt package lists"
+    run_logged "$REPLY_T" apt_get update -qq
     APT_UPDATED=true
     refresh_pkg_cache
 }

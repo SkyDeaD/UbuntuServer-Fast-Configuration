@@ -6,8 +6,8 @@ show_aliases_help() {
     refresh_term_width
     show_header
     t "Алиасы" "Aliases"; local _h="$REPLY_T"
-    t "(usfc — сам при первом запуске; ls/ll/la/lt/cat/catp/scat/fd — пункт «CLI-утилиты»)" \
-      "(usfc is added on first run; ls/ll/la/lt/cat/catp/scat/fd come from the CLI tools item)"
+    t "(usfc — сам при первом запуске; остальные — пункт «CLI-утилиты»)" \
+      "(usfc is added on first run; the rest come from the CLI tools item)"
     echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
     echo ""
 
@@ -18,31 +18,42 @@ show_aliases_help() {
     col3=$(( inner_w - (col1 + 2) - (col2 + 2) - 6 ))
     [ "$col3" -lt 10 ] && col3=10
 
-    local rows=(
-        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)"
-        "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la"
-        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами"
-        "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь"
-        "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера"
-        "catp|batcat|то же, с пейджером (для длинных файлов)"
-        "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root"
-        "fd|fdfind|быстрый поиск файлов, замена find"
-        "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само"
+    # Формат: алиас | реальная команда | описание ru | описание en.
+    # Четвёртое поле, а не отдельный массив под каждый язык: два параллельных
+    # массива пришлось бы держать синхронными руками, и они разъехались бы —
+    # ровно та беда, от которой в 4.0.0 уходили в реестре пунктов
+    local rows=(   # i18n-ok: английская пара — четвёртое поле каждой строки
+        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)|file list with icons (ls replacement)"
+        "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la|detailed list, like ls -la"
+        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами|list including hidden files"
+        "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь|directory tree, 2 levels deep"
+        "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера|file with syntax highlighting, no pager"
+        "catp|batcat|то же, с пейджером (для длинных файлов)|the same, with a pager (for long files)"
+        "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root|cat for files only root can read"
+        "fd|fdfind|быстрый поиск файлов, замена find|fast file search, a find replacement"
+        "htop|btop|монитор процессов, наглядная замена htop|process monitor, a much nicer htop"
+        "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само|opens the menu, .bashrc reloads itself"
     )
 
     box_line "$DIM" '╭' '┬' '╮' "$col1" "$col2" "$col3"
     t "Что делает" "What it does"; local hdr3="$REPLY_T" hdr3_pad h1 h2
     # col3 динамический (зависит от TERM_W) и на узких терминалах может
     # совпасть по длине с заголовком — та же ловушка pad_title(), что и у cmd_t/desc_t
+    # Заголовок обрезаем ТАК ЖЕ, как строки данных. Раньше здесь считался
+    # только паддинг: по-русски «Что делает» ровно 10 символов и в col3 влезало
+    # всегда, а английское «What it does» — 12, и на TERM_W=58 рамка уезжала
+    # на два символа. Экран алиасов был единственным без проверки ширины
+    truncate_colored "$hdr3" "$col3"; hdr3="$REPLY_TRUNC"
     visible_len "$hdr3"; hdr3_pad=$((col3 - REPLY_LEN)); [ "$hdr3_pad" -lt 0 ] && hdr3_pad=0
     t "Алиас" "Alias"; pad_title "$REPLY_T" "$col1";            h1="$REPLY_PAD"
     t "Реальная команда" "Real command"; pad_title "$REPLY_T" "$col2"; h2="$REPLY_PAD"
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
         "$h1" "$h2" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
-    local row alias cmd desc cmd_t desc_t cmd_pad desc_pad a_t
+    local row alias cmd desc desc_en cmd_t desc_t cmd_pad desc_pad a_t
     for row in "${rows[@]}"; do
-        IFS='|' read -r alias cmd desc <<< "$row"
+        IFS='|' read -r alias cmd desc desc_en <<< "$row"
+        [ "$USFC_LANG" = en ] && desc="$desc_en"
         truncate_colored "$cmd" "$col2";  cmd_t="$REPLY_TRUNC"
         truncate_colored "$desc" "$col3"; desc_t="$REPLY_TRUNC"
         # руками, не через pad_title(): та форсирует минимум 1 пробел паддинга,
