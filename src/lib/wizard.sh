@@ -35,8 +35,11 @@ wizard_parse() {
 _wizard_option() {
     local num="$1" name="$2" ru="$3" en="$4"
     t "$ru" "$en"
-    printf '    %b%s%b) %-11s %b%s%b\n' \
-        "$CYAN$BOLD" "$num" "$NC" "$REPLY_T" "$DIM" "${USFC_PROFILES[$name]}" "$NC"
+    # pad_title, а не %-11s: printf добивает по БАЙТАМ, и кириллица в названиях
+    # уезжает — «минимум» это 7 символов и 14 байт
+    pad_title "$REPLY_T" 12
+    printf '    %b%s%b) %s%b%s%b\n' \
+        "$CYAN$BOLD" "$num" "$NC" "$REPLY_PAD" "$DIM" "${USFC_PROFILES[$name]}" "$NC"
 }
 
 usfc_wizard() {
