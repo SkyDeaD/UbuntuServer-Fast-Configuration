@@ -71,10 +71,14 @@ apply_sshhardening() {
     # то есть соврала бы про исправную машину. Пугать таким в режиме, который
     # обещает ничего не менять, нельзя.
     if [ "$USFC_DRY_RUN" = true ]; then
-        _dry_say "ssh-keygen: временный ключ для самопроверки входа"
-        _dry_say "запись /etc/ssh/sshd_config.d/10-hardening.conf"
-        _dry_say "копия /etc/ssh/sshd_config рядом, с меткой времени"
-        _dry_say "systemctl reload ssh + повторная самопроверка входа по ключу"
+        t "ssh-keygen: временный ключ для самопроверки входа" \
+          "ssh-keygen: a temporary key for the login self-check"; _dry_say "$REPLY_T"
+        t "запись /etc/ssh/sshd_config.d/10-hardening.conf" \
+          "writing /etc/ssh/sshd_config.d/10-hardening.conf"; _dry_say "$REPLY_T"
+        t "копия /etc/ssh/sshd_config рядом, с меткой времени" \
+          "a timestamped copy of /etc/ssh/sshd_config next to it"; _dry_say "$REPLY_T"
+        t "systemctl reload ssh и повторная самопроверка входа по ключу" \
+          "systemctl reload ssh and a second key-login self-check"; _dry_say "$REPLY_T"
         log_info_t "Самопроверку входа в сухом прогоне не делаю: она требует настоящего ssh на localhost" \
 "Not running the login self-check in a dry run: it needs a real ssh to localhost"
         return 0

@@ -104,7 +104,9 @@ apply_fastfetch() {
         # curl с -o пишет файл мимо write_file, то есть мимо всего перехвата.
         # На машине, где fastfetch уже стоит, а конфига нет, сухой прогон
         # реально создавал бы ~/.config/fastfetch/config.jsonc
-        _dry_say "curl config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc"
+        t "скачивание config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc" \
+          "downloading config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc"
+        _dry_say "$REPLY_T"
     elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
         chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
         log_success_t "config.jsonc установлен" \
