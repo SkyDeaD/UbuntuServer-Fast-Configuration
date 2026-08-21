@@ -12,6 +12,14 @@
 # а setup.sh в фикстуре — заглушка, печатающая полученные аргументы.
 set -uo pipefail
 
+# install.sh от не-root отказывается работать — это его первая проверка.
+# Без явного отказа тест «проваливался» бы с невнятным списком, как это
+# и случилось на раннере GitHub, где пользователь не root.
+if [ "$(id -u)" -ne 0 ]; then
+    echo "нужен root: install.sh проверяет это первой строкой. Запусти в контейнере" >&2
+    exit 2
+fi
+
 INSTALLER="${1:-install.sh}"
 [ -f "$INSTALLER" ] || { echo "не найден $INSTALLER" >&2; exit 2; }
 INSTALLER="$(cd "$(dirname "$INSTALLER")" && pwd)/$(basename "$INSTALLER")"
