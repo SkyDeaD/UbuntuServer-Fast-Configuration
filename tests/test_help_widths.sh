@@ -31,6 +31,7 @@ render() {
     case "$1" in
         menu) show_menu 2>/dev/null ;;
         help) printf '\n' | show_item_help 2>/dev/null ;;
+        aliases) printf '\n' | show_aliases_help 2>/dev/null ;;
     esac | sed 's/\x1b\[[0-9;]*m//g'
 }
 
@@ -42,7 +43,7 @@ LANGS="${USFC_TEST_LANGS:-ru en}"
 
 # ── 1. ширина рамки ───────────────────────────────────────────────────────────
 for USFC_LANG in $LANGS; do
-for screen in menu help; do
+for screen in menu help aliases; do
     for tw in 58 78 98 118; do
         # shellcheck disable=SC2034  # читается внутри функций отрисовки
         TERM_W=$tw

@@ -56,7 +56,8 @@ apply_basepkgs() {
         # shellcheck disable=SC2086
         snapshot_pkgs $BASE_PKGS
         # shellcheck disable=SC2086
-        run_logged "Базовый набор пакетов" apt_get install -y $BASE_PKGS
+        t "Базовый набор пакетов" "Base package set"
+    run_logged "$REPLY_T" apt_get install -y $BASE_PKGS
         refresh_pkg_cache
         # shellcheck disable=SC2086
         show_pkg_report $BASE_PKGS

@@ -63,7 +63,8 @@ apply_fastfetch() {
             # о ту же блокировку dpkg. Добавляем только репозиторий, а списки
             # обновляем своим apt_get, у которого таймаут уже есть.
             run_logged "PPA fastfetch" add-apt-repository -y -n ppa:zhangsongcui3371/fastfetch
-            run_logged "Списки пакетов PPA" apt_get update -qq
+            t "Списки пакетов PPA" "PPA package lists"
+    run_logged "$REPLY_T" apt_get update -qq
             if run_logged "fastfetch" apt_get install -y fastfetch; then
                 refresh_pkg_cache
                 log_info_t "Версия: $(fastfetch --version 2>/dev/null)" \
@@ -99,6 +100,13 @@ apply_fastfetch() {
     if [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
         log_info_t "config.jsonc уже есть" \
 "config.jsonc is already there"
+    elif [ "$USFC_DRY_RUN" = true ]; then
+        # curl с -o пишет файл мимо write_file, то есть мимо всего перехвата.
+        # На машине, где fastfetch уже стоит, а конфига нет, сухой прогон
+        # реально создавал бы ~/.config/fastfetch/config.jsonc
+        t "скачивание config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc" \
+          "downloading config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc"
+        _dry_say "$REPLY_T"
     elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
         chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
         log_success_t "config.jsonc установлен" \

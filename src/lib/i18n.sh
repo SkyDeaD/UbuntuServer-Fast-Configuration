@@ -52,10 +52,14 @@ esac
 # Был ли выбор сделан осознанно — от этого зависит, спрашивать ли при старте
 usfc_lang_saved() { [ -s "$USFC_LANG_FILE" ]; }
 
+# Есть ли кому отвечать. Условие спрашивается и вопросом о языке, и мастером
+# первого запуска; разъехавшись, они дали бы зависание на чтении с /dev/tty
+usfc_interactive() { [ -t 0 ] && [ -e /dev/tty ]; }
+
 usfc_lang_save() {
     [ -n "${USFC_SOURCE_ONLY:-}" ] && return 0
     printf '%s\n' "$1" > "$USFC_LANG_FILE" 2>/dev/null || {
-        echo "  Не удалось сохранить выбор языка в ${USFC_LANG_FILE}" >&2
+        echo "  Не удалось сохранить выбор языка в ${USFC_LANG_FILE}" >&2  # i18n-ok: пара строкой ниже
         echo "  Could not save the language choice to ${USFC_LANG_FILE}" >&2
         return 1
     }
@@ -79,8 +83,10 @@ _usfc_lang_options() {
         esac
     fi
     echo ""
-    echo -e "  ${BOLD}Язык интерфейса${NC}  ${DIM}/${NC}  ${BOLD}Interface language${NC}"
-    echo -e "    ${CYAN}${BOLD}1${NC}) Русский${cur_ru}"
+    # i18n-ok: список языков намеренно двуязычен — на этом шаге ещё неизвестно,
+    # какой из них человек понимает
+    echo -e "  ${BOLD}Язык интерфейса${NC}  ${DIM}/${NC}  ${BOLD}Interface language${NC}"  # i18n-ok
+    echo -e "    ${CYAN}${BOLD}1${NC}) Русский${cur_ru}"   # i18n-ok: название языка на нём самом
     echo -e "    ${CYAN}${BOLD}2${NC}) English${cur_en}"
     echo ""
 }
@@ -89,7 +95,7 @@ _usfc_lang_options() {
 REPLY_LANG=''
 _usfc_lang_parse() {
     case "$1" in
-        1|r|R|ru|RU|Ru|рус|русский|Русский) REPLY_LANG=ru ;;
+        1|r|R|ru|RU|Ru|рус|русский|Русский) REPLY_LANG=ru ;;  # i18n-ok: разбор ВВОДА, не вывод
         2|e|E|en|EN|En|english|English)     REPLY_LANG=en ;;
         *)                                  REPLY_LANG='' ;;
     esac
@@ -100,7 +106,7 @@ _usfc_lang_parse() {
 usfc_ask_language() {
     _usfc_lang_options false
     local choice
-    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[1]:${NC} "
+    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[1]:${NC} "   # i18n-ok: двуязычный по замыслу
     read -r choice </dev/tty
     _usfc_lang_parse "$choice"
     USFC_LANG="${REPLY_LANG:-ru}"
@@ -128,7 +134,7 @@ usfc_switch_language() {
     _usfc_lang_options true
     local choice
     t "Enter — отмена" "Enter to cancel"
-    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[${REPLY_T}]:${NC} "
+    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[${REPLY_T}]:${NC} "   # i18n-ok: двуязычный по замыслу
     read -r choice </dev/tty
 
     if [ -z "$choice" ]; then

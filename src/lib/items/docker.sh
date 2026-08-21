@@ -111,20 +111,24 @@ apply_docker() {
     if ! ask_yn_t "Установить Docker + Docker Compose (официальный репозиторий)?" "Install Docker + Docker Compose (official repository)?"; then return; fi
     # спрашиваем ДО установки — ответ решает, дать ли postinst поднять демон
     local autostart=false
-    resolve_autostart DOCKER_AUTOSTART "Запустить Docker и включить автозапуск?" && autostart=true
+    resolve_autostart_t DOCKER_AUTOSTART "Запустить Docker и включить автозапуск?" \
+        "Start Docker and enable autostart?" && autostart=true
 
-    ensure_pkg "Зависимости Docker" ca-certificates curl || return 1
+    t "Зависимости Docker" "Docker prerequisites"
+    ensure_pkg "$REPLY_T" ca-certificates curl || return 1
     install -m 0755 -d /etc/apt/keyrings
     # У Docker отдельные ветки репозитория под каждый дистрибутив, и путь
     # различается только идентификатором: /linux/ubuntu против /linux/debian.
     # Проверено — обе отдают пакеты и для noble, и для bookworm с trixie
     local docker_repo="https://download.docker.com/linux/${OS_ID}"
-    run_logged "GPG-ключ Docker" \
+    t "GPG-ключ Docker" "Docker GPG key"
+    run_logged "$REPLY_T" \
         curl -fsSL "${docker_repo}/gpg" -o /etc/apt/keyrings/docker.asc || return 1
     chmod a+r /etc/apt/keyrings/docker.asc
     local codename="$OS_CODENAME"
     docker_write_repo "$docker_repo" "$codename"
-    run_logged "Списки пакетов Docker" apt_get update -qq
+    t "Списки пакетов Docker" "Docker package lists"
+    run_logged "$REPLY_T" apt_get update -qq
     # grep БЕЗ -q — иначе SIGPIPE и вечно ложное условие, см. блок про ловушку
     # в начале файла. Здесь это и вскрылось: фолбэк срабатывал на каждой машине
     if ! apt-cache policy docker-ce-cli 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
@@ -141,7 +145,8 @@ apply_docker() {
         log_warn_t "У Docker пока нет пакетов под '${codename}' — переключаюсь на noble (24.04, совместимо)" \
 "Docker has no packages for '${codename}' yet — switching to noble (24.04, compatible)"
         docker_write_repo "$docker_repo" noble
-        run_logged "Списки пакетов Docker (noble)" apt_get update -qq
+        t "Списки пакетов Docker (noble)" "Docker package lists (noble)"
+        run_logged "$REPLY_T" apt_get update -qq
     fi
     with_no_service_start run_logged "Docker CE + Compose" \
         apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1

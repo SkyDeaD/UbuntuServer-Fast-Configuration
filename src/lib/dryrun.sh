@@ -22,13 +22,17 @@
 # Полноту этого списка проверяет не глаз, а тест: tests/test_dryrun.sh
 # сверяет слепок /etc, dpkg и юнитов systemd до и после `--apply all --dry-run`.
 
-_dry_say() { printf '  %b[сухой прогон]%b %s\n' "$DIM" "$NC" "$*"; }
+# Метка сухого прогона живёт в ОДНОМ месте. Раньше тот же printf стоял ещё
+# в log.sh и apt.sh — три копии одной строки, то есть три места, где перевод
+# однажды разъедется
+_dry_say() { t "[сухой прогон]" "[dry run]"; printf '  %b%s%b %s\n' "$DIM" "$REPLY_T" "$NC" "$*"; }
 
 # write_file <путь> — записать stdin в файл. Перенаправления (`> /etc/...`)
 # функцией не перехватить, поэтому места записи в системные файлы зовут это.
 write_file() {
     if [ "$USFC_DRY_RUN" = true ]; then
-        _dry_say "запись в ${1}"
+        t "запись в" "writing to"
+        _dry_say "${REPLY_T} ${1}"
         cat >/dev/null
         return 0
     fi
@@ -41,7 +45,8 @@ write_file() {
 # append_file <путь> — то же, но дописать в конец
 append_file() {
     if [ "$USFC_DRY_RUN" = true ]; then
-        _dry_say "дозапись в ${1}"
+        t "дозапись в" "appending to"
+        _dry_say "${REPLY_T} ${1}"
         cat >/dev/null
         return 0
     fi
@@ -73,6 +78,16 @@ dry_run_enable() {
     # modinfo рядом не подменяем: он только ищет файл модуля и ничего не делает
     modprobe() { _dry_say "modprobe $*"; }
     add-apt-repository() { _dry_say "add-apt-repository $*"; }
+    # Эти четыре нашлись, когда предпросмотр пункта сделал достижимым SSH
+    # hardening: `--apply all --dry-run` его отфильтровывает, поэтому дыра
+    # не всплывала. А там `cp /etc/ssh/sshd_config .bak.$(date +%s)` — то есть
+    # сухой прогон засорял /etc/ssh копией на каждый заход, — и `mv` поверх
+    # authorized_keys. Сухой прогон, который что-то меняет, хуже, чем его
+    # отсутствие: ему верят (см. шапку файла)
+    cp()         { _dry_say "cp $*"; }
+    mv()         { _dry_say "mv $*"; }
+    ssh-keygen() { _dry_say "ssh-keygen $*"; }
+    visudo()     { _dry_say "visudo $*"; }
 
     # rm не трогаем: он в основном убирает временные файлы, и запрет
     # оставлял бы мусор. В системные пути rm тут не ходит
