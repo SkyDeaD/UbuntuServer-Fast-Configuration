@@ -7,6 +7,21 @@ Every notable change to this project is documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **A full flag reference in the README** — in both languages, grouped by
+  purpose: installer flags, mode, modifiers, what to put in `--apply`, answer
+  file keys, exit codes, environment variables, and ready-made commands for
+  typical jobs. Putting together the line you need no longer means reading
+  `--help` and assembling flags in your head.
+
+  Plus `tests/test_flags_doc.sh`: the reference is checked against the code in
+  both directions and in both languages. Documentation lies silently — add a
+  flag and forget to describe it, remove one and forget to strike it out; no
+  run of the script would ever notice.
+
 ## [4.2.0] — 2026-08-21
 
 The one-line install finally accepts arguments, sysctl stopped silently not
