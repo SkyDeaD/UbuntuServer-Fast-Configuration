@@ -7,6 +7,64 @@ Every notable change to this project is documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [semantic versioning](https://semver.org/).
 
+## [4.2.0] — 2026-08-21
+
+The one-line install finally accepts arguments, sysctl stopped silently not
+applying, the interface stopped leaking Russian into English, and four new
+things arrived: btop, a first-run wizard, item preview, and a machine-readable
+audit.
+
+### Added
+
+- **Installing with arguments.** `curl … | sudo bash -s -- --apply web` now
+  installs and applies in one go, without opening the menu, and needs no
+  terminal. This used to be impossible: the installer did `exit 2` on any
+  unknown flag, and the final `exec setup.sh </dev/tty` forwarded nothing and
+  demanded a controlling terminal — under cloud-init it failed with `No such
+  device or address`, so the install ended in an error on its last step even
+  though the files were already in place. The installer keeps only `--branch`
+  and `--help` for itself.
+- **First-run wizard.** One question — "what is this server for?" — instead of
+  fourteen items, and the answer turns into a ready-made profile. You can
+  decline at any point; every outcome leads to the regular menu.
+- **The `V` key — item preview.** Shows what an item would do, changing
+  nothing. Previously you had to quit and restart with `--dry-run`.
+- **`usfc --audit --json`** — the same audit, machine-readable, for monitoring,
+  Ansible and cron. Every finding carries a stable, language-independent `id`.
+- **btop** in the CLI tool set, plus an `htop='btop'` alias. htop stays
+  installed: the alias merely shadows it.
+
+### Fixed
+
+- **sysctl for zram was not applied during a batch run.** The line
+  `[ "$cur_sw" != "60" ] || [ "$cur_vfs" != "100" ] && sysctl_default=N`
+  parses as `(A || B) && C`, so "yes" only came up on an untouched machine with
+  exactly 60/100 — and in batch mode `ask_yn` with a "no" default silently
+  returns no without showing the question. The answer is now asked up front,
+  together with the zram percentage and the swap size.
+- **Russian text leaked into the English interface** — 68 places: "applied N of
+  14" in the header, uptime units, "[dry run]", "failed/done/skipped" in the
+  summary, "waiting for the dpkg lock", "N package(s)", all 19 package
+  descriptions, the entire alias table on screen `H`. Closed by a guard,
+  `tests/i18n_scan.py`: a source line with Cyrillic outside a comment must be
+  a call of the `t()` family with two string arguments.
+- **The dry run did not intercept `cp`, `mv` and `ssh-keygen`.** The SSH
+  hardening item runs `cp /etc/ssh/sshd_config .bak.$(date +%s)`, so a dry run
+  would litter `/etc/ssh` with a copy on every pass. It never surfaced because
+  `--apply all --dry-run` filters that item out.
+- **A newly added alias never reached already-configured machines**: the CLI
+  item bailed out on the mere presence of the block marker in `~/.bashrc` —
+  silently, while reporting success. The block now carries a version number.
+- **The column header on screen `H` was not truncated**, and the English
+  `What it does` broke the frame on a narrow terminal.
+- **`-y/--yes` was lying**: declared as general, read in exactly one place. It
+  now works only together with `--apply` and only on the questions of the items
+  being applied — it cannot be global, since 24 of the 62 questions have a
+  protective "no" default.
+- The audit printed a second finding, "Details: systemctl --failed", and
+  immediately decremented the counter — in JSON that would have produced a
+  phantom record.
+
 ## [4.1.0] — 2026-08-11
 
 zram that silently did not work on cloud images, an honest uninstall, and an
@@ -431,6 +489,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[4.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v3.0.1...v4.0.0
