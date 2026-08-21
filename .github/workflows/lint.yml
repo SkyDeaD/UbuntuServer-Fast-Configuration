@@ -136,6 +136,26 @@ jobs:
           # между ячейками — ровно это и ловится здесь
           bash tests/test_help_widths.sh src/setup.sh
 
+      - name: Мастер первого запуска
+        run: |
+          # Разбор ответа вынесен отдельной функцией ровно ради этого теста:
+          # интерактив для проверки не нужен
+          bash tests/test_wizard.sh src/setup.sh
+          # и мастер не должен всплывать там, где отвечать некому
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 bash -c '
+            mkdir -p /opt/vps-setup && cp -r /w/src/. /opt/vps-setup/
+            chmod +x /opt/vps-setup/setup.sh
+            ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
+            rm -f /opt/vps-setup/lang
+            for c in "--list" "--audit" "--apply web --dry-run"; do
+              case "$(usfc $c 2>&1)" in
+                *"Для чего этот сервер"*)
+                  echo "мастер всплыл при usfc $c" >&2; exit 1 ;;
+              esac
+            done
+            echo "мастер не мешает неинтерактивным режимам"
+          '
+
       - name: Рекомендованные sysctl под zram
         run: |
           # Жалоба была ровно на это: при массовом применении настройки тихо

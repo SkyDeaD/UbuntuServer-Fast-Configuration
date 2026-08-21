@@ -157,3 +157,34 @@ usfc_check_profile_names() {
     done
     return "$bad"
 }
+
+# filter_pending <номера...> — что из них реально надо применять.
+# Раскладывает по трём массивам: REPLY_PENDING, REPLY_ALREADY, REPLY_SKIPPED.
+#
+# Вынесено из run_noninteractive, потому что тот же отсев нужен мастеру первого
+# запуска. Второй экземпляр этой логики означал бы, что мастер однажды начнёт
+# выключать уже применённое — ровно тот баг, который чинили в 4.0.0.
+REPLY_PENDING=()
+REPLY_ALREADY=()
+REPLY_SKIPPED=()
+filter_pending() {
+    REPLY_PENDING=(); REPLY_ALREADY=(); REPLY_SKIPPED=()
+    local n id
+    for n in "$@"; do
+        id="${ITEM_IDS[$((n - 1))]}"
+        # SSH hardening умеет закрыть доступ к серверу и потому всегда требует
+        # явного подтверждения. Молча пропускать его тоже нельзя — скажем прямо
+        if [ "$id" = "sshhardening" ]; then
+            REPLY_SKIPPED+=("$id")
+            continue
+        fi
+        # Уже применённое пропускаем. Это не оптимизация, а вопрос смысла:
+        # в меню повторный выбор ⇄-пункта означает «переключить», и без этой
+        # проверки автоматический прогон ВЫКЛЮЧАЛ бы то, что просили включить
+        if item_applied "$id"; then
+            REPLY_ALREADY+=("$id")
+            continue
+        fi
+        REPLY_PENDING+=("$n")
+    done
+}

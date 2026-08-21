@@ -43,27 +43,11 @@ reset_bulk_answers() {
 run_noninteractive() {
     resolve_items "$USFC_APPLY_SPEC" || return 2
 
-    local -a nums=() skipped=() already=()
-    local n id
-    for n in "${REPLY_ITEM_NUMS[@]}"; do
-        id="${ITEM_IDS[$((n - 1))]}"
-        # SSH hardening умеет закрыть доступ к серверу и потому всегда требовал
-        # явного подтверждения. Молча пропускать его тоже нельзя — скажем прямо
-        if [ "$id" = "sshhardening" ]; then
-            skipped+=("$id")
-            continue
-        fi
-        # Уже применённое пропускаем. Это не оптимизация, а вопрос смысла:
-        # в меню повторный выбор ⇄-пункта означает «переключить», и без этой
-        # проверки `--apply` из cloud-init ВЫКЛЮЧАЛ бы то, что просили включить.
-        # Заодно повторный запуск становится честным no-op — как и положено
-        # в провижининге
-        if item_applied "$id"; then
-            already+=("$id")
-            continue
-        fi
-        nums+=("$n")
-    done
+    # Отсев общий с мастером первого запуска — см. filter_pending в profiles.sh
+    filter_pending "${REPLY_ITEM_NUMS[@]}"
+    local -a nums=("${REPLY_PENDING[@]+"${REPLY_PENDING[@]}"}")
+    local -a skipped=("${REPLY_SKIPPED[@]+"${REPLY_SKIPPED[@]}"}")
+    local -a already=("${REPLY_ALREADY[@]+"${REPLY_ALREADY[@]}"}")
 
     echo ""
     if [ "$USFC_DRY_RUN" = true ]; then
@@ -123,9 +107,14 @@ main() {
     # сохранён, задан флагом или нас позвали неинтерактивно (cloud-init,
     # Ansible, --apply), вопрос был бы либо навязчивым, либо вовсе некому
     # отвечать — и скрипт завис бы на чтении с /dev/tty
+    # Признак первого запуска снимаем ДО вопроса о языке: usfc_ask_language
+    # сохраняет выбор, и после него «первого запуска» уже не существует
+    local first_run=false
+    usfc_lang_saved || first_run=true
+
     if ! usfc_lang_saved && [ "$USFC_LANG_EXPLICIT" = false ] \
        && [ -z "$USFC_APPLY_SPEC" ] && [ -z "$USFC_ACTION" ] \
-       && [ "$USFC_LIST_ONLY" = false ] && [ -t 0 ] && [ -e /dev/tty ]; then
+       && [ "$USFC_LIST_ONLY" = false ] && usfc_interactive; then
         usfc_ask_language
     fi
 
@@ -199,6 +188,18 @@ main() {
 "Fine. Item 1 in the menu is available at any time."
         fi
         pause
+    fi
+
+    # Мастер — ПОСЛЕ проверки обновлений и блока про голого root: статусы уже
+    # посчитаны, а TARGET_USER уже переключён, если пользователя создавали.
+    # Все неинтерактивные ветки (--list, --audit, --apply, --config) вышли
+    # раньше по exit, поэтому отдельных гейтов здесь не нужно.
+    if [ "$first_run" = true ] && usfc_interactive; then
+        usfc_wizard
+        # Флаг --lang на первом запуске пропускает вопрос о языке, и файл выбора
+        # так и не появляется — мастер тогда всплывал бы каждый раз. Знакомство
+        # состоялось, язык известен: запоминаем
+        usfc_lang_saved || usfc_lang_save "$USFC_LANG"
     fi
 
     while true; do
@@ -299,105 +300,7 @@ main() {
 "Not yet applied from your selection: ${pending[*]} (${#pending[@]})"
                         log_info_t "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу" \
 "Each item runs with its own defaults, with no questions along the way"
-
-                        # Всё, что нельзя молча задефолтить, спрашиваем ЗДЕСЬ — до
-                        # BULK_MODE=true, пока ask_yn/ask_value ещё интерактивны.
-                        # Сверяемся по id, а не по номеру пункта: номера меняются при
-                        # добавлении пунктов, id — нет.
-                        local pid
-                        for pid in "${pending_ids[@]}"; do
-                            case "$pid" in
-                                zram)
-                                    read_swap_state
-                                    if ! { [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" = "100" ]; }; then
-                                        echo ""
-                                        log_info_t "zram — сжатая память вместо свопа на диске: быстрее и не треплет SSD." \
-"zram — compressed memory instead of on-disk swap: faster, and it spares the SSD."
-                                        log_info_t "75% — разумный дефолт, менять обычно не нужно" \
-"75% is a sensible default and rarely needs changing"
-                                        ZRAM_BULK_PERCENT="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" 75)"
-                                    fi
-                                    if [ "$SWAP_ACTIVE" != true ]; then
-                                        echo ""
-                                        log_info_t "Своп-файл — запас на диске на случай, если zram кончится" \
-"A swap file is the on-disk reserve for when zram runs out"
-                                        SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$(suggest_swap_mb)")"
-                                    elif [ "$SWAP_TYPE" = "file" ]; then
-                                        # своп есть, но размер мог разъехаться с рекомендацией —
-                                        # спрашиваем ЗДЕСЬ, пока ask_value ещё интерактивна
-                                        local sw_want
-                                        sw_want="$(suggest_swap_mb "$SWAP_SIZE_MB")"
-                                        if swap_needs_resize "$SWAP_SIZE_MB" "$sw_want"; then
-                                            log_info_t "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ" \
-"Swap ${SWAP_PATH}: currently ${SWAP_SIZE_MB} MB, recommended ${sw_want} MB"
-                                            SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$sw_want")"
-                                        fi
-                                    fi
-                                    # sysctl — такая же рекомендация пункта, как
-                                    # процент zram, и спрашивать её надо здесь же.
-                                    # В пакетном прогоне ask_yn вопросов не задаёт,
-                                    # а прежний дефолт вычислялся из текущих
-                                    # значений и выпадал в «нет» на любой машине,
-                                    # где их хоть немного трогали, — рекомендация
-                                    # тихо не применялась
-                                    local cur_sw cur_vfs
-                                    cur_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
-                                    cur_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
-                                    if ! { [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; }; then
-                                        echo ""
-                                        log_info_t "Сейчас swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. Под zram рекомендуются 80 и 50: своп быстрый, и отдавать в него страницы охотнее выгодно" \
-"Currently swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. With zram 80 and 50 are recommended: swap is fast here, so paging out more eagerly pays off"
-                                        if ask_yn_t "Применить рекомендованные значения sysctl?" \
-                                                    "Apply the recommended sysctl values?"; then
-                                            SYSCTL_BULK=Y
-                                        else
-                                            SYSCTL_BULK=N
-                                        fi
-                                    fi
-                                    ;;
-                                nginx)
-                                    echo ""
-                                    log_info_t "nginx — веб-сервер и реверс-прокси. Если сайты пока не настроены," \
-"nginx is a web server and reverse proxy. If no sites are configured yet,"
-                                    log_info_t "поднимать его не обязательно — включишь потом пунктом $(item_number nginx) в меню" \
-"there is no need to start it — you can enable it later via menu item $(item_number nginx)"
-                                    # shellcheck disable=SC2034  # читается косвенно через resolve_autostart
-                                    ask_yn_t "Запускать nginx после установки (и включать автозапуск)?" "Start nginx after installing (and enable autostart)?" N \
-                                        && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
-                                    ;;
-                                docker)
-                                    echo ""
-                                    log_info_t "Docker — запуск приложений в контейнерах. Если сейчас не нужен," \
-"Docker runs applications in containers. If you do not need it right now,"
-                                    log_info_t "можно не поднимать — включишь потом пунктом $(item_number docker) в меню" \
-"you can leave it down — enable it later via menu item $(item_number docker)"
-                                    # shellcheck disable=SC2034  # читается косвенно через resolve_autostart
-                                    ask_yn_t "Запускать Docker после установки (и включать автозапуск)?" "Start Docker after installing (and enable autostart)?" N \
-                                        && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
-                                    ;;
-                                certbot)
-                                    # В BULK_MODE вопрос внутри apply_certbot молча
-                                    # ушёл бы в дефолт N, и плагин не поставился бы
-                                    # вовсе — спрашиваем здесь, вместе с токеном
-                                    if ! pkg_installed python3-certbot-dns-cloudflare; then
-                                        echo ""
-                                        log_info_t "Плагин Cloudflare нужен только для wildcard-сертификатов (*.example.com)." \
-"The Cloudflare plugin is only needed for wildcard certificates (*.example.com)."
-                                        log_info_t "Для обычных сертификатов хватает плагина nginx, который поставится сам" \
-"Ordinary certificates only need the nginx plugin, which is installed automatically"
-                                        if ask_yn_t "Установить плагин Cloudflare?" "Install the Cloudflare plugin?" N; then
-                                            CERTBOT_CF_BULK=Y
-                                            log_info_t "Токену нужны права Zone:DNS:Edit. Без него плагин работать не будет" \
-"The token needs Zone:DNS:Edit. Without it the plugin will not work"
-                                            ask_cf_token && CF_TOKEN_BULK="$REPLY_CF_TOKEN"
-                                            REPLY_CF_TOKEN=""
-                                        else
-                                            CERTBOT_CF_BULK=N
-                                        fi
-                                    fi
-                                    ;;
-                            esac
-                        done
+                        preask_bulk_answers "${pending_ids[@]}"
 
                         echo ""
                         if ask_yn_t "Применить эти ${#pending[@]} пунктов сейчас?" "Apply these ${#pending[@]} items now?"; then
