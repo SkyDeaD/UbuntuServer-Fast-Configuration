@@ -73,6 +73,10 @@ jobs:
             # python3 нужен tests/test_audit.sh: он разбирает и проверяет JSON
             apt-get update -qq >/dev/null 2>&1
             apt-get install -y -qq python3 >/dev/null 2>&1
+            # ...и сразу чистим списки: ниже в этом же шаге стоит проверка
+            # «сухой прогон не трогал /var/lib/apt/lists», а наша установка
+            # их наполнила бы и провалила её не по делу
+            rm -rf /var/lib/apt/lists/*
             mkdir -p /opt/vps-setup && cp -r /w/src/. /opt/vps-setup/
             chmod +x /opt/vps-setup/setup.sh
             ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
