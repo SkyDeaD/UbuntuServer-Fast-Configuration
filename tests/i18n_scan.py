@@ -23,7 +23,7 @@ import re, sys
 
 CYR      = re.compile(r'[А-Яа-яЁё]')
 CYR_WORD = re.compile(r'[А-Яа-яЁё][А-Яа-яЁё-]*')
-T_CALL   = re.compile(r'\b(?:t|st|log_(?:info|success|warn|error)_t|ask_yn_t|ask_value_t|resolve_autostart_t'
+T_CALL   = re.compile(r'\b(?:t|st|log_(?:info|success|warn|error)_t|ask_yn_t|ask_value_t|resolve_autostart_t|_wizard_option'
                       r'|_audit_t|_audit_section_t|usfc_item|usfc_item_full|usfc_item_rollback)\b')
 TWO_STR  = re.compile(r'"(?:[^"\\]|\\.)*"\s*"(?:[^"\\]|\\.)*"', re.S)
 # внутренние ключи разделов: это не пользовательский текст, а имена веток case
