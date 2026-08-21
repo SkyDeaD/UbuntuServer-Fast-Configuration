@@ -129,6 +129,7 @@ load_config() {
             DOCKER_AUTOSTART)  DOCKER_AUTOSTART="$val" ;;
             ZRAM_PERCENT)      ZRAM_BULK_PERCENT="$val" ;;
             SWAP_MB)           SWAP_BULK_MB="$val" ;;
+            SYSCTL)            SYSCTL_BULK="$val" ;;
             CERTBOT_CF)        CERTBOT_CF_BULK="$val" ;;
             CF_TOKEN)          CF_TOKEN_BULK="$val" ;;
             *)
