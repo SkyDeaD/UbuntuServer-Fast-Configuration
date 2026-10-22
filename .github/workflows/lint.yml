@@ -193,6 +193,13 @@ jobs:
           # заглушками этого не увидеть
           bash tests/test_uninstall.sh src/setup.sh
 
+      - name: Чужие drop-in'ы sshd
+        run: |
+          # sshd берёт ПЕРВОЕ значение ключа. Файл провайдера 00-*.conf с
+          # PasswordAuthentication yes молча перебивал hardening — тест
+          # проверяет порядок чтения и поиск таких строк на настоящих файлах
+          bash tests/test_ssh_dropins.sh src/setup.sh
+
       - name: Справочник флагов сходится с кодом
         run: |
           # Документация врёт молча: добавил флаг — забыл описать, убрал —

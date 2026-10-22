@@ -271,6 +271,23 @@ audit_ssh() {
             _audit_t ssh.root_login warn "Root-логин разрешён (${rl:-?})" "Root login is allowed (${rl:-?})" "Пункт $(item_number sshhardening)" "Item $(item_number sshhardening)" ;;
     esac
 
+    # Пароль «выключен», но при UsePAM yes он по-прежнему принимается через
+    # keyboard-interactive — так выглядит половина «закрытых» серверов
+    local kbd pam
+    kbd="$(printf '%s' "$out" | awk '/^kbdinteractiveauthentication /{print $2}')"
+    pam="$(printf '%s' "$out" | awk '/^usepam /{print $2}')"
+    if [ "$pa" = "no" ] && [ "$kbd" = "yes" ] && [ "$pam" = "yes" ]; then
+        _audit_t ssh.kbd_interactive warn "Пароль принимается через keyboard-interactive" "Passwords are accepted via keyboard-interactive" "KbdInteractiveAuthentication no. Пункт $(item_number sshhardening)" "KbdInteractiveAuthentication no. Item $(item_number sshhardening)"
+    fi
+
+    # Кто перебьёт наш drop-in, если его применить (или уже перебивает)
+    sshd_conflicts
+    if [ "${#REPLY_SSHD_CONFLICTS[@]}" -gt 0 ]; then
+        local first="${REPLY_SSHD_CONFLICTS[0]}" f n k v
+        IFS=$'\t' read -r f n k v <<< "$first"
+        _audit_t ssh.dropin_order warn "Чужой конфиг перебивает hardening: ${f}:${n} (${k} ${v})" "A foreign config overrides hardening: ${f}:${n} (${k} ${v})" "Пункт $(item_number sshhardening) найдёт и закомментирует" "Item $(item_number sshhardening) finds and comments it out"
+    fi
+
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         _audit_t ssh.fail2ban ok "fail2ban работает" "fail2ban is running"
     else
