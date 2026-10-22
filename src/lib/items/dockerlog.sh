@@ -46,6 +46,18 @@ except Exception:
     fi
 }
 
+# Вопросы пакетного режима (см. lib/bulk.sh)
+preask_dockerlog() {
+    # перезапуск имеет смысл, только если Docker уже работает: свежий
+    # Docker из этого же прогона прочитает daemon.json при старте сам
+    service_is_up docker || return 0
+    echo ""
+    log_info_t "Лимит логов Docker применится после перезапуска демона — а с ним перезапустятся ВСЕ контейнеры" \
+"The Docker log limit takes effect after the daemon restarts — and EVERY container restarts with it"
+    ask_yn_t "Перезапустить Docker сразу после настройки?" "Restart Docker right after configuring it?" N \
+        && DOCKER_RESTART_BULK=Y || DOCKER_RESTART_BULK=N
+}
+
 apply_dockerlog() {
     if ! command -v docker &>/dev/null; then
         log_info_t "Docker не установлен — сначала установи Docker (пункт $(item_number docker))" \
@@ -56,7 +68,12 @@ apply_dockerlog() {
 "daemon.json already exists and will be extended, not overwritten"
     if ! ask_yn_t "Ограничить логи контейнеров (max-size=10m, max-file=3)?" "Cap container logs (max-size=10m, max-file=3)?"; then return; fi
     mkdir -p /etc/docker
-    python3 - /etc/docker/daemon.json <<'PYEOF'
+    # JSON собирает python, а пишет write_file: раньше python писал файл сам,
+    # мимо снимка для отката и мимо сухого прогона. Битый daemon.json не
+    # затираем молча пустым — Docker с ним всё равно не стартует, и чинить
+    # его надо руками, зная, что там было
+    local merged
+    if ! merged="$(python3 - /etc/docker/daemon.json <<'PYEOF'
 import json, sys, os
 path = sys.argv[1]
 data = {}
@@ -64,16 +81,31 @@ if os.path.exists(path):
     try:
         data = json.load(open(path))
     except Exception:
-        data = {}
+        sys.exit(3)
 data["log-driver"] = "json-file"
 data.setdefault("log-opts", {})
 data["log-opts"]["max-size"] = "10m"
 data["log-opts"]["max-file"] = "3"
-json.dump(data, open(path, "w"), indent=2)
+print(json.dumps(data, indent=2))
 PYEOF
+)"; then
+        log_error_t "/etc/docker/daemon.json — не JSON, не трогаю. Поправь его руками и повтори" \
+"/etc/docker/daemon.json is not valid JSON — leaving it alone. Fix it by hand and retry"
+        return 1
+    fi
+    printf '%s\n' "$merged" | write_file /etc/docker/daemon.json
     log_success_t "daemon.json обновлён" \
 "daemon.json updated"
-    if ask_yn_t "Перезапустить Docker сейчас? ВСЕ контейнеры перезапустятся вместе с демоном" "Restart Docker now? EVERY container restarts together with the daemon" N; then
+    # Перезапуск Docker роняет ВСЕ контейнеры, поэтому в пакетном режиме он
+    # только по явному ответу — и --yes его не включает
+    local restart=false
+    if [ "$BULK_MODE" = true ]; then
+        [ "$DOCKER_RESTART_BULK" = Y ] && restart=true
+    # bulk-ok: пакетная ветка — строкой выше
+    elif ask_yn_t "Перезапустить Docker сейчас? ВСЕ контейнеры перезапустятся вместе с демоном" "Restart Docker now? EVERY container restarts together with the daemon" N; then
+        restart=true
+    fi
+    if [ "$restart" = true ]; then
         systemctl restart docker && log_success_t "Docker перезапущен" \
 "Docker restarted"
     else
@@ -86,18 +118,25 @@ disable_dockerlog() {
     if [ ! -f /etc/docker/daemon.json ]; then log_info_t "daemon.json нет — нечего отключать" \
 "There is no daemon.json — nothing to turn off"; return; fi
     if ask_yn_t "Убрать лимиты логов из daemon.json?" "Remove the log limits from daemon.json?" N; then
-        python3 - /etc/docker/daemon.json <<'PYEOF'
+        local stripped
+        if ! stripped="$(python3 - /etc/docker/daemon.json <<'PYEOF'
 import json, sys
 path = sys.argv[1]
 try:
     data = json.load(open(path))
 except Exception:
-    data = {}
+    sys.exit(3)
 data.pop("log-opts", None)
 if data.get("log-driver") == "json-file":
     data.pop("log-driver", None)
-json.dump(data, open(path, "w"), indent=2)
+print(json.dumps(data, indent=2))
 PYEOF
+)"; then
+            log_error_t "/etc/docker/daemon.json — не JSON, не трогаю" \
+"/etc/docker/daemon.json is not valid JSON — leaving it alone"
+            return 1
+        fi
+        printf '%s\n' "$stripped" | write_file /etc/docker/daemon.json
         log_success_t "Лимиты убраны из daemon.json" \
 "Limits removed from daemon.json"
         ask_yn_t "Перезапустить Docker сейчас?" "Restart Docker now?" N && { systemctl restart docker && log_success_t "Docker перезапущен" \

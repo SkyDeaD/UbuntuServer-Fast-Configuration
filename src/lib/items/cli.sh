@@ -89,6 +89,10 @@ apply_cli() {
 "${CLI_PKGS// /, } and starship are already installed"
     fi
 
+    # btop хранит настройки в ~/.config/btop. На машинах, настроенных до 5.0,
+    # ~/.config мог остаться root-овым (см. ensure_user_dir) — чиним здесь,
+    # раз уж этот пункт btop и ставит
+    [ -d "${TARGET_HOME}/.config" ] && ensure_user_dir "${TARGET_HOME}/.config"
     cli_write_aliases
 }
 

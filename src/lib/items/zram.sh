@@ -205,6 +205,60 @@ zram_configure() {
     swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null
 }
 
+# Вопросы пакетного режима — те же, что задаёт apply_zram (см. lib/bulk.sh)
+preask_zram() {
+    read_swap_state
+    if [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" != "100" ]; then
+        # До 5.0 здесь спрашивался процент, а сам вопрос «перенастроить»
+        # в пакете молча становился «нет» — ответ пропадал зря
+        echo ""
+        log_warn_t "zram активен, но приоритет ${ZRAM_PRIO} (рекомендуется 100) — похоже, настраивали вручную" \
+"zram is active but its priority is ${ZRAM_PRIO} (100 recommended) — looks hand-tuned"
+        # shellcheck disable=SC2034  # ZRAM_RECONF_BULK читается через ask_bulk_yn
+        if ask_yn_t "Перенастроить zram под рекомендованные значения?" "Reconfigure zram to the recommended values?" N; then
+            ZRAM_RECONF_BULK=Y
+            ZRAM_BULK_PERCENT="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" 75)"
+        else
+            ZRAM_RECONF_BULK=N
+        fi
+    elif [ "$ZRAM_ACTIVE" != true ]; then
+        echo ""
+        log_info_t "zram — сжатая память вместо свопа на диске: быстрее и не треплет SSD. 75% — разумный дефолт" \
+"zram is compressed memory instead of on-disk swap: faster, and it spares the SSD. 75% is a sensible default"
+        ZRAM_BULK_PERCENT="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" 75)"
+    fi
+    if [ "$SWAP_ACTIVE" != true ]; then
+        echo ""
+        log_info_t "Своп-файл — запас на диске на случай, если zram кончится" \
+"A swap file is the on-disk reserve for when zram runs out"
+        SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$(suggest_swap_mb)")"
+    elif [ "$SWAP_TYPE" = "file" ]; then
+        local sw_want
+        sw_want="$(suggest_swap_mb "$SWAP_SIZE_MB")"
+        if swap_needs_resize "$SWAP_SIZE_MB" "$sw_want"; then
+            log_info_t "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ" \
+"Swap ${SWAP_PATH}: currently ${SWAP_SIZE_MB} MB, recommended ${sw_want} MB"
+            SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$sw_want")"
+        fi
+    fi
+    # sysctl — такая же рекомендация пункта. Прежний дефолт вычислялся из
+    # текущих значений и выпадал в «нет» на любой машине, где их хоть немного
+    # трогали, — рекомендация тихо не применялась (tests/test_sysctl.sh)
+    local cur_sw cur_vfs
+    cur_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
+    cur_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
+    if ! { [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; }; then
+        echo ""
+        log_info_t "Сейчас swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. Под zram рекомендуются 80 и 50: своп быстрый, и отдавать в него страницы охотнее выгодно" \
+"Currently swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. With zram 80 and 50 are recommended: swap is fast here, so paging out more eagerly pays off"
+        if ask_yn_t "Применить рекомендованные значения sysctl?" "Apply the recommended sysctl values?"; then
+            SYSCTL_BULK=Y
+        else
+            SYSCTL_BULK=N
+        fi
+    fi
+}
+
 status_zram() {
     local zram_ok=false swap_ok=false fstab_ok=true
     local n t s u p
@@ -246,11 +300,11 @@ apply_zram() {
         else
             log_warn_t "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную" \
 "zram is active but its priority is ${zram_prio} (100 recommended) — looks hand-tuned"
-            if ask_yn_t "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N; then
+            if ask_bulk_yn ZRAM_RECONF_BULK "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N; then
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
-                zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "$cur_percent")"
+                zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-$cur_percent}")"
                 if zram_configure "$zram_percent"; then
                     log_success_t "zram перенастроен (${zram_percent}% RAM)" \
 "zram reconfigured (${zram_percent}% of RAM)"
@@ -326,6 +380,7 @@ apply_zram() {
                 local want_resize=false
                 if [ "$BULK_MODE" = true ]; then
                     [ -n "$SWAP_BULK_MB" ] && want_resize=true
+                # bulk-ok: пакетная ветка — строкой выше
                 elif ask_yn_t "Изменить размер swap-файла?" "Resize the swap file?" N; then
                     want_resize=true
                 fi

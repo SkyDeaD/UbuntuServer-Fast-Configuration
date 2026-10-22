@@ -83,6 +83,7 @@ apply_newuser() {
     if [ "$TARGET_USER" != "root" ]; then
         log_info_t "Скрипт уже работает от имени ${TARGET_USER} — отдельный пользователь не нужен" \
 "The script already runs as ${TARGET_USER} — a separate user is not needed"
+        # bulk-ok: пункт целиком пропускается в пакете
         if ! ask_yn_t "Всё равно создать ещё одного пользователя с sudo?" "Create another sudo user anyway?" N; then return; fi
     fi
 
@@ -114,6 +115,7 @@ apply_newuser() {
         if id -u "$name" &>/dev/null; then
             log_warn_t "Пользователь ${name} уже существует" \
 "User ${name} already exists"
+            # bulk-ok: пункт целиком пропускается в пакете
             if ask_yn_t "Использовать его и просто добавить в группу sudo?" "Use that account and just add it to the sudo group?" N; then
                 existing=true
                 break
@@ -177,6 +179,7 @@ apply_newuser() {
         log_info_t "В /root/.ssh/authorized_keys ключей нет — копировать нечего" \
 "There are no keys in /root/.ssh/authorized_keys — nothing to copy"
     fi
+    # bulk-ok: пункт целиком пропускается в пакете
     if ask_yn_t "Добавить ещё один публичный ключ вручную?" "Add another public key by hand?" N; then
         add_pubkey_interactive "$auth_keys" && key_ok=true
     fi

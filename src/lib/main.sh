@@ -20,20 +20,6 @@ run_items() {
     show_summary
 }
 
-# Заготовленные ответы живут ровно один прогон: иначе следующий пакетный
-# запуск молча унаследовал бы токен и проценты от предыдущего
-reset_bulk_answers() {
-    ZRAM_BULK_PERCENT=""
-    SWAP_BULK_MB=""
-    SYSCTL_BULK=""
-    # shellcheck disable=SC2034  # читаются в apply_nginx/apply_docker
-    NGINX_AUTOSTART=""
-    # shellcheck disable=SC2034
-    DOCKER_AUTOSTART=""
-    CERTBOT_CF_BULK=""
-    CF_TOKEN_BULK=""
-}
-
 # Неинтерактивный прогон: cloud-init, Ansible, скрипт развёртывания.
 #
 # Коды возврата сделаны пригодными для CI, а не «0 или что-то»:
@@ -280,31 +266,51 @@ main() {
                 else
                     # несколько пунктов разом — сначала убираем то, что уже применено
                     # (иначе "B,S" при частично готовой системе будет зря переспрашивать про то, что и так стоит)
-                    local -a pending=() pending_ids=()
+                    local -a pending=() pending_ids=() done_titles=()
                     local id
                     for n in "${valid[@]}"; do
                         id="${ITEM_IDS[$((n-1))]}"
-                        if ! item_applied "$id"; then
+                        if item_applied "$id"; then
+                            done_titles+=("${ITEM_TITLES[$((n-1))]}")
+                        else
                             pending+=("$n")
                             pending_ids+=("$id")
                         fi
                     done
 
                     echo ""
+                    if [ "${#done_titles[@]}" -gt 0 ]; then
+                        local IFS_SAVE="$IFS"; IFS=','
+                        log_info_t "Уже применено, пропускаю: ${DIM}${done_titles[*]}${NC}" \
+"Already applied, skipping: ${DIM}${done_titles[*]}${NC}"
+                        IFS="$IFS_SAVE"
+                    fi
                     if [ "${#pending[@]}" -eq 0 ]; then
-                        log_info_t "Из выбранного (${valid[*]}) уже всё применено" \
-"Everything selected (${valid[*]}) is already applied"
-                        sleep 1
+                        log_info_t "Из выбранного уже всё применено" \
+"Everything selected is already applied"
+                        pause
                     else
-                        log_info_t "Не применено из выбранного: ${pending[*]} (${#pending[@]} шт.)" \
-"Not yet applied from your selection: ${pending[*]} (${#pending[@]})"
-                        log_info_t "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу" \
-"Each item runs with its own defaults, with no questions along the way"
-                        preask_bulk_answers "${pending_ids[@]}"
-
+                        local titles=() k
+                        for k in "${pending[@]}"; do titles+=("${ITEM_TITLES[$((k-1))]}"); done
+                        log_info_t "Будет применено (${#pending[@]}):" "To be applied (${#pending[@]}):"
+                        for k in "${titles[@]}"; do printf '      %s\n' "$k"; done
                         echo ""
-                        if ask_yn_t "Применить эти ${#pending[@]} пунктов сейчас?" "Apply these ${#pending[@]} items now?"; then
-                            run_items "${pending[@]}"
+                        if ask_yn_t "Применить эти ${#pending[@]} пунктов? Вопросы задам сразу, дальше всё пойдёт само" "Apply these ${#pending[@]} items? I will ask everything up front, then it runs on its own"; then
+                            # Пользователь — первым и интерактивно: ему нужны имя и
+                            # пароль с терминала, а дотфайлы остальных пунктов этого
+                            # же прогона иначе легли бы в /root
+                            if [[ " ${pending_ids[*]} " == *" newuser "* ]]; then
+                                process_item "$(item_number newuser)"
+                                invalidate_statuses
+                                local -a rest=() rest_ids=()
+                                for k in "${!pending_ids[@]}"; do
+                                    [ "${pending_ids[$k]}" = newuser ] && continue
+                                    rest+=("${pending[$k]}"); rest_ids+=("${pending_ids[$k]}")
+                                done
+                                pending=("${rest[@]+"${rest[@]}"}"); pending_ids=("${rest_ids[@]+"${rest_ids[@]}"}")
+                            fi
+                            preask_bulk_answers "${pending_ids[@]+"${pending_ids[@]}"}"
+                            run_items "${pending[@]+"${pending[@]}"}"
                         fi
                         reset_bulk_answers
                         pause

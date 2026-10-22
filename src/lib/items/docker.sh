@@ -72,6 +72,17 @@ docker_write_repo() {
         | write_file /etc/apt/sources.list.d/docker.list
 }
 
+# Вопросы пакетного режима (см. lib/bulk.sh)
+preask_docker() {
+    command -v docker >/dev/null 2>&1 && service_is_up docker && return 0
+    echo ""
+    log_info_t "Docker — запуск приложений в контейнерах. Если сейчас не нужен, можно не поднимать — включишь потом пунктом $(item_number docker)" \
+"Docker runs applications in containers. If you do not need it right now, leave it down — enable it later via item $(item_number docker)"
+    # shellcheck disable=SC2034  # читается через ask_bulk_yn / resolve_autostart
+    ask_yn_t "Запускать Docker (и включать автозапуск)?" "Start Docker (and enable autostart)?" N \
+        && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
+}
+
 apply_docker() {
     # Ветка «уже установлен» — как у apply_nginx. Без неё выбор этого пункта на
     # системе с Docker уходил в полную переустановку: ключ, репозиторий, apt.
@@ -85,12 +96,13 @@ apply_docker() {
         if [ "$active" = "active" ]; then
             log_success_t "Docker запущен ${DIM}(автозапуск: ${enabled:-?})${NC}" \
 "Docker is running ${DIM}(autostart: ${enabled:-?})${NC}"
+            # bulk-ok: работающий Docker уже применён и в пакет не попадает
             if [ "$enabled" != "enabled" ] && ask_yn_t "Включить автозапуск Docker при загрузке?" "Enable Docker autostart at boot?" N; then
                 service_units docker
                 systemctl enable "${REPLY_UNITS[@]}" >/dev/null 2>&1 && log_success_t "Автозапуск включён" \
 "Autostart enabled"
             fi
-        elif ask_yn_t "Docker не запущен. Запустить и включить автозапуск?" "Docker is not running. Start it and enable autostart?" N; then
+        elif ask_bulk_yn DOCKER_AUTOSTART "Docker не запущен. Запустить и включить автозапуск?" "Docker is not running. Start it and enable autostart?" N; then
             apply_service_autostart docker true
         else
             log_info_t "Оставляю Docker выключенным" \

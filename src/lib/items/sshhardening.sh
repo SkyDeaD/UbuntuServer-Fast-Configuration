@@ -238,6 +238,7 @@ apply_sshhardening() {
 "SSH hardening needs explicit confirmation — skipped in batch mode. Set it up separately via item $(item_number sshhardening)."
         return
     fi
+    # bulk-ok: пункт целиком пропускается в пакете
     if ! ask_yn_t "Настроить SSH hardening для ${TARGET_USER} (ключи вместо пароля, запрет root-логина)?" "Set up SSH hardening for ${TARGET_USER} (keys instead of password, root login disabled)?" N; then return; fi
 
     # Файлы, которые мы тронули помимо своего drop-in: при откате они
@@ -263,6 +264,7 @@ apply_sshhardening() {
     if [ "$REPLY_SSHD_INCLUDED" != true ]; then
         log_warn_t "${SSHD_CONFIG_DIR}/sshd_config не подключает sshd_config.d/*.conf — наш drop-in не прочитается" \
 "${SSHD_CONFIG_DIR}/sshd_config does not include sshd_config.d/*.conf — our drop-in would never be read"
+        # bulk-ok: пункт целиком пропускается в пакете
         if ! ask_yn_t "Добавить 'Include ${SSHD_CONFIG_DIR}/sshd_config.d/*.conf' в начало sshd_config?" "Add 'Include ${SSHD_CONFIG_DIR}/sshd_config.d/*.conf' to the top of sshd_config?" N; then
             log_info_t "Без Include hardening бессмысленен — ничего не меняю" \
 "Without the Include, hardening is pointless — changing nothing"
@@ -307,6 +309,7 @@ apply_sshhardening() {
         log_info_t "Ключи для входа есть и у других пользователей: ${others[*]}" \
 "Other users also have login keys: ${others[*]}"
     fi
+    # bulk-ok: пункт целиком пропускается в пакете
     if ask_yn_t "Разрешить вход по SSH ТОЛЬКО пользователю ${TARGET_USER} (AllowUsers; остальные потеряют доступ)?" "Allow SSH login ONLY for ${TARGET_USER} (AllowUsers; everyone else loses access)?" N; then
         allow_users="$TARGET_USER"
     fi

@@ -93,7 +93,9 @@ apply_cloudflare_credentials() {
 "Leaving it as is — certbot will log "Unsafe permissions""
             fi
         fi
+        # bulk-ok: перезапись уже заданного токена — только руками
         if ! ask_yn_t "Перезаписать его новым токеном?" "Overwrite it with a new token?" N; then return; fi
+    # bulk-ok: в пакете токен приезжает через CF_TOKEN_BULK выше
     elif ! ask_yn_t "Создать ${CF_CREDENTIALS} с API-токеном Cloudflare?" "Create ${CF_CREDENTIALS} with a Cloudflare API token?" N; then
         log_warn_t "Без токена плагин Cloudflare работать НЕ будет — выпуск сертификатов упадёт" \
 "Without a token the Cloudflare plugin will NOT work — issuing certificates will fail"
@@ -183,7 +185,7 @@ apply_certbot_tls_assets() {
 "The TLS boilerplate in /etc/letsencrypt is already there"
         return
     fi
-    if ! ask_yn_t "Положить TLS-заготовки certbot (ssl-dhparams.pem, options-ssl-nginx.conf) в /etc/letsencrypt?" "Place certbot's TLS boilerplate (ssl-dhparams.pem, options-ssl-nginx.conf) into /etc/letsencrypt?" N; then
+    if ! ask_bulk_yn CERTBOT_TLS_BULK "Положить TLS-заготовки certbot (ssl-dhparams.pem, options-ssl-nginx.conf) в /etc/letsencrypt?" "Place certbot's TLS boilerplate (ssl-dhparams.pem, options-ssl-nginx.conf) into /etc/letsencrypt?" N; then
         return
     fi
 
@@ -250,6 +252,46 @@ status_certbot() {
     echo -e "${GREEN}✓ certbot + ${plugins}${NC}"; return 0
 }
 
+# Вопросы пакетного режима (см. lib/bulk.sh). До 5.0 здесь спрашивался
+# только плагин Cloudflare, а TLS-заготовки в пакете не ставились никогда:
+# вопрос о них с дефолтом «нет» молча становился «нет»
+preask_certbot() {
+    if ! pkg_installed python3-certbot-dns-cloudflare; then
+        echo ""
+        log_info_t "Плагин Cloudflare нужен только для wildcard-сертификатов (*.example.com); для обычных хватает плагина nginx" \
+"The Cloudflare plugin is only needed for wildcard certificates (*.example.com); ordinary ones only need the nginx plugin"
+        if ask_yn_t "Установить плагин Cloudflare?" "Install the Cloudflare plugin?" N; then
+            CERTBOT_CF_BULK=Y
+            log_info_t "Токену нужны права Zone:DNS:Edit. Без него плагин работать не будет" \
+"The token needs Zone:DNS:Edit. Without it the plugin will not work"
+            ask_cf_token && CF_TOKEN_BULK="$REPLY_CF_TOKEN"
+            REPLY_CF_TOKEN=""
+        else
+            CERTBOT_CF_BULK=N
+        fi
+    elif [ ! -s "$CF_CREDENTIALS" ]; then
+        # плагин стоит, а токена нет — раньше в пакете его не предлагали вовсе
+        echo ""
+        log_warn_t "Плагин Cloudflare установлен, но ${CF_CREDENTIALS} нет — выпуск wildcard упадёт" \
+"The Cloudflare plugin is installed, but there is no ${CF_CREDENTIALS} — wildcard issuance will fail"
+        if ask_yn_t "Задать API-токен Cloudflare сейчас?" "Set the Cloudflare API token now?" N; then
+            ask_cf_token && CF_TOKEN_BULK="$REPLY_CF_TOKEN"
+            REPLY_CF_TOKEN=""
+        fi
+    fi
+    # TLS-заготовки нужны только рядом с nginx — стоящим или ставящимся сейчас
+    if pkg_installed nginx-full || [[ "$USFC_PREASK_IDS" == *" nginx "* ]]; then
+        if [ ! -f /etc/letsencrypt/ssl-dhparams.pem ] || [ ! -f /etc/letsencrypt/options-ssl-nginx.conf ]; then
+            echo ""
+            log_info_t "Типовой конфиг nginx ссылается на ssl-dhparams.pem и options-ssl-nginx.conf; при выпуске через certonly их нет, и nginx не стартует" \
+"A typical nginx config references ssl-dhparams.pem and options-ssl-nginx.conf; certonly does not create them, and nginx then fails to start"
+            # shellcheck disable=SC2034  # читается через ask_bulk_yn по имени
+            ask_yn_t "Положить TLS-заготовки certbot в /etc/letsencrypt?" "Place certbot's TLS boilerplate into /etc/letsencrypt?" Y \
+                && CERTBOT_TLS_BULK=Y || CERTBOT_TLS_BULK=N
+        fi
+    fi
+}
+
 apply_certbot() {
     ensure_apt_updated
     if ! pkg_installed certbot; then
@@ -283,6 +325,7 @@ apply_certbot() {
         # поэтому согласие спрашивается заранее в main() и приезжает сюда готовым
         if [ "$BULK_MODE" = true ]; then
             [ "$CERTBOT_CF_BULK" = "Y" ] && install_cf=true
+        # bulk-ok: пакетная ветка — строкой выше
         elif ask_yn_t "Установить плагин Cloudflare (DNS-01, нужен для wildcard-сертификатов)?" "Install the Cloudflare plugin (DNS-01, required for wildcard certificates)?" N; then
             install_cf=true
         fi

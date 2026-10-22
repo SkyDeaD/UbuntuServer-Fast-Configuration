@@ -193,6 +193,20 @@ jobs:
           # заглушками этого не увидеть
           bash tests/test_uninstall.sh src/setup.sh
 
+      - name: Пакетный режим задаёт те же вопросы, что ручной
+        run: |
+          # Раздел целиком применялся не так, как пункты по одному: вопросы с
+          # дефолтом «нет» в пакете молча становились «нет» (TLS certbot, UFW)
+          bash tests/test_bulk_parity.sh src/setup.sh
+
+      - name: Каталоги пользователя (btop и ~/.config)
+        run: |
+          # install -d -o user давал владельца только последнему компоненту:
+          # ~/.config появлялся от root, и btop не мог создать свой каталог.
+          # Нужны root и настоящий chown — поэтому в контейнере
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 \
+            bash tests/test_user_dirs.sh src/setup.sh
+
       - name: Приоритет свопа в fstab
         run: |
           # sed понимал одну форму строки и молча пропускал defaults, nofail,

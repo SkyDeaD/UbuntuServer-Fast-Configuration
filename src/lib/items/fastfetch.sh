@@ -95,8 +95,7 @@ apply_fastfetch() {
     # конфиг и автозапуск в .bashrc пишем сразу следом — не отдельным пунктом меню
     if ! command -v fastfetch &>/dev/null; then return; fi
 
-    install -d -o "$TARGET_USER" -g "$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" \
-        -m 755 "${TARGET_HOME}/.config/fastfetch"
+    ensure_user_dir "${TARGET_HOME}/.config/fastfetch"
     if [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
         log_info_t "config.jsonc уже есть" \
 "config.jsonc is already there"
@@ -108,7 +107,7 @@ apply_fastfetch() {
           "downloading config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc"
         _dry_say "$REPLY_T"
     elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
-        chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
+        chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
         log_success_t "config.jsonc установлен" \
 "config.jsonc installed"
     else
