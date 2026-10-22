@@ -156,7 +156,7 @@ uninstall_self() {
 # формы не работают, а печатают готовую новую строку: скрипт из cloud-init
 # упадёт громко, а не сделает что-то не то.
 
-USFC_COMMANDS="apply firewall audit list backups restore help version"
+USFC_COMMANDS="apply firewall audit export list backups restore help version"
 
 # Что делать вместо меню. Пусто — обычный интерактивный запуск.
 USFC_CMD=""
@@ -404,6 +404,9 @@ _usage_answer_flags() {
             pct) name="${fl} <1..400>" ;;
             ports) if [ "$USFC_LANG" = en ]; then name="${fl} <ports>"; else name="${fl} <порты>"; fi ;;   # i18n-ok: пара на той же строке
             addr)  name="${fl} <IP>" ;;
+            host)  if [ "$USFC_LANG" = en ]; then name="${fl} <name>"; else name="${fl} <имя>"; fi ;;   # i18n-ok: пара на той же строке
+            tz)    name="${fl} <Area/City>" ;;
+            starship) if [ "$USFC_LANG" = en ]; then name="${fl} <style>"; else name="${fl} <вид>"; fi ;;   # i18n-ok: пара на той же строке
             *)   name="${fl} <N>" ;;
         esac
         if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
@@ -423,7 +426,7 @@ _usage_answer_keys() {
 show_usage() {
     local topic="${1:-}"
     case "$topic" in
-        ''|apply|firewall|audit|list|backups|restore|version) ;;
+        ''|apply|firewall|audit|export|list|backups|restore|version) ;;
         *) _cli_die "нет справки по «${topic}». Команды: ${USFC_COMMANDS}" "no help for \"${topic}\". Commands: ${USFC_COMMANDS}" ;;
     esac
     if [ "$USFC_LANG" = en ]; then show_usage_en "$topic"; else show_usage_ru "$topic"; fi
@@ -506,6 +509,7 @@ Docker публикует порты мимо UFW; docker on добавляет 
 Коды возврата: 0 — готово; 1 — часть действий не удалась; 2 — ошибка в аргументах.
 EOF
             ;;
+        export)  echo "usfc export > node.conf — файл ответов по этому серверу (без секретов) и та же настройка одной командой" ;;   # i18n-ok: пара — show_usage_en
         list)    echo "usfc list — профили и id пунктов для usfc apply" ;;   # i18n-ok: пара — show_usage_en
         backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;   # i18n-ok: пара — show_usage_en
         version) echo "usfc version — версия (то же: -V, --version)" ;;   # i18n-ok: пара — show_usage_en
@@ -520,6 +524,7 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
   apply <что>        применить пункты без вопросов по ходу
   firewall           файрвол: порты, ping, Docker
   audit              проверить сервер (только чтение)
+  export             файл ответов по этому серверу
   list               профили и id пунктов
   backups            снимки конфигов
   restore [метка]    вернуть конфиги из снимка
@@ -629,6 +634,7 @@ Docker publishes ports past UFW; docker on adds the ufw-docker scheme to
 Exit codes: 0 — done; 1 — some actions failed; 2 — an error in the arguments.
 EOF
             ;;
+        export)  echo "usfc export > node.conf — an answers file from this server (no secrets) and the same setup as one command" ;;
         list)    echo "usfc list — profiles and item ids for usfc apply" ;;
         backups) echo "usfc backups — config snapshots, newest last; undo with usfc restore <stamp>" ;;
         version) echo "usfc version — the version (same as -V, --version)" ;;
@@ -643,6 +649,7 @@ Commands:
   apply <what>       apply items without questions along the way
   firewall           the firewall: ports, ping, Docker
   audit              check the server (read-only)
+  export             an answers file from this server
   list               profiles and item ids
   backups            config snapshots
   restore [stamp]    bring configs back from a snapshot

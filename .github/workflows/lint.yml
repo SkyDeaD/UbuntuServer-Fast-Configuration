@@ -234,6 +234,12 @@ jobs:
           # чтении и записи в одном конвейере
           bash tests/test_firewall.sh src/setup.sh
 
+      - name: Карточка сервера (motd)
+        run: |
+          # Скрипт карточки под set -u, в C и C.UTF-8, ru и en: без ошибок,
+          # рамка ровной ширины, английская — без кириллицы
+          bash tests/test_motd.sh src/setup.sh
+
       - name: Чужие drop-in'ы sshd
         run: |
           # sshd берёт ПЕРВОЕ значение ключа. Файл провайдера 00-*.conf с

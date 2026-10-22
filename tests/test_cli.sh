@@ -149,5 +149,44 @@ r="$(
 [ "$r" = "rc=0" ] && ok "тот же ключ из общего файла ответов — норма" || bad "получили: $r"
 
 echo ""
+echo "usfc export"
+# Состояние сервера подменено: ufw и certbot применены, токен в памяти есть
+ex="$(
+    refresh_statuses() { :; }
+    item_applied() { case "$1" in ufw|certbot) return 0 ;; esac; return 1; }
+    ufw_active() { return 0; }
+    pkg_installed() { return 0; }
+    # shellcheck disable=SC2034  # подмены читает export_cmd
+    fw_ping_state() { REPLY_FW_PING=off; }
+    hostname() { echo node-1; }
+    ufw() { printf '%s\n' 'Status: active' '' 'To   Action  From' '--   ------  ----' \
+        "${SSH_PORT}/tcp   ALLOW   Anywhere" '443   ALLOW   Anywhere' '51820/udp   ALLOW   Anywhere' \
+        '9000/tcp   ALLOW   10.0.0.0/8' '443 (v6)   ALLOW   Anywhere (v6)'; }
+    # shellcheck disable=SC2034
+    CF_TOKEN_BULK=секретный-токен-123
+    export_cmd 2>&1
+)"
+[[ "$ex" != *"секретный-токен-123"* ]] && [[ "$ex" == *"# CF_TOKEN="* ]] \
+    && ok "токен Cloudflare не выгружается, ключ закомментирован" || bad "токен в выводе export"
+[[ "$ex" == *$'\nITEMS=certbot,ufw\n'* ]] && ok "ITEMS — применённые пункты в порядке меню" || bad "ITEMS: $(grep '^ITEMS' <<< "$ex")"
+[[ "$ex" == *'UFW_ALLOW="443/tcp 51820/udp"'* ]] && ok "порты без SSH, v6-дублей и правил «для адреса»" || bad "UFW_ALLOW: $(grep '^UFW_ALLOW' <<< "$ex")"
+[[ "$ex" == *"9000/tcp ← 10.0.0.0/8"* ]] && ok "правило для адреса — комментарием" || bad "правило для адреса потерялось"
+grep -E '^(SWAP_MB|ZRAM_PERCENT|SYSCTL|TIMEZONE|HOSTNAME)=' <<< "$ex" >/dev/null \
+    && bad "выгружены ответы пунктов не из ITEMS" || ok "ответы только для пунктов из ITEMS"
+
+# файл export и его однострочная команда принимаются и дают одно состояние
+printf '%s\n' "$ex" > "$cfg"
+# shellcheck disable=SC2034  # читается в apply_cli_answers
+via_cfg="$( USFC_CONFIG_FILE="$cfg"; apply_cli_answers >/dev/null 2>&1; echo "rc=$? $USFC_APPLY_SPEC|$UFW_BULK|$UFW_ALLOW_BULK|$UFW_PING_BULK|$CERTBOT_CF_BULK|$CERTBOT_TLS_BULK" )"
+line="$(sed -n 's/^#     apply //p' "$cfg")"
+# shellcheck disable=SC2086  # строка команды делится на аргументы, как в shell
+via_flags="$( parse_args apply ${line} >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1
+    check_cli_answer_items certbot ufw >/dev/null 2>&1 || echo "items-fail"
+    echo "rc=0 $USFC_APPLY_SPEC|$UFW_BULK|$UFW_ALLOW_BULK|$UFW_PING_BULK|$CERTBOT_CF_BULK|$CERTBOT_TLS_BULK" )"
+[[ "$via_cfg" == rc=0* ]] && [ "$via_cfg" = "$via_flags" ] && ok "файл export и его команда дают одни ответы" \
+    || bad "файл: «$via_cfg», команда: «$via_flags»"
+echo "    ($via_cfg)"
+
+echo ""
 [ "$fail" -eq 0 ] && echo "командная строка: все проверки пройдены" || echo "командная строка: ЕСТЬ ОШИБКИ"
 exit "$fail"

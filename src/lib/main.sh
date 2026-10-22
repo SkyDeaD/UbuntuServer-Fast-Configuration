@@ -137,6 +137,7 @@ main() {
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
         apply)   run_noninteractive; exit $? ;;
         firewall) firewall_cmd; exit $? ;;
+        export)  export_cmd; exit $? ;;
     esac
 
     # Пользователь и SSH-порт здесь больше не печатаются: они стоят строкой

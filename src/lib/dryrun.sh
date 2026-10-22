@@ -154,6 +154,21 @@ dry_run_enable() {
         esac
     }
 
+    # Пункт hostname (5.0): имя, часовой пояс, NTP. Без аргументов и status/
+    # show/list-* — только чтение
+    hostnamectl() {
+        case "${1:-}" in
+            ''|status|hostname|--static|--transient|--pretty) command hostnamectl "$@" ;;
+            *) _dry_say "hostnamectl $*" ;;
+        esac
+    }
+    timedatectl() {
+        case "${1:-}" in
+            ''|status|show|show-timesync|timesync-status|list-timezones) command timedatectl "$@" ;;
+            *) _dry_say "timedatectl $*" ;;
+        esac
+    }
+
     sed() {
         # мутирует только с -i
         local a

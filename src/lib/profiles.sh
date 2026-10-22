@@ -136,6 +136,13 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "UFW_FROM|UFW_FROM_BULK|addr|--from|ufw|открывать их только для этого IP/подсети|open them only to this IP/subnet"
     "UFW_PING|UFW_PING_BULK|yn|--ping|ufw|отвечать на ping (--no-ping — не отвечать)|reply to ping (--no-ping — do not)"
     "UFW_DOCKER|UFW_DOCKER_BULK|yn|--docker-firewall|ufw|подчинить порты Docker-контейнеров UFW|put Docker container ports behind UFW"
+    "HOSTNAME|HOSTNAME_BULK|host|--hostname|hostname|имя сервера (node-1.example.com)|server hostname (node-1.example.com)"
+    "TIMEZONE|TIMEZONE_BULK|tz|--timezone|hostname|часовой пояс (Europe/Moscow, UTC)|time zone (Europe/Moscow, UTC)"
+    "JOURNAL_MAX_MB|JOURNAL_MAX_BULK|int|--journal-max|journald|предел журнала systemd, МБ|systemd journal cap, MB"
+    "MOTD_CLEAN|MOTD_CLEAN_BULK|yn|--motd-clean|motd|убрать стандартное приветствие и скрипты провайдера|remove the stock login greeting and provider scripts"
+    "STARSHIP_PRESET|STARSHIP_PRESET_BULK|starship|--starship|cli|вид промпта: minimal, git, powerline|prompt style: minimal, git, powerline"
+    "STARSHIP_PROD|STARSHIP_PROD_BULK|yn|--starship-prod|cli|боевой сервер: имя хоста в промпте красным|production server: hostname in red in the prompt"
+    "LAZYDOCKER|LAZYDOCKER_BULK|yn|--lazydocker|docker|поставить lazydocker (TUI для Docker)|install lazydocker (a Docker TUI)"
 )
 
 # _answer_row <поле> <значение> — найти строку таблицы → REPLY_ANS_ROW
@@ -155,6 +162,21 @@ _answer_row() {
     return 1
 }
 
+# valid_hostname <имя> — RFC 1123: метки из букв, цифр и дефиса (не с краю),
+# до 63 символов, всего до 253. Подчёркивание hostnamectl принял бы, а DNS — нет
+valid_hostname() {
+    local v="$1" label='[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    [ "${#v}" -le 253 ] && [[ "$v" =~ ^${label}(\.${label})*$ ]]
+}
+
+# valid_timezone <пояс> — есть файл в zoneinfo. Форму проверяем до файла:
+# «../../etc/passwd» тоже существует
+valid_timezone() {
+    local v="$1"
+    [[ "$v" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] || return 1
+    [ -f "/usr/share/zoneinfo/${v}" ]
+}
+
 # answer_normalize <тип> <значение> → REPLY_ANS. 1 — значение не подходит.
 # «y», «yes», «да» раньше молча значили «не Y», то есть «нет»
 REPLY_ANS=''
@@ -172,6 +194,9 @@ answer_normalize() {
         pct) [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 400 ] || return 1; REPLY_ANS="$v" ;;
         ports) fw_parse_ports "$v" && [ -n "$REPLY_FW_PORTS" ] || return 1; REPLY_ANS="$REPLY_FW_PORTS" ;;
         addr)  fw_valid_from "$v" || return 1; REPLY_ANS="$v" ;;
+        host)  valid_hostname "$v" || return 1; REPLY_ANS="${v,,}" ;;
+        tz)    valid_timezone "$v" || return 1; REPLY_ANS="$v" ;;
+        starship) case "${v,,}" in minimal|git|powerline) REPLY_ANS="${v,,}" ;; *) return 1 ;; esac ;;
         *)   [ -n "$v" ] || return 1; REPLY_ANS="$v" ;;
     esac
 }
@@ -191,6 +216,9 @@ answer_set() {
             ports) if [ -n "$REPLY_FW_ERR" ]; then REPLY_T="${key}: ${REPLY_FW_ERR}"
                    else t "${key}: пустой список портов" "${key}: empty port list"; fi ;;
             addr) t "${key}: ожидается IP или подсеть (1.2.3.4, 10.0.0.0/8), а не «${val}»" "${key}: expected an IP or a subnet (1.2.3.4, 10.0.0.0/8), not \"${val}\"" ;;
+            host) t "${key}: недопустимое имя «${val}» (буквы, цифры, дефис, точки)" "${key}: invalid name \"${val}\" (letters, digits, hyphens, dots)" ;;
+            tz)   t "${key}: нет такого часового пояса «${val}» (пример: Europe/Moscow)" "${key}: no such time zone \"${val}\" (example: Europe/Moscow)" ;;
+            starship) t "${key}: ожидается minimal, git или powerline, а не «${val}»" "${key}: expected minimal, git or powerline, not \"${val}\"" ;;
             *)   t "${key}: пустое значение" "${key}: empty value" ;;
         esac
         log_error "$REPLY_T"

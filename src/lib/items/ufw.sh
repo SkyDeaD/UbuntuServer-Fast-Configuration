@@ -200,8 +200,12 @@ apply_ufw() {
         log_success_t "UFW включён" "UFW enabled"
     fi
 
-    _ufw_extras
-    ufw status 2>/dev/null | sed 's/^/      /'
+    local rc=0
+    _ufw_extras || rc=1
+    # Таблица правил — только для глаз: в сухом прогоне ufw ещё не стоит,
+    # и её код не должен превращать пункт в «ошибку»
+    ufw status 2>/dev/null | sed 's/^/      /' || true
+    return "$rc"
 }
 
 disable_ufw() {
