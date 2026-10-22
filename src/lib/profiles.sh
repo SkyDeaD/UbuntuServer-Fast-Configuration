@@ -28,8 +28,8 @@ profile_list() {
         printf '    %b%-8s%b %s\n' "$BOLD" "$name" "$NC" "${USFC_PROFILES[$name]}"
     done
     echo ""
-    log_info_t "Пункты можно перечислить и вручную: ${BOLD}--apply docker,nginx,ufw${NC}" \
-"Items can also be listed by hand: ${BOLD}--apply docker,nginx,ufw${NC}"
+    log_info_t "Пункты можно перечислить и вручную: ${BOLD}usfc apply docker,nginx,ufw${NC}" \
+"Items can also be listed by hand: ${BOLD}usfc apply docker,nginx,ufw${NC}"
     log_info_t "Все id: ${DIM}${ITEM_IDS[*]}${NC}" \
 "All ids: ${DIM}${ITEM_IDS[*]}${NC}"
 }
@@ -43,7 +43,7 @@ resolve_items() {
     REPLY_ITEM_NUMS=()
 
     # Профили раскрываются ПОТОКЕННО, а не для всей строки целиком: иначе
-    # `--apply web,ufw` разбирался бы как список id, и про валидный профиль
+    # `usfc apply web,ufw` разбирался бы как список id, и про валидный профиль
     # web сообщалось бы «неизвестный пункт» — то есть ровно наоборот
     IFS=', ' read -ra tokens <<< "$spec"
     for tok in "${tokens[@]}"; do
@@ -105,44 +105,157 @@ resolve_items() {
     return 0
 }
 
+# ═══════════════════════════════════════════════════════════════
+# Ответы на вопросы пунктов: файл ответов и флаги `usfc apply`
+# ═══════════════════════════════════════════════════════════════
+# Одна таблица — источник для ВСЕГО: разбора `--config`, флагов `apply`,
+# справки `usfc help apply` и сверки документации (tests/test_flags_doc.sh).
+# До 5.0 ключи жили в case внутри load_config, флагов не было вовсе, а
+# справка перечисляла ключи руками — и уже разошлась с кодом (SYSCTL в ней
+# не было).
+#
+# Поля: КЛЮЧ|переменная|тип|флаг|пункт|описание ru|описание en
+#   тип: yn — да/нет (флаг --x даёт Y, --no-x даёт N); int — целое ≥ 0;
+#        pct — процент 1..400; secret — только в файле (в командной строке
+#        его увидел бы любой через ps)
+#   пункт — id, к которому ответ относится: флаг для пункта, которого нет в
+#        списке apply, — ошибка, а не тихое игнорирование
+USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последнее поле каждой строки
+    "SWAP_MB|SWAP_BULK_MB|int|--swap|zram|размер резервного swap-файла, МБ|backup swap file size, MB"
+    "ZRAM_PERCENT|ZRAM_BULK_PERCENT|pct|--zram|zram|размер zram, % от RAM|zram size, % of RAM"
+    "ZRAM_RECONF|ZRAM_RECONF_BULK|yn|--zram-reconfigure|zram|перенастроить zram, настроенный вручную|reconfigure a hand-tuned zram"
+    "SYSCTL|SYSCTL_BULK|yn|--sysctl|zram|swappiness=80, vfs_cache_pressure=50|swappiness=80, vfs_cache_pressure=50"
+    "NGINX_AUTOSTART|NGINX_AUTOSTART|yn|--nginx-autostart|nginx|запустить nginx и включить автозапуск|start nginx and enable autostart"
+    "DOCKER_AUTOSTART|DOCKER_AUTOSTART|yn|--docker-autostart|docker|запустить Docker и включить автозапуск|start Docker and enable autostart"
+    "DOCKER_RESTART|DOCKER_RESTART_BULK|yn|--docker-restart|dockerlog|перезапустить Docker под лимит логов (перезапустит контейнеры)|restart Docker for the log limit (restarts containers)"
+    "CERTBOT_CF|CERTBOT_CF_BULK|yn|--certbot-cf|certbot|плагин Cloudflare (wildcard)|Cloudflare plugin (wildcard)"
+    "CF_TOKEN|CF_TOKEN_BULK|secret||certbot|API-токен Cloudflare (Zone:DNS:Edit)|Cloudflare API token (Zone:DNS:Edit)"
+    "CERTBOT_TLS|CERTBOT_TLS_BULK|yn|--certbot-tls|certbot|TLS-заготовки в /etc/letsencrypt|TLS boilerplate in /etc/letsencrypt"
+    "UFW|UFW_BULK|yn|--ufw|ufw|включить UFW|enable UFW"
+)
+
+# _answer_row <поле> <значение> — найти строку таблицы → REPLY_ANS_ROW
+# (поля в REPLY_ANS_KEY, _VAR, _TYPE, _FLAG, _ITEM)
+REPLY_ANS_KEY=''; REPLY_ANS_VAR=''; REPLY_ANS_TYPE=''; REPLY_ANS_FLAG=''; REPLY_ANS_ITEM=''
+_answer_row() {
+    local field="$1" want="$2" row k v ty fl it
+    for row in "${USFC_ANSWER_KEYS[@]}"; do
+        IFS='|' read -r k v ty fl it _ <<< "$row"
+        case "$field" in
+            key)  [ "$k" = "$want" ] || continue ;;
+            flag) [ -n "$fl" ] && [ "$fl" = "$want" ] || continue ;;
+        esac
+        REPLY_ANS_KEY="$k"; REPLY_ANS_VAR="$v"; REPLY_ANS_TYPE="$ty"; REPLY_ANS_FLAG="$fl"; REPLY_ANS_ITEM="$it"
+        return 0
+    done
+    return 1
+}
+
+# answer_normalize <тип> <значение> → REPLY_ANS. 1 — значение не подходит.
+# «y», «yes», «да» раньше молча значили «не Y», то есть «нет»
+REPLY_ANS=''
+answer_normalize() {
+    local ty="$1" v="$2"
+    REPLY_ANS=''
+    case "$ty" in
+        yn)
+            case "${v,,}" in
+                y|yes|true|on|1|да|д) REPLY_ANS=Y ;;     # i18n-ok: принимаемые ответы, не текст
+                n|no|false|off|0|нет|н) REPLY_ANS=N ;;  # i18n-ok: принимаемые ответы, не текст
+                *) return 1 ;;
+            esac ;;
+        int) [[ "$v" =~ ^[0-9]+$ ]] || return 1; REPLY_ANS="$v" ;;
+        pct) [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 400 ] || return 1; REPLY_ANS="$v" ;;
+        *)   [ -n "$v" ] || return 1; REPLY_ANS="$v" ;;
+    esac
+}
+
+# answer_set <КЛЮЧ> <значение> <откуда> — проверить и записать. Откуда
+# пришло, запоминаем: флаг для невыбранного пункта — ошибка, а тот же ключ
+# в общем на все ноды файле ответов — норма
+declare -A USFC_ANS_SRC=()
+answer_set() {
+    local key="$1" val="$2" src="$3"
+    _answer_row key "$key" || return 2
+    if ! answer_normalize "$REPLY_ANS_TYPE" "$val"; then
+        case "$REPLY_ANS_TYPE" in
+            yn)  t "${key}: ожидается Y или N, а не «${val}»" "${key}: expected Y or N, not \"${val}\"" ;;
+            int) t "${key}: ожидается целое число, а не «${val}»" "${key}: expected a whole number, not \"${val}\"" ;;
+            pct) t "${key}: ожидается процент 1..400, а не «${val}»" "${key}: expected a percentage 1..400, not \"${val}\"" ;;
+            *)   t "${key}: пустое значение" "${key}: empty value" ;;
+        esac
+        log_error "$REPLY_T"
+        return 1
+    fi
+    printf -v "$REPLY_ANS_VAR" '%s' "$REPLY_ANS"
+    USFC_ANS_SRC[$key]="$src"
+}
+
 # Файл ответов. Формат — KEY=значение, без исполнения: конфиг не должен
 # уметь запускать команды, иначе `--config` из непроверенного места
 # превращается в дыру. Поэтому разбираем построчно, а не source.
+#
+# Неизвестный ключ — ОШИБКА, а не предупреждение: опечатка `UWF=Y` иначе
+# молча оставляла бы сервер без файрвола
 load_config() {
-    local file="$1" line key val
+    local file="$1" line key val n=0 bad=0
     if [ ! -r "$file" ]; then
-        log_error_t "Конфиг не читается: ${file}" \
-"Cannot read config: ${file}"
+        log_error_t "Файл ответов не читается: ${file}" \
+"Cannot read the answers file: ${file}"
         return 1
     fi
     while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1))
         line="${line%%#*}"
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "$line" ] && continue
+        if [[ "$line" != *=* ]]; then
+            log_error_t "${file}:${n}: нет «=» — ожидается КЛЮЧ=значение" \
+"${file}:${n}: no \"=\" — expected KEY=value"
+            bad=1; continue
+        fi
         key="${line%%=*}"
+        key="${key%"${key##*[![:space:]]}"}"
         val="${line#*=}"
-        val="${val%\"}"; val="${val#\"}"
-        case "$key" in
-            ITEMS)             USFC_APPLY_SPEC="$val" ;;
-            NGINX_AUTOSTART)   NGINX_AUTOSTART="$val" ;;
-            DOCKER_AUTOSTART)  DOCKER_AUTOSTART="$val" ;;
-            ZRAM_PERCENT)      ZRAM_BULK_PERCENT="$val" ;;
-            SWAP_MB)           SWAP_BULK_MB="$val" ;;
-            SYSCTL)            SYSCTL_BULK="$val" ;;
-            CERTBOT_CF)        CERTBOT_CF_BULK="$val" ;;
-            CF_TOKEN)          CF_TOKEN_BULK="$val" ;;
-            *)
-                log_warn_t "Непонятный ключ в ${file}: ${key}" \
-"Unknown key in ${file}: ${key}"
-                ;;
+        val="${val#"${val%%[![:space:]]*}"}"
+        case "$val" in \"*\") val="${val#\"}"; val="${val%\"}" ;; \'*\') val="${val#\'}"; val="${val%\'}" ;; esac
+        if [ "$key" = ITEMS ]; then
+            # командная строка сильнее файла: ITEMS — только если пункты не заданы
+            [ -n "$USFC_APPLY_SPEC" ] || USFC_APPLY_SPEC="$val"
+            continue
+        fi
+        answer_set "$key" "$val" config
+        case $? in
+            0) ;;
+            2) log_error_t "${file}:${n}: неизвестный ключ ${key}" \
+"${file}:${n}: unknown key ${key}"
+               bad=1 ;;
+            *) bad=1 ;;
         esac
     done < "$file"
-    return 0
+    return "$bad"
+}
+
+# fetch_config <https://…> → REPLY_CONFIG_PATH (временный файл).
+# Только https: файл ответов может нести токен, и отдавать его по
+# открытому каналу нельзя. Сам URL в лог не пишем — в нём бывает секрет
+REPLY_CONFIG_PATH=''
+fetch_config() {
+    local url="$1" tmp
+    tmp="$(mktemp)" || return 1
+    chmod 600 "$tmp"
+    if ! curl -fsSL --proto '=https' --max-time 20 --retry 2 "$url" -o "$tmp" 2>/dev/null; then
+        rm -f "$tmp"
+        log_error_t "Не удалось скачать файл ответов (нужен https и доступный адрес)" \
+"Could not download the answers file (it must be https and reachable)"
+        return 1
+    fi
+    REPLY_CONFIG_PATH="$tmp"
 }
 
 # Имя профиля не должно совпадать с id пункта. Совпадение было: профиль
-# «docker» перебивал одноимённый пункт, и `--apply docker` разворачивался
+# «docker» перебивал одноимённый пункт, и `usfc apply docker` разворачивался
 # в восемь пунктов вместо одного — молча и совсем не туда. Проверяем здесь,
 # чтобы следующий профиль не наступил на те же грабли.
 usfc_check_profile_names() {

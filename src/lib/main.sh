@@ -2,7 +2,7 @@
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
 # run_items <номера...> — прогнать пачку пунктов без вопросов по ходу.
-# Вынесено из меню, потому что ровно то же нужно неинтерактивному --apply:
+# Вынесено из меню, потому что ровно то же нужно неинтерактивному `usfc apply`:
 # два экземпляра этого цикла разъехались бы при первой же правке сводки.
 run_items() {
     [ "$#" -eq 0 ] && return 0
@@ -27,7 +27,26 @@ run_items() {
 #   1 — часть пунктов не удалась
 #   2 — не разобрали, что применять (опечатка в профиле или id)
 run_noninteractive() {
+    # Файл ответов, потом флаги поверх: флаг сильнее файла, файл — дефолта
+    apply_cli_answers || return 2
+    [ -n "$USFC_APPLY_SPEC" ] || { log_error_t "Не задано, что применять: ни в командной строке, ни ITEMS= в файле ответов" \
+"Nothing to apply: neither on the command line nor as ITEMS= in the answers file"; return 2; }
     resolve_items "$USFC_APPLY_SPEC" || return 2
+    local -a resolved_ids=()
+    local k
+    for k in "${REPLY_ITEM_NUMS[@]}"; do resolved_ids+=("${ITEM_IDS[$((k - 1))]}"); done
+    check_cli_answer_items "${resolved_ids[@]}" || return 2
+
+    # UFW в списке без явного согласия не включается: вслепую включённый
+    # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y или --yes
+    if [[ " ${resolved_ids[*]} " == *" ufw "* ]] && [ -z "$UFW_BULK" ]; then
+        if [ "$USFC_ASSUME_YES" = true ]; then
+            UFW_BULK=Y
+        else
+            log_warn_t "UFW в списке, но согласия на его включение нет — добавьте --ufw (или --yes)" \
+"UFW is in the list, but there is no consent to enable it — add --ufw (or --yes)"
+        fi
+    fi
 
     # Отсев общий с мастером первого запуска — см. filter_pending в profiles.sh
     filter_pending "${REPLY_ITEM_NUMS[@]}"
@@ -91,7 +110,7 @@ main() {
 
     # Язык спрашиваем только при первом интерактивном запуске: если выбор уже
     # сохранён, задан флагом или нас позвали неинтерактивно (cloud-init,
-    # Ansible, --apply), вопрос был бы либо навязчивым, либо вовсе некому
+    # Ansible, usfc apply), вопрос был бы либо навязчивым, либо вовсе некому
     # отвечать — и скрипт завис бы на чтении с /dev/tty
     # Признак первого запуска снимаем ДО вопроса о языке: usfc_ask_language
     # сохраняет выбор, и после него «первого запуска» уже не существует
@@ -99,29 +118,22 @@ main() {
     usfc_lang_saved || first_run=true
 
     if ! usfc_lang_saved && [ "$USFC_LANG_EXPLICIT" = false ] \
-       && [ -z "$USFC_APPLY_SPEC" ] && [ -z "$USFC_ACTION" ] \
-       && [ "$USFC_LIST_ONLY" = false ] && usfc_interactive; then
+       && [ -z "$USFC_CMD" ] && usfc_interactive; then
         usfc_ask_language
     fi
 
     dry_run_enable
 
-    if [ "$USFC_LIST_ONLY" = true ]; then
-        profile_list
-        exit 0
-    fi
-    case "$USFC_ACTION" in
-        audit)   if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi; exit 0 ;;
+    case "$USFC_CMD" in
+        list)    profile_list; exit 0 ;;
+        audit)
+            if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi
+            # код возврата пригоден для мониторинга: 1 — есть важные проблемы
+            [ "$AUDIT_CRIT" -eq 0 ]; exit $? ;;
         backups) backup_list; exit $? ;;
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
+        apply)   run_noninteractive; exit $? ;;
     esac
-    if [ -n "$USFC_CONFIG_FILE" ]; then
-        load_config "$USFC_CONFIG_FILE" || exit 2
-    fi
-    if [ -n "$USFC_APPLY_SPEC" ]; then
-        run_noninteractive
-        exit $?
-    fi
 
     show_header
     log_info_t "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}" \
@@ -178,7 +190,7 @@ main() {
 
     # Мастер — ПОСЛЕ проверки обновлений и блока про голого root: статусы уже
     # посчитаны, а TARGET_USER уже переключён, если пользователя создавали.
-    # Все неинтерактивные ветки (--list, --audit, --apply, --config) вышли
+    # Все неинтерактивные ветки (команды list, audit, apply…) вышли
     # раньше по exit, поэтому отдельных гейтов здесь не нужно.
     if [ "$first_run" = true ] && usfc_interactive; then
         usfc_wizard

@@ -3,7 +3,7 @@
 # открывает меню.
 #
 # До 4.2.0 install.sh падал с `exit 2` на любом незнакомом аргументе, поэтому
-# `curl … | sudo bash -s -- --apply web` не начинал установку вовсе, а финальный
+# `curl … | sudo bash -s -- --apply web` (в 5.0 — `apply web`) не начинал установку вовсе, а финальный
 # `exec setup.sh </dev/tty` без терминала валился с «No such device or address»,
 # то есть установка в cloud-init заканчивалась ошибкой на последнем шаге.
 # Тестов на install.sh не было ни одного.
@@ -77,24 +77,24 @@ run() {
 
 # ── 1. аргументы доезжают до setup.sh, меню не открывается ───────────────────
 echo "аргументы форвардятся"
-run --apply web
-has   "setup.sh получил аргументы"  "$OUT" "SETUP-ARGS: --apply web"
+run apply web
+has   "setup.sh получил аргументы"  "$OUT" "SETUP-ARGS: apply web"
 hasnt "меню не открывалось"         "$OUT" "Терминала нет"
 [ "$RC" -eq 0 ] && ok "код возврата 0" || bad "код возврата $RC"
 
 # ── 2. --branch забирает себе установщик ─────────────────────────────────────
 echo ""
 echo "--branch не уезжает вниз"
-run --branch dev --apply zram --yes
-has   "setup.sh получил только своё" "$OUT"  "SETUP-ARGS: --apply zram --yes"
+run --branch dev apply zram --yes
+has   "setup.sh получил только своё" "$OUT"  "SETUP-ARGS: apply zram --yes"
 has   "ветка попала в URL"           "$URLS" "/dev/src/"
 hasnt "ветка не уехала в setup.sh"   "$OUT"  "--branch"
 
 # ── 3. явный разделитель отдаёт вниз даже наши флаги ─────────────────────────
 echo ""
 echo "разделитель --"
-run -- --branch собственная-ветка
-has "после -- всё уходит вниз" "$OUT"  "SETUP-ARGS: --branch собственная-ветка"
+run -- apply --branch собственная-ветка
+has "после -- всё уходит вниз" "$OUT"  "SETUP-ARGS: apply --branch собственная-ветка"
 has "ветка установщика осталась main" "$URLS" "/main/src/"
 
 # ── 4. без аргументов и без терминала: не падаем, а отчитываемся ─────────────
@@ -112,10 +112,23 @@ else
     [ "$RC" -eq 0 ] && ok "код возврата 0, а не ошибка" || bad "код возврата $RC"
 fi
 
+# ── 4б. одни модификаторы — это меню, а без терминала меню не открыть ────────
+# До 5.0 `… -s -- --lang en` уходил в setup.sh без терминала и зависал на
+# первом вопросе меню
+echo ""
+echo "только модификаторы и без терминала"
+if { : </dev/tty; } 2>/dev/null; then
+    echo "  ⚠ терминал доступен — проверку пропускаю (нужен запуск без tty)"
+else
+    run --lang en
+    has   "сказано, что меню не открывается" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался"           "$OUT" "SETUP-ARGS"
+fi
+
 # ── 5. установка реально разложила файлы ─────────────────────────────────────
 echo ""
 echo "файлы на месте"
-run --apply web
+run apply web
 [ -x "$TMP/opt/setup.sh" ]   && ok "setup.sh установлен"      || bad "нет setup.sh"
 [ -f "$TMP/opt/VERSION" ]    && ok "VERSION установлен"       || bad "нет VERSION"
 [ -f "$TMP/opt/lib/fake.sh" ] && ok "модуль из манифеста установлен" || bad "нет модуля"
@@ -125,7 +138,7 @@ echo ""
 echo "справка"
 run --help
 has "справка упоминает передачу вниз" "$OUT" "usfc"
-has "есть пример с --apply"           "$OUT" "--apply"
+has "есть пример с командой apply"    "$OUT" "apply web"
 [ "$RC" -eq 0 ] && ok "код возврата 0" || bad "код возврата $RC"
 
 echo ""

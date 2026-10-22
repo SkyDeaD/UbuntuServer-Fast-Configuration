@@ -14,7 +14,7 @@ fail=0
 printf '%s\n' "$MARK" > "$CONF"
 before="$(cat "$CONF")"
 
-usfc --apply unattended >/tmp/backup-apply.log 2>&1
+usfc apply unattended >/tmp/backup-apply.log 2>&1
 after="$(cat "$CONF")"
 if [ "$after" = "$before" ]; then
     echo "FAIL: пункт не изменил ${CONF}, проверять нечего" >&2
@@ -27,7 +27,7 @@ if [ -z "$stamp" ]; then
     exit 1
 fi
 
-usfc --restore "$stamp" --yes >/tmp/backup-restore.log 2>&1
+usfc restore "$stamp" --yes >/tmp/backup-restore.log 2>&1
 restored="$(cat "$CONF")"
 if [ "$restored" != "$before" ]; then
     echo "FAIL: после отката содержимое не совпало с исходным" >&2

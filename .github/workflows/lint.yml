@@ -86,15 +86,15 @@ jobs:
             USFC_SOURCE_ONLY=1 bash -c "source /opt/vps-setup/setup.sh; usfc_check_profile_names" \
               || { echo "коллизия имён профилей" >&2; exit 1; }
 
-            usfc --list >/dev/null || { echo "--list упал" >&2; exit 1; }
+            usfc list >/dev/null || { echo "list упал" >&2; exit 1; }
 
             # опечатка — код 2, а не тихий успех
-            if usfc --apply nosuchprofile --dry-run >/dev/null 2>&1; then
-              echo "опечатка в --apply не дала ошибки" >&2; exit 1
+            if usfc apply nosuchprofile --dry-run >/dev/null 2>&1; then
+              echo "опечатка в apply не дала ошибки" >&2; exit 1
             fi
 
             # сухой прогон ничего не ставит и завершается нулём
-            usfc --apply all --dry-run >/dev/null 2>&1 || { echo "--dry-run вернул ошибку" >&2; exit 1; }
+            usfc apply all --dry-run >/dev/null 2>&1 || { echo "--dry-run вернул ошибку" >&2; exit 1; }
             command -v docker >/dev/null && { echo "сухой прогон установил docker" >&2; exit 1; }
             [ "$(ls /var/lib/apt/lists/ 2>/dev/null | wc -l)" -eq 0 ] \
               || { echo "сухой прогон трогал списки apt" >&2; exit 1; }
@@ -147,7 +147,7 @@ jobs:
             chmod +x /opt/vps-setup/setup.sh
             ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
             rm -f /opt/vps-setup/lang
-            for c in "--list" "--audit" "--apply web --dry-run"; do
+            for c in "list" "audit" "apply web --dry-run"; do
               case "$(usfc $c 2>&1)" in
                 *"Для чего этот сервер"*)
                   echo "мастер всплыл при usfc $c" >&2; exit 1 ;;
@@ -199,6 +199,13 @@ jobs:
           # дефолтом «нет» в пакете молча становились «нет» (TLS certbot, UFW)
           bash tests/test_bulk_parity.sh src/setup.sh
 
+      - name: Командная строка
+        run: |
+          # Команды вместо флагов-режимов: таблица «аргументы → код возврата»,
+          # старые формы 4.x, флаги со значением не глотают соседей, флаги и
+          # --config дают одинаковые ответы
+          bash tests/test_cli.sh src/setup.sh
+
       - name: Каталоги пользователя (btop и ~/.config)
         run: |
           # install -d -o user давал владельца только последнему компоненту:
@@ -222,9 +229,9 @@ jobs:
 
       - name: Справочник флагов сходится с кодом
         run: |
-          # Документация врёт молча: добавил флаг — забыл описать, убрал —
+          # docs/CLI*.md — справочник команд. Документация врёт молча: добавил флаг — забыл описать, убрал —
           # забыл вычеркнуть. Сверяем в обе стороны и на обоих языках
-          bash tests/test_flags_doc.sh src/lib/cli.sh install.sh
+          bash tests/test_flags_doc.sh src/setup.sh install.sh
 
       - name: Реестр пунктов согласован
         run: |

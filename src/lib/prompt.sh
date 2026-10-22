@@ -4,7 +4,7 @@
 
 ask_yn() {
     local question="${1:-}" default="${2:-Y}" reply prompt
-    # --yes действует ТОЛЬКО вместе с --apply, и это не перестраховка.
+    # --yes действует ТОЛЬКО в `usfc apply`, и это не перестраховка.
     # Из 62 вопросов 24 имеют защитный дефолт «нет», и среди них удаление
     # самого usfc, гейт неподдерживаемой ОС, остановка nginx и Docker,
     # выключение unattended-upgrades. Глобальный «да на всё» превратил бы
@@ -12,7 +12,7 @@ ask_yn() {
     # заход. В неинтерактивном прогоне эти ветки недостижимы по построению:
     # уже применённые пункты run_noninteractive пропускает, удаление живёт
     # только в меню, а гейт ОС срабатывает раньше всего.
-    if [ "${USFC_ASSUME_YES:-false}" = true ] && [ -n "${USFC_APPLY_SPEC:-}" ]; then
+    if [ "${USFC_ASSUME_YES:-false}" = true ] && [ "${USFC_CMD:-}" = apply ]; then
         return 0
     fi
     if [ "$BULK_MODE" = true ]; then

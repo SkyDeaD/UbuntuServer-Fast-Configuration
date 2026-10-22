@@ -20,7 +20,7 @@
 # наружу: без них сухой прогон врал бы уже про текущее состояние системы.
 #
 # Полноту этого списка проверяет не глаз, а тест: tests/test_dryrun.sh
-# сверяет слепок /etc, dpkg и юнитов systemd до и после `--apply all --dry-run`.
+# сверяет слепок /etc, dpkg и юнитов systemd до и после `usfc apply all --dry-run`.
 
 # Метка сухого прогона живёт в ОДНОМ месте. Раньше тот же printf стоял ещё
 # в log.sh и apt.sh — три копии одной строки, то есть три места, где перевод
@@ -93,7 +93,7 @@ dry_run_enable() {
     modprobe() { _dry_say "modprobe $*"; }
     add-apt-repository() { _dry_say "add-apt-repository $*"; }
     # Эти четыре нашлись, когда предпросмотр пункта сделал достижимым SSH
-    # hardening: `--apply all --dry-run` его отфильтровывает, поэтому дыра
+    # hardening: `usfc apply all --dry-run` его отфильтровывает, поэтому дыра
     # не всплывала. А там `cp /etc/ssh/sshd_config .bak.$(date +%s)` — то есть
     # сухой прогон засорял /etc/ssh копией на каждый заход, — и `mv` поверх
     # authorized_keys. Сухой прогон, который что-то меняет, хуже, чем его

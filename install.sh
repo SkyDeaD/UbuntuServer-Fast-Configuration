@@ -24,15 +24,27 @@ while [ "$#" -gt 0 ]; do
             BRANCH="$2"; shift 2 ;;
         --branch=*) BRANCH="${1#*=}"; shift ;;
         -h|--help)
-            echo "Использование: install.sh [--branch <ветка>] [аргументы usfc...]"
-            echo ""
-            echo "  --branch <ветка>  ставить из указанной ветки (по умолчанию main)"
-            echo ""
-            echo "Остальные аргументы передаются установленному usfc, и тогда"
-            echo "меню не открывается. Полный их список — usfc --help. Примеры:"
-            echo "  curl -fsSL .../install.sh | sudo bash -s -- --apply web"
-            echo "  curl -fsSL .../install.sh | sudo bash -s -- --apply zram --yes"
-            echo "  curl -fsSL .../install.sh | sudo bash -s -- --audit"
+            if [ "${USFC_LANG:-}" = en ] || printf '%s\n' "$@" | grep -x -- '--lang=en' >/dev/null; then
+                echo "Usage: install.sh [--branch <branch>] [usfc command and options...]"
+                echo ""
+                echo "  --branch <branch>  install from that branch (main by default)"
+                echo ""
+                echo "Everything else goes to the installed usfc. With a command, the menu"
+                echo "does not open and no terminal is needed (cloud-init). Full list: usfc help"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- apply web --yes"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- apply docker,zram,ufw --swap 2048 --ufw"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- audit"
+            else
+                echo "Использование: install.sh [--branch <ветка>] [команда usfc и опции...]"
+                echo ""
+                echo "  --branch <ветка>  ставить из указанной ветки (по умолчанию main)"
+                echo ""
+                echo "Остальное передаётся установленному usfc. С командой меню не открывается"
+                echo "и терминал не нужен (cloud-init). Полный список — usfc help. Примеры:"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- apply web --yes"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- apply docker,zram,ufw --swap 2048 --ufw"
+                echo "  curl -fsSL .../install.sh | sudo bash -s -- audit"
+            fi
             exit 0 ;;
         # Явный разделитель: всё после него — аргументы usfc, даже если совпадают
         # с нашими. Нужен, чтобы можно было передать вниз собственный --branch
@@ -152,13 +164,27 @@ echo ""
 # файл существует, а открытие не удаётся. Редирект берём в группу — иначе
 # bash печатает «/dev/tty: No such device or address» мимо 2>/dev/null,
 # потому что об ошибке редиректа отчитывается сам шелл, а не команда.
-if [ "${#REST[@]}" -gt 0 ]; then
+#
+# «Есть аргументы» — это есть КОМАНДА (apply, audit…). Одни модификаторы
+# (`--lang en`, `--verbose`) означают меню, и раньше оно открывалось без
+# терминала — то есть зависало или падало на первом вопросе.
+# Команду узнаём по имени, а не «по слову без дефиса»: у `--lang en`
+# значение тоже без дефиса. Список повторяет USFC_COMMANDS из lib/cli.sh,
+# кроме help/version — им терминал тоже не нужен, они в списке
+HAS_CMD=false
+for a in "${REST[@]+"${REST[@]}"}"; do
+    case "$a" in
+        apply|audit|list|backups|restore|firewall|export|help|version|-h|--help|-V|--version)
+            HAS_CMD=true; break ;;
+    esac
+done
+if [ "$HAS_CMD" = true ]; then
     exec "${INSTALL_DIR}/setup.sh" "${REST[@]}"
 elif { : </dev/tty; } 2>/dev/null; then
-    exec "${INSTALL_DIR}/setup.sh" </dev/tty
+    exec "${INSTALL_DIR}/setup.sh" "${REST[@]+"${REST[@]}"}" </dev/tty
 else
-    echo "  Терминала нет — меню не открываю."
-    echo "  Запустить настройку:  sudo usfc"
-    echo "  Или сразу, без меню:  sudo usfc --apply web"
+    echo "  Терминала нет — меню не открываю. / No terminal — not opening the menu."
+    echo "  Меню / Menu:              sudo usfc"
+    echo "  Без меню / Without menu:  sudo usfc apply web"
     exit 0
 fi

@@ -147,6 +147,6 @@ backup_hint() {
     echo ""
     log_info_t "Конфиги, которые правились, сохранены: ${BOLD}${USFC_BACKUP_DIR}${NC}" \
 "Configs that were edited are saved in: ${BOLD}${USFC_BACKUP_DIR}${NC}"
-    log_info_t "Вернуть как было: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}" \
-               "Undo: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}"
+    log_info_t "Вернуть как было: ${BOLD}sudo usfc restore $(basename "$USFC_BACKUP_DIR")${NC}" \
+               "Undo: ${BOLD}sudo usfc restore $(basename "$USFC_BACKUP_DIR")${NC}"
 }
