@@ -38,9 +38,12 @@ run_noninteractive() {
     check_cli_answer_items "${resolved_ids[@]}" || return 2
 
     # UFW в списке без явного согласия не включается: вслепую включённый
-    # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y или --yes
-    if [[ " ${resolved_ids[*]} " == *" ufw "* ]] && [ -z "$UFW_BULK" ]; then
-        if [ "$USFC_ASSUME_YES" = true ]; then
+    # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y, --yes или явный
+    # список портов (--allow / UFW_ALLOW): кто перечислил порты, тот знает,
+    # что остальное закроется. Явное UFW=N сильнее всего
+    # Уже включённому UFW согласие не нужно: apply_ufw только добавит правила
+    if [[ " ${resolved_ids[*]} " == *" ufw "* ]] && [ -z "$UFW_BULK" ] && ! ufw_active; then
+        if [ "$USFC_ASSUME_YES" = true ] || [ -n "$UFW_ALLOW_BULK" ]; then
             UFW_BULK=Y
         else
             log_warn_t "UFW в списке, но согласия на его включение нет — добавьте --ufw (или --yes)" \
@@ -133,6 +136,7 @@ main() {
         backups) backup_list; exit $? ;;
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
         apply)   run_noninteractive; exit $? ;;
+        firewall) firewall_cmd; exit $? ;;
     esac
 
     # Пользователь и SSH-порт здесь больше не печатаются: они стоят строкой

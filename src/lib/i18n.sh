@@ -178,6 +178,8 @@ log_error_t()   { t "$1" "$2"; log_error   "$REPLY_T"; }
 ask_yn_t()      { t "$1" "$2"; ask_yn "$REPLY_T" "${3:-Y}"; }
 # ask_value_t <ru> <en> <дефолт>
 ask_value_t()   { t "$1" "$2"; ask_value "$REPLY_T" "$3"; }
+# ask_text_t <ru> <en> [дефолт] → REPLY_TEXT
+ask_text_t()    { t "$1" "$2"; ask_text "$REPLY_T" "${3:-}"; }
 
 # st <цвет> <ru> <en> — строка статуса пункта.
 # Статусы печатаются десятками и всегда одной формой «цвет + текст + сброс»,

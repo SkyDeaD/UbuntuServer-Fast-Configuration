@@ -226,6 +226,14 @@ jobs:
           # pri=5, UUID=/LABEL= — после перезагрузки своп поднимался с -2
           bash tests/test_fstab_swap.sh src/setup.sh
 
+      - name: Файрвол — порты, ping, Docker
+        run: |
+          # Правка before.rules (ping) и after.rules (Docker) на эталонных
+          # файлах ufw: совпадает со схемой, повтор идемпотентен, обратная
+          # правка — байт-в-байт. Тест поймал обрезание after.rules при
+          # чтении и записи в одном конвейере
+          bash tests/test_firewall.sh src/setup.sh
+
       - name: Чужие drop-in'ы sshd
         run: |
           # sshd берёт ПЕРВОЕ значение ключа. Файл провайдера 00-*.conf с

@@ -21,7 +21,7 @@ ask_yn() {
     # заход. В неинтерактивном прогоне эти ветки недостижимы по построению:
     # уже применённые пункты run_noninteractive пропускает, удаление живёт
     # только в меню, а гейт ОС срабатывает раньше всего.
-    if [ "${USFC_ASSUME_YES:-false}" = true ] && [ "${USFC_CMD:-}" = apply ]; then
+    if [ "${USFC_ASSUME_YES:-false}" = true ] && { [ "${USFC_CMD:-}" = apply ] || [ "${USFC_CMD:-}" = firewall ]; }; then
         return 0
     fi
     if [ "$BULK_MODE" = true ]; then
@@ -49,6 +49,18 @@ ask_bulk_yn() {
         N) return 1 ;;
     esac
     ask_yn_t "$2" "$3" "${4:-Y}"
+}
+
+# ask_text <вопрос> [дефолт] → REPLY_TEXT — строка как есть (список портов,
+# адрес). Проверяет вызывающий: у каждого поля своя грамматика
+REPLY_TEXT=''
+ask_text() {
+    local question="${1:-}" default="${2:-}" reply
+    REPLY_TEXT="$default"
+    [ "$BULK_MODE" = true ] && return 0
+    ui_prompt "$question" "$default"
+    read -r reply </dev/tty || return 0
+    REPLY_TEXT="${reply:-$default}"
 }
 
 # ask_value question default — как ask_yn, но для чисел; печатает результат

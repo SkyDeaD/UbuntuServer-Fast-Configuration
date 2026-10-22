@@ -156,7 +156,7 @@ uninstall_self() {
 # формы не работают, а печатают готовую новую строку: скрипт из cloud-init
 # упадёт громко, а не сделает что-то не то.
 
-USFC_COMMANDS="apply audit list backups restore help version"
+USFC_COMMANDS="apply firewall audit list backups restore help version"
 
 # Что делать вместо меню. Пусто — обычный интерактивный запуск.
 USFC_CMD=""
@@ -248,17 +248,22 @@ parse_args() {
                     ru|en) USFC_LANG="$REPLY_CLI_VAL"; USFC_LANG_EXPLICIT=true ;;
                     *) _cli_die "--lang: ru или en, а не «${REPLY_CLI_VAL}»" "--lang: ru or en, not \"${REPLY_CLI_VAL}\"" ;;
                 esac ;;
-            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1; used+=("--dry-run: apply") ;;
-            -y|--yes)     USFC_ASSUME_YES=true; used+=("--yes:apply restore") ;;
+            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1; used+=("--dry-run:apply firewall") ;;
+            -y|--yes)     USFC_ASSUME_YES=true; used+=("--yes:apply restore firewall") ;;
             --json)       USFC_AUDIT_JSON=true; used+=("--json:audit") ;;
             --config|--config=*)
                 _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
-                USFC_CONFIG_FILE="$REPLY_CLI_VAL"; used+=("--config:apply") ;;
+                USFC_CONFIG_FILE="$REPLY_CLI_VAL"; used+=("--config:apply firewall") ;;
             --set|--set=*)
                 _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
                 [[ "$REPLY_CLI_VAL" == *=* ]] || _cli_die "--set: ожидается КЛЮЧ=значение" "--set: expected KEY=value"
                 _answer_row key "${REPLY_CLI_VAL%%=*}" || _cli_die "--set: неизвестный ключ ${REPLY_CLI_VAL%%=*}" "--set: unknown key ${REPLY_CLI_VAL%%=*}"
-                USFC_FLAG_ANS[$REPLY_ANS_KEY]="${REPLY_CLI_VAL#*=}"; used+=("--set:apply") ;;
+                USFC_FLAG_ANS[$REPLY_ANS_KEY]="${REPLY_CLI_VAL#*=}"; used+=("--set:apply firewall") ;;
+            --deny|--deny=*)
+                # закрыть порт — только в firewall: у пункта ufw такого вопроса нет
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                fw_parse_ports "$REPLY_CLI_VAL" || _cli_die "--deny: ${REPLY_FW_ERR}" "--deny: ${REPLY_FW_ERR}"
+                FW_CMD_DENY="${FW_CMD_DENY}${FW_CMD_DENY:+ }${REPLY_FW_PORTS}"; used+=("--deny:firewall") ;;
             --*)
                 # флаги ответов из таблицы: --x (Y), --no-x (N), --x <значение>
                 opt="${a%%=*}"
@@ -272,7 +277,12 @@ parse_args() {
                 else
                     _cli_die "неизвестная опция ${a}" "unknown option ${a}"
                 fi
-                used+=("${opt}:apply") ;;
+                # флаги файрвола одни и те же у apply и у firewall
+                if [ "$REPLY_ANS_ITEM" = ufw ] && [ "$REPLY_ANS_KEY" != UFW ]; then
+                    used+=("${opt}:apply firewall")
+                else
+                    used+=("${opt}:apply")
+                fi ;;
             -*) _cli_die "неизвестная опция ${a}" "unknown option ${a}" ;;
             *)
                 if [ -z "$USFC_CMD" ]; then
@@ -286,6 +296,21 @@ parse_args() {
                         restore) [ -z "$USFC_RESTORE_STAMP" ] || _cli_die "restore: метка одна" "restore: only one stamp"
                                  USFC_RESTORE_STAMP="$a" ;;
                         help)    USFC_HELP_TOPIC="$a" ;;
+                        firewall)
+                            # usfc firewall ping off · usfc firewall docker on
+                            if [ -z "$FW_CMD_ACTION" ]; then
+                                case "$a" in
+                                    ping|docker) FW_CMD_ACTION="$a" ;;
+                                    *) _cli_die "firewall: «${a}» — ожидается ping или docker" "firewall: \"${a}\" — expected ping or docker" ;;
+                                esac
+                            elif [ -z "$FW_CMD_VALUE" ]; then
+                                case "$a" in
+                                    on|off) FW_CMD_VALUE="$a" ;;
+                                    *) _cli_die "firewall ${FW_CMD_ACTION}: on или off, а не «${a}»" "firewall ${FW_CMD_ACTION}: on or off, not \"${a}\"" ;;
+                                esac
+                            else
+                                _cli_die "firewall: лишний аргумент «${a}»" "firewall: unexpected argument \"${a}\""
+                            fi ;;
                         *)       _cli_die "${USFC_CMD}: лишний аргумент «${a}»" "${USFC_CMD}: unexpected argument \"${a}\"" ;;
                     esac
                 fi ;;
@@ -314,6 +339,9 @@ parse_args() {
         apply)
             [ -n "$USFC_APPLY_SPEC" ] || [ -n "$USFC_CONFIG_FILE" ] \
                 || _cli_die "apply: что применять? Профиль, id или номера: usfc apply web" "apply: what to apply? A profile, ids or numbers: usfc apply web" ;;
+        firewall)
+            [ -z "$FW_CMD_ACTION" ] || [ -n "$FW_CMD_VALUE" ] \
+                || _cli_die "firewall ${FW_CMD_ACTION}: on или off?" "firewall ${FW_CMD_ACTION}: on or off?" ;;
         restore)
             # без метки откат спрашивает её с терминала — в скрипте спросить некого
             if [ -z "$USFC_RESTORE_STAMP" ] && ! usfc_interactive; then
@@ -374,6 +402,8 @@ _usage_answer_flags() {
         case "$ty" in
             yn)  name="${fl} / --no-${fl#--}" ;;
             pct) name="${fl} <1..400>" ;;
+            ports) if [ "$USFC_LANG" = en ]; then name="${fl} <ports>"; else name="${fl} <порты>"; fi ;;   # i18n-ok: пара на той же строке
+            addr)  name="${fl} <IP>" ;;
             *)   name="${fl} <N>" ;;
         esac
         if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
@@ -393,7 +423,7 @@ _usage_answer_keys() {
 show_usage() {
     local topic="${1:-}"
     case "$topic" in
-        ''|apply|audit|list|backups|restore|version) ;;
+        ''|apply|firewall|audit|list|backups|restore|version) ;;
         *) _cli_die "нет справки по «${topic}». Команды: ${USFC_COMMANDS}" "no help for \"${topic}\". Commands: ${USFC_COMMANDS}" ;;
     esac
     if [ "$USFC_LANG" = en ]; then show_usage_en "$topic"; else show_usage_ru "$topic"; fi
@@ -450,6 +480,32 @@ usfc backups. Без метки спросит её (нужен терминал
 подтверждения.
 EOF
             ;;
+        firewall)
+            cat <<EOF
+usfc firewall [опции] — файрвол UFW: порты, ping, Docker
+
+  usfc firewall                          сводка: политика, правила, ping, Docker
+  usfc firewall --allow 80,443,51820/udp открыть порты (UFW выключен — включит)
+  usfc firewall --allow 5432 --from 10.0.0.5
+                                         открыть только для адреса или подсети
+  usfc firewall --deny 8080              убрать разрешение
+  usfc firewall ping on|off              отвечать ли на ping
+  usfc firewall docker on|off            подчинить ли порты контейнеров UFW
+
+Порты: 443 (tcp), 51820/udp, 1000:2000/tcp — через запятую.
+Опции: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
+--no-docker-firewall, --config, --set, --dry-run, -y/--yes.
+
+SSH-порт (${SSH_PORT}) разрешается первым и не закрывается никогда. Включение
+выключенного UFW у терминала спрашивает подтверждение; --yes — не спрашивать.
+Ping выключается правкой /etc/ufw/before.rules (ACCEPT → DROP в блоках ICMP);
+в IPv6 — только echo-request: остальной ICMPv6 нужен самому IPv6.
+Docker публикует порты мимо UFW; docker on добавляет в /etc/ufw/after.rules
+схему ufw-docker. Только IPv4 и только iptables-бэкенд Docker.
+
+Коды возврата: 0 — готово; 1 — часть действий не удалась; 2 — ошибка в аргументах.
+EOF
+            ;;
         list)    echo "usfc list — профили и id пунктов для usfc apply" ;;   # i18n-ok: пара — show_usage_en
         backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;   # i18n-ok: пара — show_usage_en
         version) echo "usfc version — версия (то же: -V, --version)" ;;   # i18n-ok: пара — show_usage_en
@@ -462,6 +518,7 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
 
 Команды:
   apply <что>        применить пункты без вопросов по ходу
+  firewall           файрвол: порты, ping, Docker
   audit              проверить сервер (только чтение)
   list               профили и id пунктов
   backups            снимки конфигов
@@ -479,7 +536,8 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
 
 Примеры:
   sudo usfc apply web --dry-run
-  sudo usfc apply basepkgs,cli,docker,zram,ufw --swap 2048 --yes
+  sudo usfc apply basepkgs,cli,docker,zram,ufw --allow 443,51820/udp --no-ping --swap 2048 --yes
+  sudo usfc firewall --allow 8443
   sudo usfc apply --config https://example.com/node.conf
   sudo usfc audit --json
 
@@ -545,6 +603,32 @@ with usfc backups. Without a stamp it asks for one (needs a terminal);
 --yes skips the confirmation.
 EOF
             ;;
+        firewall)
+            cat <<EOF
+usfc firewall [options] — the UFW firewall: ports, ping, Docker
+
+  usfc firewall                          summary: policy, rules, ping, Docker
+  usfc firewall --allow 80,443,51820/udp open ports (enables UFW if it is off)
+  usfc firewall --allow 5432 --from 10.0.0.5
+                                         open only to an address or a subnet
+  usfc firewall --deny 8080              remove a rule
+  usfc firewall ping on|off              whether to reply to ping
+  usfc firewall docker on|off            whether container ports obey UFW
+
+Ports: 443 (tcp), 51820/udp, 1000:2000/tcp — comma-separated.
+Options: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
+--no-docker-firewall, --config, --set, --dry-run, -y/--yes.
+
+The SSH port (${SSH_PORT}) is allowed first and is never closed. Enabling UFW
+that is off asks for confirmation at a terminal; --yes skips it.
+Ping is turned off by editing /etc/ufw/before.rules (ACCEPT → DROP in the ICMP
+sections); for IPv6 only echo-request: the rest of ICMPv6 is needed by IPv6 itself.
+Docker publishes ports past UFW; docker on adds the ufw-docker scheme to
+/etc/ufw/after.rules. IPv4 only, and only with Docker's iptables backend.
+
+Exit codes: 0 — done; 1 — some actions failed; 2 — an error in the arguments.
+EOF
+            ;;
         list)    echo "usfc list — profiles and item ids for usfc apply" ;;
         backups) echo "usfc backups — config snapshots, newest last; undo with usfc restore <stamp>" ;;
         version) echo "usfc version — the version (same as -V, --version)" ;;
@@ -557,6 +641,7 @@ With no command, the menu opens.
 
 Commands:
   apply <what>       apply items without questions along the way
+  firewall           the firewall: ports, ping, Docker
   audit              check the server (read-only)
   list               profiles and item ids
   backups            config snapshots
@@ -574,7 +659,8 @@ Common options:
 
 Examples:
   sudo usfc apply web --dry-run
-  sudo usfc apply basepkgs,cli,docker,zram,ufw --swap 2048 --yes
+  sudo usfc apply basepkgs,cli,docker,zram,ufw --allow 443,51820/udp --no-ping --swap 2048 --yes
+  sudo usfc firewall --allow 8443
   sudo usfc apply --config https://example.com/node.conf
   sudo usfc audit --json
 

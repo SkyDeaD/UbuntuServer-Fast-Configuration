@@ -132,6 +132,10 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "CF_TOKEN|CF_TOKEN_BULK|secret||certbot|API-токен Cloudflare (Zone:DNS:Edit)|Cloudflare API token (Zone:DNS:Edit)"
     "CERTBOT_TLS|CERTBOT_TLS_BULK|yn|--certbot-tls|certbot|TLS-заготовки в /etc/letsencrypt|TLS boilerplate in /etc/letsencrypt"
     "UFW|UFW_BULK|yn|--ufw|ufw|включить UFW|enable UFW"
+    "UFW_ALLOW|UFW_ALLOW_BULK|ports|--allow|ufw|открыть порты: 443,51820/udp,1000:2000/tcp|open ports: 443,51820/udp,1000:2000/tcp"
+    "UFW_FROM|UFW_FROM_BULK|addr|--from|ufw|открывать их только для этого IP/подсети|open them only to this IP/subnet"
+    "UFW_PING|UFW_PING_BULK|yn|--ping|ufw|отвечать на ping (--no-ping — не отвечать)|reply to ping (--no-ping — do not)"
+    "UFW_DOCKER|UFW_DOCKER_BULK|yn|--docker-firewall|ufw|подчинить порты Docker-контейнеров UFW|put Docker container ports behind UFW"
 )
 
 # _answer_row <поле> <значение> — найти строку таблицы → REPLY_ANS_ROW
@@ -166,6 +170,8 @@ answer_normalize() {
             esac ;;
         int) [[ "$v" =~ ^[0-9]+$ ]] || return 1; REPLY_ANS="$v" ;;
         pct) [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 400 ] || return 1; REPLY_ANS="$v" ;;
+        ports) fw_parse_ports "$v" && [ -n "$REPLY_FW_PORTS" ] || return 1; REPLY_ANS="$REPLY_FW_PORTS" ;;
+        addr)  fw_valid_from "$v" || return 1; REPLY_ANS="$v" ;;
         *)   [ -n "$v" ] || return 1; REPLY_ANS="$v" ;;
     esac
 }
@@ -182,6 +188,9 @@ answer_set() {
             yn)  t "${key}: ожидается Y или N, а не «${val}»" "${key}: expected Y or N, not \"${val}\"" ;;
             int) t "${key}: ожидается целое число, а не «${val}»" "${key}: expected a whole number, not \"${val}\"" ;;
             pct) t "${key}: ожидается процент 1..400, а не «${val}»" "${key}: expected a percentage 1..400, not \"${val}\"" ;;
+            ports) if [ -n "$REPLY_FW_ERR" ]; then REPLY_T="${key}: ${REPLY_FW_ERR}"
+                   else t "${key}: пустой список портов" "${key}: empty port list"; fi ;;
+            addr) t "${key}: ожидается IP или подсеть (1.2.3.4, 10.0.0.0/8), а не «${val}»" "${key}: expected an IP or a subnet (1.2.3.4, 10.0.0.0/8), not \"${val}\"" ;;
             *)   t "${key}: пустое значение" "${key}: empty value" ;;
         esac
         log_error "$REPLY_T"
@@ -294,7 +303,8 @@ filter_pending() {
         # Уже применённое пропускаем. Это не оптимизация, а вопрос смысла:
         # в меню повторный выбор ⇄-пункта означает «переключить», и без этой
         # проверки автоматический прогон ВЫКЛЮЧАЛ бы то, что просили включить
-        if item_applied "$id"; then
+        # Исключение — ufw с явными портами, ping или Docker (fw_has_answers)
+        if item_applied "$id" && ! { [ "$id" = ufw ] && fw_has_answers; }; then
             REPLY_ALREADY+=("$id")
             continue
         fi

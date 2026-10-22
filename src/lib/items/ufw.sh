@@ -2,86 +2,213 @@
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
 # ── Пункт меню: UFW firewall ─────────────────────────────────────────
+# Логика файрвола — в lib/firewall.sh, её же использует `usfc firewall`
 usfc_item ufw защита "UFW firewall" \
     "файрвол: закрывает всё, кроме нужного" \
     "UFW firewall" \
     "closes everything except what is needed"
 usfc_item_toggle ufw
 
-usfc_item_full ufw "Файрвол: закрывает все порты, кроме нужных — SSH-порта и того, что сервер уже
-реально слушает на момент включения.
+usfc_item_full ufw "Файрвол: закрывает входящие подключения ко всем портам, кроме SSH и тех,
+что вы разрешили. Список предлагается по тому, что сервер слушает сейчас —
+TCP и UDP, с именем процесса, — и его можно поправить: добавить порт ещё не
+запущенного сервиса (443, 51820/udp, 1000:2000/tcp) или убрать лишний.
 
-Автоопределение занятых портов сделано именно для того, чтобы включение UFW
-не отрезало уже поднятые Docker и nginx. Но если на сервере крутится VPN или
-прокси, его порт всё равно стоит проверить глазами перед включением." \
-"A firewall: closes every port except the ones you need — the SSH port and
-whatever the server is actually listening on at the moment it is enabled.
+Здесь же — ответ на ping (выключается правкой /etc/ufw/before.rules) и, если
+стоит Docker, связка с ним: Docker публикует порты контейнеров МИМО UFW, и без
+связки -p 8080:80 открыт всему миру даже при включённом файрволе.
 
-Detecting the busy ports exists precisely so that enabling UFW does not cut
-off Docker and nginx that are already up. But if a VPN or a proxy is running
-here, check its port with your own eyes before enabling."
+Потом порты меняются командой: usfc firewall --allow 8443 / --deny 8443." \
+"A firewall: blocks incoming connections to every port except SSH and the ones
+you allow. The list is suggested from what the server listens on right now —
+TCP and UDP, with the process name — and you can edit it: add the port of a
+service that is not running yet (443, 51820/udp, 1000:2000/tcp) or drop one.
 
-usfc_item_rollback ufw "sudo ufw reset          # сбросить правила и выключить
-     sudo apt purge ufw      # снести совсем
-     # сервер останется без файрвола — открыты все порты, которые слушают сервисы" \
-"sudo ufw reset          # reset the rules and disable it
-     sudo apt purge ufw      # remove it entirely
-     # the server is left with no firewall — every listening port becomes reachable"
+Also here: ping replies (turned off by editing /etc/ufw/before.rules) and, if
+Docker is installed, tying it to UFW: Docker publishes container ports PAST
+UFW, so without this -p 8080:80 is open to the world even with the firewall on.
+
+Change ports later with: usfc firewall --allow 8443 / --deny 8443."
+
+usfc_item_rollback ufw "sudo ufw disable        # выключить, правила останутся
+     sudo usfc restore       # вернуть before.rules/after.rules (ping, Docker)
+     sudo ufw reset          # сбросить все правила
+     # без файрвола открыты все порты, которые слушают сервисы" \
+"sudo ufw disable        # turn it off, the rules stay
+     sudo usfc restore       # bring back before.rules/after.rules (ping, Docker)
+     sudo ufw reset          # reset every rule
+     # with no firewall every listening port is reachable"
 
 status_ufw() {
-    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep "Status: active" >/dev/null; then
+    if ufw_active; then
         st "$GREEN" "✓ включён" "✓ enabled"; return 0
     else
         st "$DIM" "○ выключен" "○ disabled"; return 1
     fi
 }
 
-# Вопрос пакетного режима (см. lib/bulk.sh): тот же, что в apply_ufw, и с
+# Таблица того, что слушает наружу, — чтобы человек видел, что закроется
+_ufw_show_listening() {
+    fw_listening
+    log_info_t "Сервер слушает наружу (TCP и UDP):" "The server listens publicly on (TCP and UDP):"
+    if [ -z "$REPLY_FW_LISTEN" ]; then
+        t "ничего, кроме SSH" "nothing but SSH"; printf '      %s\n' "$REPLY_T"
+    else
+        local p proc
+        while read -r p proc; do
+            printf '      %-14s %s\n' "$p" "$proc"
+        done <<< "$REPLY_FW_LISTEN"
+    fi
+}
+
+# _ufw_proposed → REPLY_FW_PORTS: заданный список (--allow, UFW_ALLOW или
+# ответ preask) или всё, что слушает наружу, кроме SSH (он разрешается всегда)
+_ufw_proposed() {
+    if [ -n "$UFW_ALLOW_BULK" ]; then
+        fw_parse_ports "$UFW_ALLOW_BULK"; return
+    fi
+    fw_listening
+    local p proc list=''
+    while read -r p proc; do
+        [ -n "$p" ] || continue
+        [ "$p" = "${SSH_PORT}/tcp" ] && continue
+        list="${list} ${p}"
+    done <<< "$REPLY_FW_LISTEN"
+    fw_parse_ports "$list"
+}
+
+# _ufw_ask_ports — поправить список руками; «-» — только SSH.
+# Ответ — в UFW_ALLOW_BULK, его же прочтёт apply_ufw
+_ufw_ask_ports() {
+    _ufw_proposed
+    local def="${REPLY_FW_PORTS// /,}"
+    while :; do
+        ask_text_t "Какие порты открыть кроме SSH (${SSH_PORT})? «-» — никаких" "Which ports to open besides SSH (${SSH_PORT})? «-» — none" "${def:--}"
+        if [ "$REPLY_TEXT" = - ]; then UFW_ALLOW_BULK=''; return 0; fi
+        if fw_parse_ports "$REPLY_TEXT"; then UFW_ALLOW_BULK="$REPLY_FW_PORTS"; return 0; fi
+        log_warn "$REPLY_FW_ERR"
+    done
+}
+
+# Ping и Docker в пакете меняются только по явному ответу. Дефолт вопроса —
+# текущее состояние: Enter ничего не меняет, а `--yes` не включает ответ на
+# ping обратно на сервере, где его выключили руками
+_ufw_ping_default() {
+    fw_ping_state
+    REPLY_T=Y; [ "$REPLY_FW_PING" = off ] && REPLY_T=N
+}
+_ufw_ask_ping() {
+    _ufw_ping_default
+    ask_yn_t "Отвечать на ping?" "Reply to ping?" "$REPLY_T" && UFW_PING_BULK=Y || UFW_PING_BULK=N
+}
+_ufw_ask_docker() {
+    fw_docker_published
+    if [ -n "$REPLY_FW_DOCKER" ]; then
+        log_info_t "Опубликованные порты контейнеров (сейчас открыты всем):" "Published container ports (open to everyone now):"
+        local hp cp name
+        while read -r hp cp name; do printf '      %-14s → %-6s %s\n' "$hp" "$cp" "$name"; done <<< "$REPLY_FW_DOCKER"
+        log_warn_t "После связки снаружи останутся доступны только те из них, что в списке разрешённых" \
+"Once tied, only those of them that are in the allowed list stay reachable from outside"
+    fi
+    local def=N
+    fw_docker_on && def=Y
+    ask_yn_t "Подчинить порты Docker-контейнеров UFW?" "Put Docker container ports behind UFW?" "$def" \
+        && UFW_DOCKER_BULK=Y || UFW_DOCKER_BULK=N
+}
+
+# Вопросы пакетного режима (см. lib/bulk.sh): те же, что в apply_ufw, и с
 # тем же предупреждением — включённый вслепую файрвол рвёт VPN и прокси
 preask_ufw() {
-    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep "Status: active" >/dev/null && return 0
-    local listening
-    listening="$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' | grep -oE '[0-9]+$' | sort -un | tr '\n' ' ')"
+    ufw_active && return 0
     echo ""
-    log_info_t "UFW закроет всё, кроме SSH (${SSH_PORT}) и портов, которые сервер слушает сейчас: ${listening:-нет}" \
-"UFW will close everything except SSH (${SSH_PORT}) and the ports the server listens on now: ${listening:-none}"
-    log_warn_t "Если тут крутится VPN/прокси на UDP или ещё не запущенный сервис — его порт будет закрыт" \
-"If a VPN or proxy runs here over UDP, or a service is not started yet, its port will be closed"
+    _ufw_show_listening
+    log_warn_t "UFW закроет всё, кроме SSH (${SSH_PORT}) и портов из списка ниже — проверьте VPN и прокси (UDP!)" \
+"UFW will close everything except SSH (${SSH_PORT}) and the ports listed below — check VPNs and proxies (UDP!)"
     ask_yn_t "Включить UFW в этом прогоне?" "Enable UFW in this run?" N \
-        && UFW_BULK=Y || UFW_BULK=N
+        && UFW_BULK=Y || { UFW_BULK=N; return 0; }
+    _ufw_ask_ports
+    _ufw_ask_ping
+    if command -v docker >/dev/null 2>&1 || [[ "$USFC_PREASK_IDS" == *" docker "* ]]; then
+        _ufw_ask_docker
+    fi
+}
+
+# Ping и Docker по ответам UFW_PING / UFW_DOCKER; в меню — спросить
+_ufw_extras() {
+    local rc=0
+    [ "$BULK_MODE" = true ] || _ufw_ask_ping
+    case "$UFW_PING_BULK" in Y) fw_ping_set on || rc=1 ;; N) fw_ping_set off || rc=1 ;; esac
+
+    if command -v docker >/dev/null 2>&1; then
+        [ "$BULK_MODE" = true ] || _ufw_ask_docker
+        case "$UFW_DOCKER_BULK" in
+            Y) fw_docker_set on || rc=1 ;;
+            N) fw_docker_set off || rc=1 ;;
+            *) fw_docker_on || log_warn_t "Порты Docker-контейнеров открыты мимо UFW. Закрыть: usfc firewall docker on" \
+"Docker container ports bypass UFW. To close them: usfc firewall docker on" ;;
+        esac
+    fi
+    return "$rc"
 }
 
 apply_ufw() {
-    log_info_t "Обнаруженные слушающие TCP-порты:" \
-"Detected listening TCP ports:"
-    local listening
-    listening="$(ss -tlnH 2>/dev/null | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' | grep -oE '[0-9]+$' | sort -un)"
-    echo "$listening" | sed 's/^/      /'
+    # UFW уже включён, а в пакет пришли явные порты, ping или Docker —
+    # filter_pending пропускает пункт дальше именно ради них. Включать нечего
+    # и согласия не нужно: только добавить правила, ничего не закрывая
+    if [ "$BULK_MODE" = true ] && ufw_active; then
+        local rc=0
+        if [ -n "$UFW_ALLOW_BULK" ]; then
+            fw_parse_ports "$UFW_ALLOW_BULK" || { log_error "$REPLY_FW_ERR"; return 1; }
+            local -a add=()
+            read -ra add <<< "$REPLY_FW_PORTS"
+            if fw_allow "$UFW_FROM_BULK" "${add[@]}"; then
+                log_success_t "UFW уже включён, добавлены: ${REPLY_FW_PORTS}" "UFW is already on, added: ${REPLY_FW_PORTS}"
+            else
+                rc=1
+            fi
+        fi
+        _ufw_extras || rc=1
+        return "$rc"
+    fi
+    _ufw_show_listening
     echo ""
-    log_warn_t "Если на сервере уже крутится VPN/прокси — включение без разрешения ЕГО портов оборвёт его" \
-"If a VPN or proxy is already running here, enabling UFW without allowing ITS ports will cut it off"
-    # В пакете — только по ответу, данному заранее (preask_ufw или файл
-    # ответов). Раньше UFW здесь пропускался всегда, и профили web/secure,
-    # в которых он есть, на деле его никогда не включали
+    # В пакете — только по ответу, данному заранее (preask_ufw, файл
+    # ответов, --ufw, --allow). Раньше UFW здесь пропускался всегда, и
+    # профили web/secure, в которых он есть, на деле его никогда не включали
     if [ "$BULK_MODE" = true ] && [ "$UFW_BULK" != Y ]; then
         log_info_t "UFW не включаю: в этом прогоне на него не было согласия" \
 "Not enabling UFW: there was no consent to it in this run"
-        item_skip_t "нет согласия (--ufw)" "no consent (--ufw)"
+        item_skip_t "нет согласия (--ufw или --allow)" "no consent (--ufw or --allow)"
         return
     fi
-    if ! ask_bulk_yn UFW_BULK "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" "Enable UFW, allowing the SSH port (${SSH_PORT}) and every port listed above?" N; then return; fi
+    [ "$BULK_MODE" = true ] || _ufw_ask_ports
+    _ufw_proposed || { log_error "$REPLY_FW_ERR"; return 1; }
+    local -a ports=()
+    [ -n "$REPLY_FW_PORTS" ] && read -ra ports <<< "$REPLY_FW_PORTS"
+    t "только SSH" "SSH only"
+    local shown="${REPLY_FW_PORTS:-$REPLY_T}"
+    [ -n "$UFW_FROM_BULK" ] && [ -n "$REPLY_FW_PORTS" ] && shown="${shown} (← ${UFW_FROM_BULK})"
+    log_warn_t "Будут открыты: SSH ${SSH_PORT}/tcp, ${shown}. Остальное закроется" \
+"Will be open: SSH ${SSH_PORT}/tcp, ${shown}. Everything else gets closed"
+    if ! ask_bulk_yn UFW_BULK "Включить UFW?" "Enable UFW?" N; then return; fi
     ensure_pkg "UFW" ufw || return 1
-    ufw allow "${SSH_PORT}"/tcp >/dev/null
-    while read -r p; do
-        [ -n "$p" ] && ufw allow "${p}"/tcp >/dev/null
-    done <<< "$listening"
-    ufw --force enable >/dev/null
-    log_success_t "UFW включён" \
-"UFW enabled"
-    ufw status | sed 's/^/      /'
+    if ! fw_enable "$UFW_FROM_BULK" "${ports[@]+"${ports[@]}"}"; then
+        ufw_active || return 1
+        log_warn_t "UFW включён, но не все порты разрешились — см. ошибки выше" \
+"UFW is on, but not every port was allowed — see the errors above"
+    else
+        log_success_t "UFW включён" "UFW enabled"
+    fi
+
+    _ufw_extras
+    ufw status 2>/dev/null | sed 's/^/      /'
 }
 
 disable_ufw() {
-    ask_yn_t "Выключить UFW?" "Disable UFW?" N && { ufw disable &>/dev/null; log_success_t "UFW выключен" \
-"UFW disabled"; }
+    ask_yn_t "Выключить UFW?" "Disable UFW?" N || return 0
+    if _fw_ufw disable; then
+        log_success_t "UFW выключен" "UFW disabled"
+    else
+        return 1
+    fi
 }

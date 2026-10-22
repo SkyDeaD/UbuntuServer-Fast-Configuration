@@ -197,7 +197,8 @@ process_item() {
     echo ""
     local rc=0
     ITEM_SKIP_REASON=''
-    if item_supports_disable "$id" && item_applied "$id"; then
+    if item_supports_disable "$id" && item_applied "$id" \
+       && ! { [ "$id" = ufw ] && fw_has_answers; }; then
         # У nginx и Docker disable_* — переключатель (см. комментарий там же),
         # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
         local verb
