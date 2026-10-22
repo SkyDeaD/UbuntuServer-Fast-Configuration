@@ -135,11 +135,9 @@ main() {
         apply)   run_noninteractive; exit $? ;;
     esac
 
+    # Пользователь и SSH-порт здесь больше не печатаются: они стоят строкой
+    # над таблицей меню, а две [i]-строки до неё только сдвигали экран
     show_header
-    log_info_t "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}" \
-"User: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
-    log_info_t "SSH-порт: ${SSH_PORT}" \
-"SSH port: ${SSH_PORT}"
 
     # usfc-обёртка — не отдельный пункт меню, ставится сама при первом запуске,
     # свой маркер, идемпотентно. Пропускаем для прямого root — sudo тут бесполезен
@@ -169,14 +167,10 @@ main() {
     if [ "$TARGET_USER" = "root" ] && [ "$ROOT_PROMPT_SHOWN" = false ]; then
         ROOT_PROMPT_SHOWN=true
         echo ""
-        log_warn_t "Скрипт запущен от имени root." \
-"Running as root."
-        log_info_t "РЕКОМЕНДУЮ создать обычного пользователя с sudo: работать из-под root" \
-"RECOMMENDED: create a normal sudo user. Working as root is unsafe,"
-        log_info_t "небезопасно, SSH hardening без отдельного пользователя не работает вообще," \
-"SSH hardening does not work at all without a separate user, and aliases,"
-        log_info_t "а алиасы/fastfetch/tmux сейчас лягут в /root и пропадут после перелогина." \
-"fastfetch and tmux would land in /root and vanish once you re-login."
+        log_warn_t "Запуск от root. Лучше завести пользователя с sudo: без него не работает" \
+"Running as root. Better create a sudo user: SSH hardening does not work"
+        log_info_t "SSH hardening, а алиасы, fastfetch и tmux лягут в /root." \
+"without one, and aliases, fastfetch and tmux would land in /root."
         echo ""
         if ask_yn_t "Создать пользователя сейчас?" "Create the user now?" Y; then
             apply_newuser
@@ -202,8 +196,7 @@ main() {
 
     while true; do
         show_menu
-        t "Выбор:" "Choose:"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Выбор" "Choose"; ui_prompt "$REPLY_T"
         local choice
         read -r choice </dev/tty
         case "$choice" in
@@ -226,19 +219,21 @@ main() {
             [Vv]|[Vv][[:space:],]*[0-9]*)
                 local vnum="${choice#[Vv]}"; vnum="${vnum//[ ,]/}"
                 if [ -z "$vnum" ]; then
-                    t "Номер пункта для предпросмотра (Enter — отмена):" \
-                      "Item number to preview (Enter to cancel):"
-                    echo -en "  ${BOLD}${REPLY_T}${NC} "
+                    t "Номер пункта для предпросмотра" "Item number to preview"
+                    local _h="$REPLY_T"; t "Enter — отмена" "Enter cancels"
+                    ui_prompt "$_h" "$REPLY_T"
                     read -r vnum </dev/tty
                 fi
                 [ -n "$vnum" ] && { preview_item "$vnum"; pause; }
                 ;;
             *)
-                # номера и буквы разделов вперемешку через пробел/запятую:
-                # "5", "1 3 5", "1,3,5", "B", "B,S", "B,14" — всё разбирается одинаково
+                # номера, диапазоны и буквы разделов вперемешку через пробел/запятую:
+                # "5", "1 3 5", "1,3,5", "2-6", "B", "B,S", "B,14" — всё разбирается одинаково.
+                # Хоть один непонятный кусок — не делаем ничего: «1 3 7x» не должно
+                # молча применить 1 и 3
                 local -a nums valid=()
                 IFS=', ' read -ra nums <<< "$choice"
-                local tok upper i
+                local tok upper i lo hi bad_tok=''
                 for tok in "${nums[@]}"; do
                     [ -z "$tok" ] && continue
                     upper="${tok^^}"
@@ -251,9 +246,16 @@ main() {
                         valid+=($REPLY_SECTION_ITEMS)
                     elif [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
                         valid+=("$tok")
+                    elif [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                        # 10# — иначе «08» читается как восьмеричное и падает
+                        lo=$((10#${BASH_REMATCH[1]})); hi=$((10#${BASH_REMATCH[2]}))
+                        if [ "$lo" -ge 1 ] && [ "$lo" -le "$hi" ] && [ "$hi" -le "${#ITEM_IDS[@]}" ]; then
+                            for ((i = lo; i <= hi; i++)); do valid+=("$i"); done
+                        else
+                            bad_tok="$tok"; break
+                        fi
                     else
-                        log_error_t "Нет пункта «${tok}»" \
-"No such item: ${tok}"
+                        bad_tok="$tok"; break
                     fi
                 done
 
@@ -267,13 +269,21 @@ main() {
                 done
                 valid=("${dedup[@]}")
 
-                if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error_t "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, D, L, U, Q" \
-"Did not understand — an item number, a section letter (C/B/S/P/A), combinable with spaces or commas, or I, H, D, L, U, Q"
-                    sleep 1
+                # Ошибку не печатаем сразу: следующий show_menu очистит экран.
+                # Она встанет строкой над приглашением и продержится до ввода
+                if [ -n "$bad_tok" ]; then
+                    t "Нет пункта «${bad_tok}»: номера 1–${#ITEM_IDS[@]}, диапазон 2-5, буквы C B S P A" \
+"No item \"${bad_tok}\": numbers 1–${#ITEM_IDS[@]}, a range 2-5, letters C B S P A"
+                    MENU_NOTICE="$REPLY_T"
+                elif [ "${#valid[@]}" -eq 0 ]; then
+                    :   # пустой Enter — просто перерисовать меню
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
-                    process_item "${valid[0]}"
+                    local t0 rc1
+                    now_s; t0="$REPLY_NOW"
+                    process_item "${valid[0]}"; rc1=$?
+                    now_s
+                    item_result_line "${valid[0]}" "$rc1" "$((REPLY_NOW - t0))"
                     pause
                 else
                     # несколько пунктов разом — сначала убираем то, что уже применено

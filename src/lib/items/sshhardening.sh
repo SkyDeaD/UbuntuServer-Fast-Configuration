@@ -231,11 +231,13 @@ apply_sshhardening() {
 "Running directly as root — hardening needs a separate user"
         log_warn_t "Создай его (adduser <имя> && usermod -aG sudo <имя>) и перезайди под ним" \
 "Create one (adduser <name> && usermod -aG sudo <name>) and log back in as them"
+        item_skip_t "нужен отдельный пользователь" "needs a separate user"
         return
     fi
     if [ "$BULK_MODE" = true ]; then
         log_warn_t "SSH hardening требует явного подтверждения — пропущено в пакетном режиме. Настройте отдельно пунктом $(item_number sshhardening)." \
 "SSH hardening needs explicit confirmation — skipped in batch mode. Set it up separately via item $(item_number sshhardening)."
+        item_skip_t "только вручную, пункт $(item_number sshhardening)" "manual only, item $(item_number sshhardening)"
         return
     fi
     # bulk-ok: пункт целиком пропускается в пакете

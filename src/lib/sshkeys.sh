@@ -110,8 +110,8 @@ ensure_user_dir() {
 # опирается apply_newuser, решая, можно ли оставить пользователя без пароля
 add_pubkey_interactive() {
     local auth_keys="$1" pubkey_line
-    t "Вставь публичный ключ одной строкой:" "Paste the public key on one line:"
-    echo -en "  ${BOLD}${REPLY_T}${NC} "
+    t "Вставь публичный ключ одной строкой" "Paste the public key on one line"
+    ui_prompt "$REPLY_T"
     read -r pubkey_line </dev/tty
     if [ -z "$pubkey_line" ]; then
         log_info_t "Пусто — ключ не добавлен" \

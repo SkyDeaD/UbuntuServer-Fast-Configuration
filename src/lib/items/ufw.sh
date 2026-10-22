@@ -66,6 +66,7 @@ apply_ufw() {
     if [ "$BULK_MODE" = true ] && [ "$UFW_BULK" != Y ]; then
         log_info_t "UFW не включаю: в этом прогоне на него не было согласия" \
 "Not enabling UFW: there was no consent to it in this run"
+        item_skip_t "нет согласия (--ufw)" "no consent (--ufw)"
         return
     fi
     if ! ask_bulk_yn UFW_BULK "Включить UFW, разрешив SSH-порт (${SSH_PORT}) и все порты выше?" "Enable UFW, allowing the SSH port (${SSH_PORT}) and every port listed above?" N; then return; fi

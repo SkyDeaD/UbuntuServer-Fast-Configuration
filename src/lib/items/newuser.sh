@@ -78,6 +78,7 @@ apply_newuser() {
 "Creating a user needs a name and a password — skipped in batch mode."
         log_warn_t "Настройте отдельно пунктом $(item_number newuser)." \
 "Set it up separately via item $(item_number newuser)."
+        item_skip_t "нужны имя и пароль — вручную" "needs a name and password — manual"
         return
     fi
     if [ "$TARGET_USER" != "root" ]; then
@@ -100,8 +101,8 @@ apply_newuser() {
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
         t "Имя нового пользователя" "New user name"; local _p="$REPLY_T"
-        t "(латиница, начиная с буквы):" "(letters/digits, starting with a letter):"
-        echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
+        t "латиница, начиная с буквы" "letters/digits, starting with a letter"
+        ui_prompt "$_p" "$REPLY_T"
         read -r name </dev/tty
         if [ -z "$name" ]; then
             log_error_t "Пустое имя" \
@@ -195,11 +196,11 @@ apply_newuser() {
         attempt=$((attempt + 1))
         t "Пароль для ${name}" "Password for ${name}"; local _p="$REPLY_T"
         if [ "$existing" = true ]; then
-            t "(Enter — оставить текущий):" "(Enter keeps the current one):"
+            t "Enter — оставить текущий" "Enter keeps the current one"
         else
-            t "(Enter — без пароля, вход только по ключу):" "(Enter for none — key-only login):"
+            t "Enter — без пароля, вход только по ключу" "Enter for none — key-only login"
         fi
-        echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
+        ui_prompt "$_p" "$REPLY_T"
         read -rs pw1 </dev/tty; echo ""
         if [ -z "$pw1" ]; then
             # У существующей учётки пароль уже свой: блокировать его по Enter
@@ -221,8 +222,8 @@ apply_newuser() {
 "Neither a password nor keys — the user could not log in at all. Set a password."
             continue
         fi
-        t "Повтори пароль:" "Repeat the password:"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Повтори пароль" "Repeat the password"
+        ui_prompt "$REPLY_T"
         read -rs pw2 </dev/tty; echo ""
         if [ "$pw1" != "$pw2" ]; then
             log_error_t "Пароли не совпали" \

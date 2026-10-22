@@ -121,17 +121,6 @@ pad_title() {
     printf -v REPLY_PAD '%s%*s' "$s" "$pad" ''
 }
 
-# ячейка сетки фиксированной ширины (цветной текст + добивка пробелами) → REPLY_CELL.
-# В отличие от pad_title() не форсирует минимум 1 пробел: ячейки стоят вплотную
-REPLY_CELL=''
-grid_cell() {
-    local content="${1-}" width="${2:-0}" cpad
-    visible_len "$content"
-    cpad=$((width - REPLY_LEN))
-    [ "$cpad" -lt 0 ] && cpad=0
-    printf -v REPLY_CELL '%s%*s' "$content" "$cpad" ''
-}
-
 # обрезает цветную строку до width видимых символов, добавляя "..." если длиннее,
 # → REPLY_TRUNC. Предполагает, что вся строка обёрнута РОВНО в один цветовой код
 # (так и есть у всех status_* — один ${COLOR}...${NC} на всю строку)

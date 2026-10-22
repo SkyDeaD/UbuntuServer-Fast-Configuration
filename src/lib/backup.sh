@@ -104,8 +104,9 @@ backup_restore() {
     backup_list || return 1
 
     if [ -z "$stamp" ]; then
-        t "Метка снимка (Enter — отмена):" "Snapshot stamp (Enter to cancel):"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Метка снимка" "Snapshot stamp"; local _q="$REPLY_T"
+        t "Enter — отмена" "Enter to cancel"
+        ui_prompt "$_q" "$REPLY_T"
         read -r stamp </dev/tty
         [ -z "$stamp" ] && { log_info_t "Отменено" \
 "Cancelled"; return 0; }

@@ -119,8 +119,8 @@ apply_cloudflare_credentials() {
 
 ask_cf_token() {
     t "API-токен Cloudflare" "Cloudflare API token"; local _p="$REPLY_T"
-    t "(права Zone:DNS:Edit, ввод скрыт):" "(needs Zone:DNS:Edit, input hidden):"
-    echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
+    t "права Zone:DNS:Edit, ввод скрыт" "needs Zone:DNS:Edit, input hidden"
+    ui_prompt "$_p" "$REPLY_T"
     read -rs REPLY_CF_TOKEN </dev/tty; echo ""
     if [ -z "$REPLY_CF_TOKEN" ]; then
         log_error_t "Пустой токен — файл не создан" \
