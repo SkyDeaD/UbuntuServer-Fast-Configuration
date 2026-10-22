@@ -99,6 +99,10 @@ SECTION_LETTERS=(C B S P)
 # в пакете выглядел поломкой. Сбрасывается в process_item перед каждым пунктом
 ITEM_SKIP_REASON=''
 item_skip_t() { t "$1" "$2"; ITEM_SKIP_REASON="$REPLY_T"; }
+# ITEM_DONE=true — пункт сделал то, о чём его просили, хотя status_ это не
+# отражает: перенос SSH-порта под root, где сам hardening неприменим и
+# статус честно остаётся «нужен обычный пользователь»
+ITEM_DONE=false
 
 item_number() {
     local id="${1:-}" i

@@ -33,6 +33,7 @@ lib/items/certbot.sh
 lib/items/dockerlog.sh
 lib/items/journald.sh
 lib/items/fail2ban.sh
+lib/items/notify.sh
 lib/items/unattended.sh
 lib/items/zram.sh
 lib/items/sshhardening.sh

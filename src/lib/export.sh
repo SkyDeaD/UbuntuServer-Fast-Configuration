@@ -10,15 +10,15 @@
 # истории запусков: истории у usfc нет, а состояние правдиво и после ручных
 # правок.
 #
-# Секреты не выгружаются никогда: CF_TOKEN остаётся закомментированным
-# ключом без значения. Имя хоста у каждой ноды своё — тоже комментарий.
+# Секреты не выгружаются никогда: CF_TOKEN и TG_TOKEN остаются закомментированными
+# ключами без значения. Имя хоста у каждой ноды своё — тоже комментарий.
 # Только чтение: export, как и аудит, ничего не меняет.
 
 # export_answer <КЛЮЧ> — значение ключа по текущему состоянию → REPLY_EXPORT.
 # Код 1 — по системе ответ не определить, ключ не выгружается
 REPLY_EXPORT=''
 export_answer() {
-    local f v
+    local f v k
     REPLY_EXPORT=''
     case "$1" in
         SWAP_MB)
@@ -81,6 +81,34 @@ export_answer() {
                 [[ "$v" =~ prod=([YN]) ]] || return 1
             fi
             REPLY_EXPORT="${BASH_REMATCH[1]}" ;;
+        SSH_PORT_NEW)
+            # порт 22 — не перенос, выгружать нечего
+            [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && [ "$SSH_PORT" != 22 ] || return 1
+            REPLY_EXPORT="$SSH_PORT" ;;
+        REBOOT_TIME|REBOOT_WITH_USERS)
+            pkg_installed unattended-upgrades || return 1
+            v="$(apt-config dump Unattended-Upgrade::Automatic-Reboot 2>/dev/null)"
+            if [[ "$v" != *'"true"'* ]]; then
+                [ "$1" = REBOOT_TIME ] || return 1
+                REPLY_EXPORT=off; return 0
+            fi
+            if [ "$1" = REBOOT_TIME ]; then
+                v="$(apt-config dump Unattended-Upgrade::Automatic-Reboot-Time 2>/dev/null)"
+                [[ "$v" =~ \"([0-9]{1,2}:[0-9]{2})\" ]] || return 1
+                REPLY_EXPORT="${BASH_REMATCH[1]}"
+            else
+                v="$(apt-config dump Unattended-Upgrade::Automatic-Reboot-WithUsers 2>/dev/null)"
+                [[ "$v" == *'"true"'* ]] && REPLY_EXPORT=Y || REPLY_EXPORT=N
+            fi ;;
+        TG_CHAT|NOTIFY_EVENTS)
+            # chat_id не секрет (без токена им не воспользоваться); токен не читаем вовсе
+            f=/etc/usfc/notify.conf
+            [ -r "$f" ] || return 1
+            if [ "$1" = TG_CHAT ]; then k=TG_CHAT; else k=EVENTS; fi
+            v="$(sed -n "s/^${k}=//p" "$f" | tail -n 1)"
+            v="${v//[\"\']/}"
+            [ -n "$v" ] || return 1
+            REPLY_EXPORT="$v" ;;
         LAZYDOCKER)
             command -v docker >/dev/null 2>&1 || return 1
             command -v lazydocker >/dev/null 2>&1 && REPLY_EXPORT=Y || REPLY_EXPORT=N ;;
@@ -144,10 +172,11 @@ export_cmd() {
     for row in "${USFC_ANSWER_KEYS[@]}"; do
         IFS='|' read -r k _ ty fl it ru en <<< "$row"
         if [ "$USFC_LANG" = en ]; then line="$en"; else line="$ru"; fi
+        # секрет (CF_TOKEN, TG_TOKEN): ключ — да, значение — никогда
+        if [ "$ty" = secret ]; then
+            printf '# %s=\t\t# %s\n' "$k" "$line"; continue
+        fi
         case "$k" in
-            CF_TOKEN)
-                # секрет: ключ — да, значение — никогда
-                printf '# %s=\t\t# %s\n' "$k" "$line"; continue ;;
             HOSTNAME)
                 t "у каждой ноды своё" "each node has its own"
                 printf '# %s=%s\t# %s\n' "$k" "$(hostname 2>/dev/null)" "$REPLY_T"; continue ;;

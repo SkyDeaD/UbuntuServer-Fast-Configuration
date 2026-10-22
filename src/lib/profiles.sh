@@ -116,7 +116,9 @@ resolve_items() {
 #
 # Поля: КЛЮЧ|переменная|тип|флаг|пункт|описание ru|описание en
 #   тип: yn — да/нет (флаг --x даёт Y, --no-x даёт N); int — целое ≥ 0;
-#        pct — процент 1..400; secret — только в файле (в командной строке
+#        pct — процент 1..400; port — 22 или 1024..65535; time — ЧЧ:ММ или off;
+#        chat — chat_id Telegram или @канал; events — подмножество ssh,ban,reboot;
+#        secret — только в файле (в командной строке
 #        его увидел бы любой через ps)
 #   пункт — id, к которому ответ относится: флаг для пункта, которого нет в
 #        списке apply, — ошибка, а не тихое игнорирование
@@ -143,6 +145,12 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "STARSHIP_PRESET|STARSHIP_PRESET_BULK|starship|--starship|cli|вид промпта: minimal, git, powerline|prompt style: minimal, git, powerline"
     "STARSHIP_PROD|STARSHIP_PROD_BULK|yn|--starship-prod|cli|боевой сервер: имя хоста в промпте красным|production server: hostname in red in the prompt"
     "LAZYDOCKER|LAZYDOCKER_BULK|yn|--lazydocker|docker|поставить lazydocker (TUI для Docker)|install lazydocker (a Docker TUI)"
+    "SSH_PORT_NEW|SSH_PORT_NEW_BULK|port|--ssh-port|sshhardening|перенести SSH на этот порт (1024..65535 или 22)|move SSH to this port (1024..65535 or 22)"
+    "REBOOT_TIME|REBOOT_TIME_BULK|time|--reboot-time|unattended|перезагрузка после обновлений в ЧЧ:ММ (off — никогда)|reboot after updates at HH:MM (off — never)"
+    "REBOOT_WITH_USERS|REBOOT_WITH_USERS_BULK|yn|--reboot-with-users|unattended|перезагружать, даже если кто-то вошёл|reboot even when someone is logged in"
+    "TG_TOKEN|TG_TOKEN_BULK|secret||notify|токен Telegram-бота от @BotFather|Telegram bot token from @BotFather"
+    "TG_CHAT|TG_CHAT_BULK|chat|--tg-chat|notify|кому слать: chat_id (123456, -100…) или @канал|where to send: chat_id (123456, -100…) or @channel"
+    "NOTIFY_EVENTS|NOTIFY_EVENTS_BULK|events|--notify|notify|о чём слать: ssh,ban,reboot|what to report: ssh,ban,reboot"
 )
 
 # _answer_row <поле> <значение> — найти строку таблицы → REPLY_ANS_ROW
@@ -177,6 +185,32 @@ valid_timezone() {
     [ -f "/usr/share/zoneinfo/${v}" ]
 }
 
+# valid_ssh_port <порт> — 22 или непривилегированный 1024..65535. Порты
+# ниже 1024 заняты стандартными службами (80, 443, 25…): перенос SSH туда
+# почти всегда ошибка
+valid_ssh_port() {
+    [[ "$1" =~ ^[0-9]{1,5}$ ]] || return 1
+    local p=$((10#$1))
+    [ "$p" -eq 22 ] || { [ "$p" -ge 1024 ] && [ "$p" -le 65535 ]; }
+}
+
+# valid_notify_events <список> → REPLY_NOTIFY_EVENTS: «ssh,ban» в каноническом
+# порядке ssh,ban,reboot, без повторов. Пустой список — ошибка
+REPLY_NOTIFY_EVENTS=''
+valid_notify_events() {
+    local e out='' v=",${1,,},"
+    v="${v// /}"
+    REPLY_NOTIFY_EVENTS=''
+    for e in ${v//,/ }; do
+        case "$e" in ssh|ban|reboot) ;; *) return 1 ;; esac
+    done
+    for e in ssh ban reboot; do
+        [[ "$v" == *",${e},"* ]] && out="${out}${out:+,}${e}"
+    done
+    [ -n "$out" ] || return 1
+    REPLY_NOTIFY_EVENTS="$out"
+}
+
 # answer_normalize <тип> <значение> → REPLY_ANS. 1 — значение не подходит.
 # «y», «yes», «да» раньше молча значили «не Y», то есть «нет»
 REPLY_ANS=''
@@ -197,6 +231,15 @@ answer_normalize() {
         host)  valid_hostname "$v" || return 1; REPLY_ANS="${v,,}" ;;
         tz)    valid_timezone "$v" || return 1; REPLY_ANS="$v" ;;
         starship) case "${v,,}" in minimal|git|powerline) REPLY_ANS="${v,,}" ;; *) return 1 ;; esac ;;
+        port) valid_ssh_port "$v" || return 1; REPLY_ANS="$((10#$v))" ;;
+        time)
+            # «4:00» тоже годится — в apt.conf всегда пишем ЧЧ:ММ
+            if [ "${v,,}" = off ]; then REPLY_ANS=off
+            elif [[ "$v" =~ ^([01]?[0-9]|2[0-3]):([0-5][0-9])$ ]]; then
+                printf -v REPLY_ANS '%02d:%s' "$((10#${BASH_REMATCH[1]}))" "${BASH_REMATCH[2]}"
+            else return 1; fi ;;
+        chat) [[ "$v" =~ ^-?[0-9]{1,20}$ || "$v" =~ ^@[A-Za-z][A-Za-z0-9_]{4,31}$ ]] || return 1; REPLY_ANS="$v" ;;
+        events) valid_notify_events "$v" || return 1; REPLY_ANS="$REPLY_NOTIFY_EVENTS" ;;
         *)   [ -n "$v" ] || return 1; REPLY_ANS="$v" ;;
     esac
 }
@@ -219,6 +262,10 @@ answer_set() {
             host) t "${key}: недопустимое имя «${val}» (буквы, цифры, дефис, точки)" "${key}: invalid name \"${val}\" (letters, digits, hyphens, dots)" ;;
             tz)   t "${key}: нет такого часового пояса «${val}» (пример: Europe/Moscow)" "${key}: no such time zone \"${val}\" (example: Europe/Moscow)" ;;
             starship) t "${key}: ожидается minimal, git или powerline, а не «${val}»" "${key}: expected minimal, git or powerline, not \"${val}\"" ;;
+            port) t "${key}: ожидается порт 22 или 1024..65535, а не «${val}»" "${key}: expected port 22 or 1024..65535, not \"${val}\"" ;;
+            time) t "${key}: ожидается время ЧЧ:ММ (04:00) или off, а не «${val}»" "${key}: expected a time HH:MM (04:00) or off, not \"${val}\"" ;;
+            chat) t "${key}: ожидается chat_id (123456, -100…) или @канал, а не «${val}»" "${key}: expected a chat_id (123456, -100…) or @channel, not \"${val}\"" ;;
+            events) t "${key}: ожидается список из ssh, ban, reboot, а не «${val}»" "${key}: expected a list of ssh, ban, reboot, not \"${val}\"" ;;
             *)   t "${key}: пустое значение" "${key}: empty value" ;;
         esac
         log_error "$REPLY_T"
@@ -308,6 +355,17 @@ usfc_check_profile_names() {
     return "$bad"
 }
 
+# _item_has_new_answers <id> — заданы ответы, ради которых уже применённый
+# пункт надо прогнать ещё раз
+_item_has_new_answers() {
+    case "$1" in
+        ufw)          fw_has_answers ;;
+        unattended)   [ -n "${REBOOT_TIME_BULK}${REBOOT_WITH_USERS_BULK}" ] ;;
+        sshhardening) [ -n "$SSH_PORT_NEW_BULK" ] ;;
+        *)            return 1 ;;
+    esac
+}
+
 # filter_pending <номера...> — что из них реально надо применять.
 # Раскладывает по трём массивам: REPLY_PENDING, REPLY_ALREADY, REPLY_SKIPPED.
 #
@@ -324,15 +382,19 @@ filter_pending() {
         id="${ITEM_IDS[$((n - 1))]}"
         # SSH hardening умеет закрыть доступ к серверу и потому всегда требует
         # явного подтверждения. Молча пропускать его тоже нельзя — скажем прямо
-        if [ "$id" = "sshhardening" ]; then
+        # Исключение — явный --ssh-port: это согласие именно на перенос порта,
+        # и apply_sshhardening без терминала делает только его
+        if [ "$id" = "sshhardening" ] && [ -z "$SSH_PORT_NEW_BULK" ]; then
             REPLY_SKIPPED+=("$id")
             continue
         fi
         # Уже применённое пропускаем. Это не оптимизация, а вопрос смысла:
         # в меню повторный выбор ⇄-пункта означает «переключить», и без этой
-        # проверки автоматический прогон ВЫКЛЮЧАЛ бы то, что просили включить
-        # Исключение — ufw с явными портами, ping или Docker (fw_has_answers)
-        if item_applied "$id" && ! { [ "$id" = ufw ] && fw_has_answers; }; then
+        # проверки автоматический прогон ВЫКЛЮЧАЛ бы то, что просили включить.
+        # Исключение — пункт с явными новыми настройками: ufw с портами, ping
+        # или Docker (fw_has_answers), unattended со временем перезагрузки,
+        # sshhardening с новым портом
+        if item_applied "$id" && ! _item_has_new_answers "$id"; then
             REPLY_ALREADY+=("$id")
             continue
         fi

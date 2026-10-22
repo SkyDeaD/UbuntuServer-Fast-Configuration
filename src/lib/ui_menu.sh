@@ -196,9 +196,12 @@ process_item() {
     [ -n "$pos" ] && [ -n "$total" ] && prefix="${DIM}[${pos}/${total}]${NC} "
     echo ""
     local rc=0
-    ITEM_SKIP_REASON=''
+    ITEM_SKIP_REASON=''; ITEM_DONE=false
+    # Пункт с явными новыми настройками (ufw с портами, unattended со
+    # временем перезагрузки) — не переключатель, а «применить ещё раз»:
+    # тот же отсев, что в filter_pending, иначе прогон ВЫКЛЮЧИЛ бы пункт
     if item_supports_disable "$id" && item_applied "$id" \
-       && ! { [ "$id" = ufw ] && fw_has_answers; }; then
+       && ! _item_has_new_answers "$id"; then
         # У nginx и Docker disable_* — переключатель (см. комментарий там же),
         # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
         local verb
@@ -232,7 +235,7 @@ item_result() {
     local id="${ITEM_IDS[$(($1 - 1))]}" rc="$2"
     if [ "$rc" -ne 0 ]; then
         t "✗ ошибка" "✗ failed"; REPLY_RESULT="${RED}${REPLY_T}${NC}"; REPLY_RESULT_KIND=fail
-    elif "status_${id}" >/dev/null 2>&1; then
+    elif [ "$ITEM_DONE" = true ] || "status_${id}" >/dev/null 2>&1; then
         t "✓ готово" "✓ done"; REPLY_RESULT="${GREEN}${REPLY_T}${NC}"; REPLY_RESULT_KIND=ok
     else
         t "— пропущено" "— skipped"; REPLY_RESULT="${DIM}${REPLY_T}${NC}"; REPLY_RESULT_KIND=skip

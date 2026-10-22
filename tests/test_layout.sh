@@ -167,7 +167,7 @@ done
 expand_section_letter C; check "section C" "$REPLY_SECTION_ITEMS" "1 2 3"
 expand_section_letter B; check "section B" "$REPLY_SECTION_ITEMS" "4 5 6 7 8"
 expand_section_letter S; check "section S" "$REPLY_SECTION_ITEMS" "9 10 11"
-expand_section_letter P; check "section P" "$REPLY_SECTION_ITEMS" "12 13 14 15 16 17 18"
+expand_section_letter P; check "section P" "$REPLY_SECTION_ITEMS" "12 13 14 15 16 17 18 19"
 expand_section_letter X && { FAIL=$((FAIL+1)); echo "FAIL: неизвестная буква X принята"; }
 CHECKED=$((CHECKED + 1))
 
