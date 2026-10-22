@@ -8,6 +8,8 @@ usfc_item fail2ban защита "fail2ban" \
     "bans SSH password guessing"
 usfc_item_toggle fail2ban
 
+FAIL2BAN_DROPIN=/etc/fail2ban/jail.d/usfc-sshd.local
+
 usfc_item_full fail2ban "Банит IP после нескольких неудачных попыток входа по SSH — защита от перебора
 паролей.
 
@@ -35,15 +37,34 @@ status_fail2ban() {
 
 apply_fail2ban() {
     if ! ask_yn_t "Установить fail2ban?" "Install fail2ban?"; then return; fi
-    ensure_pkg "fail2ban" fail2ban || return 1
-    write_file /etc/fail2ban/jail.local <<EOF
+    # python3-systemd на Debian 12 только в Recommends, а журнал нужен (ниже)
+    ensure_pkg "fail2ban" fail2ban python3-systemd || return 1
+    # Свой файл в jail.d, а не jail.local: тот принадлежит человеку (свои jail,
+    # ignoreip, banaction), и раньше мы перезаписывали его целиком. jail.d/*.local
+    # читается после jail.local — проверено fail2ban-client -d, — поэтому
+    # перекрываем только [sshd], и все его ключи задаём сами.
+    #
+    # backend = systemd: на Debian 12 нет /var/log/auth.log (rsyslog не стоит),
+    # а пакет журнал для sshd не включает — jail не находил лога и fail2ban не
+    # стартовал. Юнит называется ssh.service (Debian/Ubuntu) или sshd.service,
+    # процесс сеанса в OpenSSH 10 — sshd-session; «+» в journalmatch — это «или»
+    write_file "$FAIL2BAN_DROPIN" <<EOF
+# usfc: SSH brute-force jail. Put your own changes in jail.local or another jail.d file
 [sshd]
 enabled = true
 port = ${SSH_PORT}
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=ssh.service + _SYSTEMD_UNIT=sshd.service + _COMM=sshd + _COMM=sshd-session
 maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
+    if [ "$USFC_DRY_RUN" != true ] && ! fail2ban-client -t >/dev/null 2>&1; then
+        remove_file "$FAIL2BAN_DROPIN"
+        log_error_t "fail2ban отверг конфиг — файл убран. Проверка: fail2ban-client -t" \
+"fail2ban rejected the config — file removed. Check: fail2ban-client -t"
+        return 1
+    fi
     # restart, а не enable --now: postinst уже запустил сервис со старым
     # конфигом, и --now на активном юните его не перечитывает — до
     # перезагрузки jail сторожил бы порт по умолчанию

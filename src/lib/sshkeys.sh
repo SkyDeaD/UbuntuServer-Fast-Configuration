@@ -14,6 +14,47 @@ authkeys_add() {
     fi
 }
 
+# ── sudo без пароля ──────────────────────────────────────────────────────────
+# Пользователь «только по ключу» с заблокированным паролем в группе sudo
+# не может sudo вовсе: правило %sudo требует пароль. Раньше NOPASSWD
+# ставился только в SSH hardening и только после его успеха — пункт
+# «новый пользователь» сам по себе оставлял сервер без рабочего админа.
+SUDOERS_DIR="${SUDOERS_DIR:-/etc/sudoers.d}"
+
+# sudo_nopasswd_file <пользователь> → REPLY_SUDOERS. Точку в имени файла
+# sudo молча пропускает (как и ~ в конце), поэтому она заменяется
+REPLY_SUDOERS=''
+sudo_nopasswd_file() { REPLY_SUDOERS="${SUDOERS_DIR}/90-usfc-${1//./_}"; }
+
+# sudo_nopasswd_set <пользователь> — уже настроено (наш файл или файл до 5.0)
+sudo_nopasswd_set() {
+    sudo_nopasswd_file "$1"
+    [ -f "$REPLY_SUDOERS" ] || [ -f "${SUDOERS_DIR}/$1" ]
+}
+
+# sudo_nopasswd <пользователь> — записать drop-in, проверив его visudo
+sudo_nopasswd() {
+    local user="$1" tmp
+    if sudo_nopasswd_set "$user"; then
+        log_info_t "sudo без пароля для ${user} уже настроен" \
+"Passwordless sudo for ${user} is already set up"
+        return 0
+    fi
+    sudo_nopasswd_file "$user"
+    tmp="$(mktemp)" || return 1
+    printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$user" > "$tmp"
+    if ! visudo -cf "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        log_error_t "visudo отверг правило для ${user} — sudoers не трогаю" \
+"visudo rejected the rule for ${user} — leaving sudoers alone"
+        return 1
+    fi
+    write_file "$REPLY_SUDOERS" < "$tmp"; rm -f "$tmp"
+    chmod 440 "$REPLY_SUDOERS"
+    log_success_t "sudo без пароля для ${user}: ${REPLY_SUDOERS}" \
+"Passwordless sudo for ${user}: ${REPLY_SUDOERS}"
+}
+
 # ── Общая работа с ~/.ssh ─────────────────────────────────────────────────────
 # Специально без `sudo -u`: на голом root-образе (а это ровно наш сценарий, когда
 # пользователя ещё не создали) sudo может быть не установлен вообще, и такие

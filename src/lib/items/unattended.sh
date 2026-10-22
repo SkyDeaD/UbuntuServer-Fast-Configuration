@@ -67,7 +67,10 @@ EOF
 
 disable_unattended() {
     if ask_yn_t "Выключить unattended-upgrades?" "Disable unattended-upgrades?" N; then
-        printf 'APT::Periodic::Update-Package-Lists "0";\nAPT::Periodic::Unattended-Upgrade "0";\n' | write_file /etc/apt/apt.conf.d/20auto-upgrades
+        # Выключаем только автоустановку. Update-Package-Lists "0" отключал бы
+        # ежедневное обновление списков apt для всей системы — это шире, чем
+        # обещает вопрос, и на эти списки опирается проверка свежести apt
+        printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "0";\n' | write_file /etc/apt/apt.conf.d/20auto-upgrades
         systemctl disable unattended-upgrades &>/dev/null || true
         log_success_t "unattended-upgrades выключен" \
 "unattended-upgrades disabled"

@@ -65,6 +65,39 @@ authkeys_add "$k" "ssh-ed25519 AAAA3 x"
     || bad "получили: $(od -c "$k" | head -2)"
 
 echo ""
+echo "созданные файлы: restore их удаляет"
+new="$TMP/etc/sysctl.d/99-usfc.conf"
+mkdir -p "${new%/*}"
+printf 'a=1\n' | write_file "$new"
+printf 'b=2\n' | append_file "$new"          # дописанный созданный — всё ещё созданный
+grep -qxF "$new" "${USFC_BACKUP_DIR}/.usfc-created" && [ ! -e "${USFC_BACKUP_DIR}${new}" ] \
+    && ok "записан в список созданных, копии нет" || bad "список: $(cat "${USFC_BACKUP_DIR}/.usfc-created" 2>/dev/null)"
+[ "$(grep -c . "${USFC_BACKUP_DIR}/.usfc-created")" -eq 1 ] && ok "в списке один раз" || bad "повтор в списке"
+out="$(USFC_ASSUME_YES=true backup_restore 20260101-000000-1 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ ! -e "$new" ] && ok "restore удалил созданный файл" || bad "rc=$rc, файл остался: $(ls "$new" 2>&1)"
+[ "$(cat "$f" 2>/dev/null)" = "исходный" ] && ok "и вернул изменённый" || bad ".bashrc: $(tr '\n' '|' < "$f")"
+[[ "$out" == *"будут удалены"* ]] && ok "удаляемые показаны до подтверждения" || bad "список удаляемых не показан"
+[ -f "${USFC_BACKUP_DIR}-restore${new}" ] && ok "удалённый попал в снимок отката отката" || bad "снимка удалённого нет"
+
+echo ""
+echo "sudo без пароля"
+# shellcheck disable=SC2034  # читается в sudo_nopasswd_file
+SUDOERS_DIR="$TMP/sudoers.d"
+mkdir -p "$SUDOERS_DIR"
+visudo() { [ "$1" = -cf ] && grep -qE '^[a-z_][a-z0-9_.-]* ALL=\(ALL\) NOPASSWD:ALL$' "$2"; }
+sudo_nopasswd "first.last" >/dev/null 2>&1
+[ -f "$SUDOERS_DIR/90-usfc-first_last" ] && ok "точка в имени файла заменена (sudo пропускает файлы с точкой)" \
+    || bad "файлы: $(ls "$SUDOERS_DIR")"
+grep -qx 'first.last ALL=(ALL) NOPASSWD:ALL' "$SUDOERS_DIR/90-usfc-first_last" 2>/dev/null && ok "правило на имя как есть" || bad "правило не то"
+[ "$(stat -c %a "$SUDOERS_DIR/90-usfc-first_last" 2>/dev/null)" = 440 ] && ok "права 440" || bad "права $(stat -c %a "$SUDOERS_DIR/90-usfc-first_last")"
+printf 'old ALL=(ALL) NOPASSWD:ALL\n' > "$SUDOERS_DIR/old"
+sudo_nopasswd_set old && ok "файл до 5.0 (/etc/sudoers.d/<имя>) считается настроенным" || bad "старый файл не узнан"
+visudo() { return 1; }
+sudo_nopasswd "bad" >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$SUDOERS_DIR/90-usfc-bad" ] && ok "visudo против — файла нет" || bad "rc=$rc"
+unset -f visudo
+
+echo ""
 echo "метка снимка в restore"
 for s in .. . ../.. 'x; rm' 2026 20260101-000000; do
     out="$(backup_restore "$s" 2>&1 </dev/null)"; rc=$?

@@ -72,12 +72,12 @@ Requires a separate user (item 1) — it does not work from root."
 
 usfc_item_rollback sshhardening "sudo rm -f ${USFC_SSHD_DROPIN}
      sudo systemctl restart ssh
-     sudo rm -f /etc/sudoers.d/${TARGET_USER}
+     sudo rm -f /etc/sudoers.d/90-usfc-${TARGET_USER}
      sudo usfc restore       # вернуть чужие строки, которые были закомментированы
      # возвращает вход по паролю — убедись, что есть другой способ попасть на сервер" \
 "sudo rm -f ${USFC_SSHD_DROPIN}
      sudo systemctl restart ssh
-     sudo rm -f /etc/sudoers.d/${TARGET_USER}
+     sudo rm -f /etc/sudoers.d/90-usfc-${TARGET_USER}
      sudo usfc restore       # bring back foreign lines that were commented out
      # restores password login — make sure you have another way into the server"
 
@@ -480,18 +480,8 @@ apply_sshhardening() {
     log_info_t "Текущая сессия не разрывалась — рестарт sshd не убивает открытые соединения" \
 "Your current session was not dropped — restarting sshd does not kill open connections"
     cleanup_test_key
-    if ask_yn_t "Настроить passwordless sudo для ${TARGET_USER}?" "Set up passwordless sudo for ${TARGET_USER}?"; then
-        local SUDOERS_FILE="/etc/sudoers.d/${TARGET_USER}"
-        echo "${TARGET_USER} ALL=(ALL) NOPASSWD:ALL" > "${SUDOERS_FILE}.tmp"
-        if visudo -c -f "${SUDOERS_FILE}.tmp" >/dev/null 2>&1; then
-            mv "${SUDOERS_FILE}.tmp" "$SUDOERS_FILE"
-            chmod 440 "$SUDOERS_FILE"
-            log_success_t "Passwordless sudo настроен" \
-"Passwordless sudo configured"
-        else
-            log_error_t "Синтаксическая ошибка в sudoers — не применяю" \
-"Syntax error in sudoers — not applying it"
-            rm -f "${SUDOERS_FILE}.tmp"
-        fi
+    if ! sudo_nopasswd_set "$TARGET_USER" \
+       && ask_yn_t "Настроить passwordless sudo для ${TARGET_USER}?" "Set up passwordless sudo for ${TARGET_USER}?"; then
+        sudo_nopasswd "$TARGET_USER"
     fi
 }

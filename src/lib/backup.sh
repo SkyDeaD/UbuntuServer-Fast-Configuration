@@ -38,20 +38,29 @@ backup_made() {
     [ -d "$USFC_BACKUP_DIR" ] && [ -n "$(ls -A "$USFC_BACKUP_DIR" 2>/dev/null)" ]
 }
 
-# backup_file <путь> — сохранить копию, если файл существует.
-# Молчит про несуществующие: создание нового файла откатывать нечем,
-# для этого есть команды удаления на экране I.
+# Список файлов, которых до прогона не было: restore их удаляет. Лежит в
+# корне снимка рядом с копиями и в списки файлов не попадает
+USFC_CREATED_LIST=".usfc-created"
+
+# backup_file <путь> — сохранить копию, если файл существует, или запомнить,
+# что его не было: откат созданного — удаление (drop-in sshd, sysctl.d…).
 #
-# Первая копия за прогон — единственная. .bashrc за один заход дописывают
+# Первая запись за прогон — единственная. .bashrc за один заход дописывают
 # обёртка, cli и fastfetch; раньше каждая запись перезаписывала снимок, и
-# `usfc restore` возвращал файл, в котором уже были почти все наши правки
+# `usfc restore` возвращал файл, в котором уже были почти все наши правки.
+# По той же причине созданный и потом дописанный файл остаётся «созданным»
 backup_file() {
     local src="$1" dir dst
-    [ -f "$src" ] || return 0
     [ "$USFC_DRY_RUN" = true ] && return 0
+    [ -f "$src" ] || [ ! -e "$src" ] || return 0      # каталог, сокет — не наше
     dir="$(backup_session_dir)" || return 0
     dst="${dir}${src}"
     [ -e "$dst" ] && return 0
+    grep -qxF -- "$src" "${dir}/${USFC_CREATED_LIST}" 2>/dev/null && return 0
+    if [ ! -e "$src" ]; then
+        printf '%s\n' "$src" >> "${dir}/${USFC_CREATED_LIST}"
+        return 0
+    fi
     mkdir -p "$(dirname "$dst")" 2>/dev/null || return 0
     # -p сохраняет права и время: восстановленный sudoers с чужими правами
     # хуже, чем не восстановленный вовсе
@@ -76,10 +85,13 @@ backup_list() {
 "Config snapshots:"
     for d in "$USFC_BACKUP_ROOT"/*/; do
         [ -d "$d" ] || continue
-        n="$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')"
+        n="$(find "$d" -type f ! -name "$USFC_CREATED_LIST" 2>/dev/null | wc -l | tr -d ' ')"
+        [ -f "${d}${USFC_CREATED_LIST}" ] && n=$(( n + $(grep -c . "${d}${USFC_CREATED_LIST}") ))
         t "файлов" "files"
         printf '    %b%s%b  %s: %s\n' "$BOLD" "$(basename "$d")" "$NC" "$REPLY_T" "$n"
-        find "$d" -type f -printf '        %P\n' 2>/dev/null | sed "s|^        |        /|"
+        find "$d" -type f ! -name "$USFC_CREATED_LIST" -printf '        %P\n' 2>/dev/null | sed "s|^        |        /|"
+        t "(создан — откат удалит)" "(created — restore removes it)"
+        [ -f "${d}${USFC_CREATED_LIST}" ] && sed "s|^|        |; s|\$|  ${REPLY_T}|" "${d}${USFC_CREATED_LIST}"
     done
     echo ""
     return 0
@@ -121,7 +133,12 @@ backup_restore() {
     echo ""
     log_warn_t "Файлы будут перезаписаны содержимым снимка ${stamp}:" \
 "These files will be overwritten from snapshot ${stamp}:"
-    find "$dir" -type f -printf '    /%P\n' 2>/dev/null
+    find "$dir" -type f ! -name "$USFC_CREATED_LIST" -printf '    /%P\n' 2>/dev/null
+    if [ -s "${dir}/${USFC_CREATED_LIST}" ]; then
+        log_warn_t "Файлы, созданные в том прогоне, будут удалены:" \
+"Files created in that run will be removed:"
+        sed 's/^/    /' "${dir}/${USFC_CREATED_LIST}"
+    fi
     echo ""
     if [ "$USFC_ASSUME_YES" = true ]; then
         log_info_t "--yes: подтверждение пропущено" \
@@ -144,7 +161,24 @@ backup_restore() {
             log_error_t "Не удалось восстановить ${target}" \
 "Could not restore ${target}"
         fi
-    done < <(find "$dir" -type f 2>/dev/null)
+    done < <(find "$dir" -type f ! -name "$USFC_CREATED_LIST" 2>/dev/null)
+
+    # Созданные — удаляем через remove_file: со снимком, то есть откат отката
+    # вернёт и их
+    if [ -s "${dir}/${USFC_CREATED_LIST}" ]; then
+        while IFS= read -r target; do
+            case "$target" in /*) ;; *) continue ;; esac
+            [ -e "$target" ] || continue
+            if remove_file "$target"; then
+                log_success_t "Удалён ${target}" \
+"Removed ${target}"
+                restored=$((restored + 1))
+            else
+                log_error_t "Не удалось удалить ${target}" \
+"Could not remove ${target}"
+            fi
+        done < "${dir}/${USFC_CREATED_LIST}"
+    fi
 
     echo ""
     log_info_t "Восстановлено файлов: ${restored}" \

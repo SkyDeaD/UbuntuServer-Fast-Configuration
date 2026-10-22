@@ -189,7 +189,7 @@ apply_newuser() {
     chmod 600 "$auth_keys" 2>/dev/null
 
     # ── пароль ────────────────────────────────────────────────────────────────
-    local pw1 pw2 pw_set=false
+    local pw1 pw2 pw_set=false pw_locked=false
     attempt=0
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
@@ -211,7 +211,7 @@ apply_newuser() {
                 break
             fi
             if [ "$key_ok" = true ]; then
-                passwd -l "$name" >/dev/null 2>&1
+                passwd -l "$name" >/dev/null 2>&1; pw_locked=true
                 log_success_t "Пароль не задан и заблокирован — вход только по SSH-ключу" \
 "No password set, and it is locked — SSH key login only"
                 pw_set=true
@@ -260,7 +260,7 @@ apply_newuser() {
         else
             # попытки кончились, но ключ есть — молчать нельзя, иначе непонятно,
             # с чем в итоге остался пользователь. Чужой пароль не трогаем
-            [ "$existing" = true ] || passwd -l "$name" >/dev/null 2>&1
+            [ "$existing" = true ] || { passwd -l "$name" >/dev/null 2>&1; pw_locked=true; }
             log_warn_t "Пароль так и не задан — вход только по SSH-ключу" \
 "No password was set — SSH key login only"
             log_info_t "Задать позже: sudo passwd ${name}" \
@@ -276,6 +276,19 @@ apply_newuser() {
         log_error_t "Не удалось добавить ${name} в группу sudo" \
 "Could not add ${name} to the sudo group"
         return 1
+    fi
+    # Без пароля sudo по правилу %sudo не пройдёт никогда: спрашивать его
+    # будет нечем. Это не дополнительная опция, а условие рабочего админа
+    if [ "$pw_locked" = true ] && ! sudo_nopasswd_set "$name"; then
+        log_warn_t "Пароля у ${name} нет — обычный sudo спросит его и не пустит" \
+"${name} has no password — plain sudo will ask for one and refuse"
+        # bulk-ok: пункт целиком пропускается в пакете
+        if ask_yn_t "Разрешить ${name} sudo без пароля?" "Allow ${name} to use sudo without a password?" Y; then
+            sudo_nopasswd "$name"
+        else
+            log_warn_t "sudo у ${name} работать не будет, пока не задан пароль: sudo passwd ${name}" \
+"sudo will not work for ${name} until a password is set: sudo passwd ${name}"
+        fi
     fi
 
     invalidate_statuses
