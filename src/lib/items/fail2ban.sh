@@ -44,7 +44,14 @@ maxretry = 5
 findtime = 10m
 bantime = 1h
 EOF
-    systemctl enable --now fail2ban >/dev/null
+    # restart, а не enable --now: postinst уже запустил сервис со старым
+    # конфигом, и --now на активном юните его не перечитывает — до
+    # перезагрузки jail сторожил бы порт по умолчанию
+    if ! systemctl enable fail2ban >/dev/null 2>&1 || ! systemctl restart fail2ban >/dev/null 2>&1; then
+        log_error_t "fail2ban не запустился — подробности: journalctl -u fail2ban" \
+"fail2ban did not start — details: journalctl -u fail2ban"
+        return 1
+    fi
     log_success_t "fail2ban установлен и настроен на порт ${SSH_PORT}" \
 "fail2ban installed and watching port ${SSH_PORT}"
 }

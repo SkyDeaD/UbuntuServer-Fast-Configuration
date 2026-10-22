@@ -90,7 +90,7 @@ apply_cloudflare_credentials() {
                   "Permissions fixed: $(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root"
             else
                 log_info_t "Оставляю как есть — certbot будет писать «Unsafe permissions» в лог" \
-"Leaving it as is — certbot will log "Unsafe permissions""
+"Leaving it as is — certbot will log \"Unsafe permissions\""
             fi
         fi
         # bulk-ok: перезапись уже заданного токена — только руками
@@ -100,13 +100,14 @@ apply_cloudflare_credentials() {
         log_warn_t "Без токена плагин Cloudflare работать НЕ будет — выпуск сертификатов упадёт" \
 "Without a token the Cloudflare plugin will NOT work — issuing certificates will fail"
         log_warn_t "В меню этот пункт так и будет показывать «токен CF не задан»" \
-"This item will keep showing "CF token not set" in the menu"
+"This item will keep showing \"CF token not set\" in the menu"
         log_info_t "Создать вручную (права Zone:DNS:Edit):" \
 "Create it by hand (token needs Zone:DNS:Edit):"
-        echo -e "      ${DIM}mkdir -p $(dirname "$CF_CREDENTIALS") && chmod 700 $(dirname "$CF_CREDENTIALS")${NC}"
-        t "ТОКЕН" "TOKEN"
-        echo -e "      ${DIM}echo 'dns_cloudflare_api_token = ${REPLY_T}' > ${CF_CREDENTIALS}${NC}"
-        echo -e "      ${DIM}chmod 600 ${CF_CREDENTIALS}${NC}"
+        # файл сразу 600 (без окна с правами по умолчанию), а токен читается
+        # с ввода — в историю оболочки он не попадает
+        echo -e "      ${DIM}sudo install -d -m 700 $(dirname "$CF_CREDENTIALS")${NC}"
+        echo -e "      ${DIM}sudo install -m 600 /dev/null ${CF_CREDENTIALS}${NC}"
+        echo -e "      ${DIM}read -rs T && echo \"dns_cloudflare_api_token = \$T\" | sudo tee ${CF_CREDENTIALS} >/dev/null; unset T${NC}"
         cf_wildcard_hint
         return
     fi
@@ -140,7 +141,14 @@ cf_write_credentials() {
     # не восстанавливался и утекал на весь остаток прогона (все конфиги,
     # которые пункты 9-14 писали после certbot, получали 600 вместо 644),
     # во-вторых, оставлял окно между созданием файла и chmod.
-    install -m 600 -o root -g root /dev/null "$CF_CREDENTIALS" || {
+    # Существующий файл НЕ обнуляем: write_file снимает его копию, и
+    # `install /dev/null` поверх затирал старый токен до снимка — откат
+    # возвращал пустой файл. Права чиним отдельно, cat > их сохраняет
+    if [ -e "$CF_CREDENTIALS" ]; then
+        chmod 600 "$CF_CREDENTIALS" && chown root:root "$CF_CREDENTIALS"
+    else
+        install -m 600 -o root -g root /dev/null "$CF_CREDENTIALS"
+    fi || {
         log_error_t "Не удалось создать ${CF_CREDENTIALS}" \
 "Could not create ${CF_CREDENTIALS}"; return 1; }
     printf 'dns_cloudflare_api_token = %s\n' "$token" | write_file "$CF_CREDENTIALS" || {

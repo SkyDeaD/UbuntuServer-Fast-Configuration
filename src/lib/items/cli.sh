@@ -61,7 +61,7 @@ status_cli() {
 }
 
 apply_cli() {
-    local need_install=false p
+    local need_install=false p rc=0
     for p in $CLI_PKGS; do
         pkg_installed "$p" || need_install=true
     done
@@ -76,11 +76,15 @@ apply_cli() {
             t "CLI-утилиты (${CLI_PKGS// /, })" "CLI tools (${CLI_PKGS// /, })"
     run_logged "$REPLY_T" apt_get install -y $CLI_PKGS
             refresh_pkg_cache
+            # -f и pipefail: без них страница ошибки уходила в sh, а упавший
+            # curl отдавал sh пустой ввод — и шаг рапортовал успех без starship
             if ! command -v starship &>/dev/null; then
-                run_logged "starship" bash -c 'curl -sS https://starship.rs/install.sh | sh -s -- -y'
+                run_logged "starship" bash -c 'set -o pipefail; curl -fsSL --max-time 60 https://starship.rs/install.sh | sh -s -- -y'
+                [ "$USFC_DRY_RUN" = true ] || command -v starship &>/dev/null || { log_error_t "starship не установился — подробности в ${USFC_LOG}" \
+"starship did not install — details in ${USFC_LOG}"; rc=1; }
             fi
             # shellcheck disable=SC2086
-            show_pkg_report $CLI_PKGS
+            show_pkg_report $CLI_PKGS || rc=1
         fi
     else
         # Список берём из переменной, а не перечисляем руками: захардкоженная
@@ -93,7 +97,8 @@ apply_cli() {
     # ~/.config мог остаться root-овым (см. ensure_user_dir) — чиним здесь,
     # раз уж этот пункт btop и ставит
     [ -d "${TARGET_HOME}/.config" ] && ensure_user_dir "${TARGET_HOME}/.config"
-    cli_write_aliases
+    cli_write_aliases || rc=1
+    return "$rc"
 }
 
 # Запись блока алиасов в ~/.bashrc вынесена из apply_cli отдельно:
@@ -126,7 +131,7 @@ cli_write_aliases() {
         fi
         log_info_t "Блок алиасов в .bashrc устарел — переписываю" \
 "The alias block in .bashrc is outdated — rewriting it"
-        sed -i '/# >>> vps-setup:cli >>>/,/# <<< vps-setup:cli <<</d' "$BASHRC"
+        remove_block "$BASHRC" vps-setup:cli || return 1
     fi
     {
         echo ""
@@ -152,7 +157,7 @@ cli_write_aliases() {
         echo 'command -v starship &>/dev/null && eval "$(starship init bash)"'
         echo "# <<< vps-setup:cli <<<"
     } | append_file "$BASHRC"
-    chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
+    chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$BASHRC"
     log_success_t "Алиасы добавлены в .bashrc" \
 "Aliases added to .bashrc"
 }

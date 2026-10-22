@@ -69,6 +69,8 @@ apply_fastfetch() {
                 refresh_pkg_cache
                 log_info_t "Версия: $(fastfetch --version 2>/dev/null)" \
 "Version: $(fastfetch --version 2>/dev/null)"
+            else
+                return 1
             fi
         fi
     # PPA — механизм Launchpad, на Debian его нет. Зато с trixie fastfetch
@@ -99,20 +101,23 @@ apply_fastfetch() {
     if [ -f "${TARGET_HOME}/.config/fastfetch/config.jsonc" ]; then
         log_info_t "config.jsonc уже есть" \
 "config.jsonc is already there"
-    elif [ "$USFC_DRY_RUN" = true ]; then
-        # curl с -o пишет файл мимо write_file, то есть мимо всего перехвата.
-        # На машине, где fastfetch уже стоит, а конфига нет, сухой прогон
-        # реально создавал бы ~/.config/fastfetch/config.jsonc
-        t "скачивание config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc" \
-          "downloading config.jsonc → ${TARGET_HOME}/.config/fastfetch/config.jsonc"
-        _dry_say "$REPLY_T"
-    elif curl -fsSL "${REPO_RAW_BASE}/config.jsonc" -o "${TARGET_HOME}/.config/fastfetch/config.jsonc" 2>/dev/null; then
-        chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "${TARGET_HOME}/.config/fastfetch/config.jsonc"
-        log_success_t "config.jsonc установлен" \
-"config.jsonc installed"
     else
-        log_warn_t "Не удалось скачать config.jsonc из ${REPO_RAW_BASE}" \
+        # Во временный файл, а на место — через write_file (снимок, сухой
+        # прогон). Прямой curl -o оставлял обрубок при оборванной закачке,
+        # и дальше пункт считал «config.jsonc уже есть»
+        local cfg="${TARGET_HOME}/.config/fastfetch/config.jsonc" tmp
+        tmp="$(mktemp)"
+        if curl -fsSL --max-time 30 "${REPO_RAW_BASE}/config.jsonc" -o "$tmp" 2>/dev/null \
+           && grep '"modules"' "$tmp" >/dev/null; then
+            write_file "$cfg" < "$tmp"
+            chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$cfg"
+            log_success_t "config.jsonc установлен" \
+"config.jsonc installed"
+        else
+            log_warn_t "Не удалось скачать config.jsonc из ${REPO_RAW_BASE}" \
 "Could not download config.jsonc from ${REPO_RAW_BASE}"
+        fi
+        rm -f "$tmp"
     fi
 
     local BASHRC="${TARGET_HOME}/.bashrc" need_fastfetch_block=false
@@ -123,7 +128,7 @@ apply_fastfetch() {
             log_info_t "Автозапуск fastfetch в .bashrc уже есть" \
 "The fastfetch autorun is already in .bashrc"
         else
-            sed -i '/# >>> vps-setup:fastfetch >>>/,/# <<< vps-setup:fastfetch <<</d' "$BASHRC"
+            remove_block "$BASHRC" vps-setup:fastfetch || return 1
             need_fastfetch_block=true
         fi
     else
@@ -138,7 +143,7 @@ if [ -z "${USFC_RESOURCE:-}" ] && [ -x "$(command -v fastfetch)" ]; then
 fi
 # <<< vps-setup:fastfetch <<<
 EOF
-        chown "${TARGET_USER}:${TARGET_USER}" "$BASHRC"
+        chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$BASHRC"
         log_success_t "Автозапуск добавлен в .bashrc" \
 "Autorun added to .bashrc"
     fi

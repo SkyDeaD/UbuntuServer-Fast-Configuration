@@ -31,8 +31,12 @@ usfc_item_rollback unattended "sudo apt purge unattended-upgrades
      sudo rm -f /etc/apt/apt.conf.d/20auto-upgrades
      # security updates stop installing themselves — you will need apt upgrade by hand"
 
+# Итог по всем файлам apt.conf.d, а не один 20auto-upgrades: более поздний
+# drop-in с "0" выключает автообновление, а меню продолжало показывать ✓.
+# И пакет должен стоять — после purge файл мог остаться
 status_unattended() {
-    if [ -f /etc/apt/apt.conf.d/20auto-upgrades ] && grep -q 'Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null; then
+    if pkg_installed unattended-upgrades \
+       && apt-config dump APT::Periodic::Unattended-Upgrade 2>/dev/null | grep '"1"' >/dev/null; then
         st "$GREEN" "✓ включено" "✓ enabled"; return 0
     else
         st "$DIM" "○ выключено" "○ disabled"; return 1
@@ -46,7 +50,17 @@ apply_unattended() {
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 EOF
-    systemctl enable --now unattended-upgrades >/dev/null
+    if ! systemctl enable --now unattended-upgrades >/dev/null 2>&1; then
+        log_error_t "Сервис unattended-upgrades не запустился — подробности: journalctl -u unattended-upgrades" \
+"The unattended-upgrades service did not start — details: journalctl -u unattended-upgrades"
+        return 1
+    fi
+    if ! apt-config dump APT::Periodic::Unattended-Upgrade 2>/dev/null | grep '"1"' >/dev/null; then
+        log_warn_t "Записал 20auto-upgrades, но другой файл в /etc/apt/apt.conf.d выключает автообновление:" \
+"Wrote 20auto-upgrades, but another file in /etc/apt/apt.conf.d turns automatic updates off:"
+        grep -l 'Unattended-Upgrade' /etc/apt/apt.conf.d/* 2>/dev/null | sed 's/^/      /'
+        return 1
+    fi
     log_success_t "unattended-upgrades включён" \
 "unattended-upgrades enabled"
 }

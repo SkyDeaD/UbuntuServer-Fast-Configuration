@@ -2,6 +2,18 @@
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
 
+# authkeys_add <файл> <строка> — дописать ключ отдельной строкой. Если файл
+# кончается без перевода строки (правили руками), новый ключ приклеился бы
+# к последнему, и оба перестали бы работать
+authkeys_add() {
+    local f="$1" line="$2"
+    if [ -s "$f" ] && [ -n "$(tail -c1 "$f" 2>/dev/null)" ]; then
+        printf '\n%s\n' "$line" | append_file "$f"
+    else
+        printf '%s\n' "$line" | append_file "$f"
+    fi
+}
+
 # ── Общая работа с ~/.ssh ─────────────────────────────────────────────────────
 # Специально без `sudo -u`: на голом root-образе (а это ровно наш сценарий, когда
 # пользователя ещё не создали) sudo может быть не установлен вообще, и такие
@@ -70,12 +82,12 @@ add_pubkey_interactive() {
 "Does not look like an SSH public key — not adding it"
         return 1
     fi
-    if grep -qF "$pubkey_line" "$auth_keys" 2>/dev/null; then
+    if grep -qxF -- "$pubkey_line" "$auth_keys" 2>/dev/null; then
         log_info_t "Такой ключ уже есть" \
 "That key is already there"
         return 0
     fi
-    echo "$pubkey_line" | append_file "$auth_keys"
+    authkeys_add "$auth_keys" "$pubkey_line"
     log_success_t "Ключ добавлен" \
 "Key added"
     return 0

@@ -104,7 +104,13 @@ done
 MODULES=()
 while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
-    MODULES+=("$line")
+    # строка манифеста становится путём на диске — только lib/….sh
+    case "$line" in
+        *..*|*[!A-Za-z0-9_./-]*) ;;
+        lib/*.sh) MODULES+=("$line"); continue ;;
+    esac
+    echo "  В манифесте недопустимая строка «${line}» — установка прервана" >&2
+    exit 1
 done < "${STAGE}/MODULES"
 
 if [ "${#MODULES[@]}" -eq 0 ]; then
@@ -132,12 +138,15 @@ mkdir -p "$INSTALL_DIR"
 OLD_LIB=""
 if [ -d "${INSTALL_DIR}/lib" ]; then
     OLD_LIB="${INSTALL_DIR}/lib.old.$$"
-    mv "${INSTALL_DIR}/lib" "$OLD_LIB"
+    mv "${INSTALL_DIR}/lib" "$OLD_LIB" || { echo "  Не удалось освободить ${INSTALL_DIR}/lib" >&2; exit 1; }
 fi
-mv "${STAGE}/lib"      "${INSTALL_DIR}/lib"
-mv "${STAGE}/setup.sh" "${INSTALL_DIR}/setup.sh"
-mv "${STAGE}/VERSION"  "${INSTALL_DIR}/VERSION"
-mv "${STAGE}/MODULES"  "${INSTALL_DIR}/MODULES"
+# старый lib удаляется только после полного успеха, иначе возвращается
+if ! { mv "${STAGE}/lib" "${INSTALL_DIR}/lib" && mv "${STAGE}/setup.sh" "${INSTALL_DIR}/setup.sh" \
+       && mv "${STAGE}/VERSION" "${INSTALL_DIR}/VERSION" && mv "${STAGE}/MODULES" "${INSTALL_DIR}/MODULES"; }; then
+    echo "  Не удалось разложить файлы в ${INSTALL_DIR}" >&2
+    if [ -n "$OLD_LIB" ]; then rm -rf "${INSTALL_DIR:?}/lib"; mv "$OLD_LIB" "${INSTALL_DIR}/lib"; fi
+    exit 1
+fi
 chmod +x "${INSTALL_DIR}/setup.sh"
 [ -n "$OLD_LIB" ] && rm -rf "$OLD_LIB"
 

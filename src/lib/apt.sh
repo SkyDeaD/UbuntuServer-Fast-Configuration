@@ -113,8 +113,10 @@ snapshot_pkgs() {
     done
 }
 
+# Код возврата 1, если хоть одного пакета нет: раньше пункты возвращали
+# код этой функции (всегда 0), и провал apt в сводке выглядел успехом
 show_pkg_report() {
-    local p name_w=27 desc_w mark color desc
+    local p name_w=27 desc_w mark color desc missing=0
     # В сухом прогоне ничего не ставилось, и обычная логика («apt отчитался,
     # а пакета нет») пометила бы КАЖДЫЙ пакет крестом, будто всё сломалось
     local dry=false
@@ -133,7 +135,7 @@ show_pkg_report() {
         else
             # apt отчитался успехом, но пакета нет — например, имя оказалось
             # виртуальным. Молчать об этом нельзя
-            mark='✗'; color="$RED"
+            mark='✗'; color="$RED"; missing=1
         fi
         if [ "$USFC_LANG" = en ]; then desc="${PKG_DESC_EN[$p]:-}"; else desc="${PKG_DESC[$p]:-}"; fi
         truncate_colored "$desc" "$desc_w"; desc="$REPLY_TRUNC"
@@ -149,6 +151,7 @@ show_pkg_report() {
         t "— уже был в системе" "— was already there"
         echo -e "     ${GREEN}+${NC}${DIM} ${_l1}${NC}${DIM}·${NC}${DIM} ${REPLY_T}${NC}"
     fi
+    return "$missing"
 }
 
 # ── apt и блокировка dpkg ─────────────────────────────────────────────────────
@@ -207,8 +210,9 @@ ensure_apt_updated() {
         return 0
     fi
     t "Обновление списков пакетов apt" "Refreshing apt package lists"
-    run_logged "$REPLY_T" apt_get update -qq
-    APT_UPDATED=true
+    # флаг — только после успеха: иначе упавший update (блокировка, сеть)
+    # больше не повторялся, и все установки шли по устаревшим спискам
+    run_logged "$REPLY_T" apt_get update -qq && APT_UPDATED=true
     refresh_pkg_cache
 }
 

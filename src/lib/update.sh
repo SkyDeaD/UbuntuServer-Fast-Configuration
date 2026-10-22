@@ -134,7 +134,12 @@ usfc_parse_manifest() {
     local line
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
-        REPLY_MANIFEST+=("$line")
+        # та же проверка, что в setup.sh: строка — это путь внутри установки
+        case "$line" in
+            *..*|*[!A-Za-z0-9_./-]*) REPLY_MANIFEST=(); return 1 ;;
+            lib/*.sh) REPLY_MANIFEST+=("$line") ;;
+            *) REPLY_MANIFEST=(); return 1 ;;
+        esac
     done < "$1"
     [ "${#REPLY_MANIFEST[@]}" -gt 0 ]
 }
@@ -187,9 +192,25 @@ install_update() {
         fi
     done
 
-    printf '%s' "$new_version" > "${stage}/VERSION" || {
-        log_error_t "Не удалось записать версию" \
-"Could not write the version file"; rm -rf "$stage"; return 1; }
+    # VERSION — из той же выкачки, что и модули: фоновая проверка была
+    # раньше, и пуш между ними дал бы версию, не совпадающую с кодом
+    if ! usfc_fetch_to "VERSION" "${stage}/VERSION" \
+       || ! usfc_valid_version "$(tr -d '[:space:]' < "${stage}/VERSION")"; then
+        log_error_t "Не удалось получить версию — остаюсь на ${VERSION}" \
+"Could not fetch the version — staying on ${VERSION}"
+        rm -rf "$stage"; return 1
+    fi
+    [ "$(tr -d '[:space:]' < "${stage}/VERSION")" = "$new_version" ] || \
+        new_version="$(tr -d '[:space:]' < "${stage}/VERSION")"
+
+    # Синтаксис каждого модуля проверен, но этого мало: модуль с ошибкой на
+    # верхнем уровне (не та функция, не тот порядок) проходит bash -n. Новый
+    # код загружается целиком до того, как заменит рабочий
+    if ! USFC_SOURCE_ONLY=1 USFC_NO_UPDATE=1 bash -c 'source "$1"' _ "${stage}/setup.sh" >/dev/null 2>&1; then
+        log_error_t "Новая версия ${new_version} не загружается — остаюсь на ${VERSION}" \
+"Version ${new_version} fails to load — staying on ${VERSION}"
+        rm -rf "$stage"; return 1
+    fi
 
     # ── Точка невозврата: дальше только переименования ────────────────────
     # Всё скачано и проверено. mv в пределах одной ФС атомарен на каждый файл,
@@ -201,13 +222,31 @@ install_update() {
 "Could not move ${live_lib} aside — staying on ${VERSION}"
         rm -rf "$stage"; return 1
     fi
-    mv "${stage}/lib" "$live_lib"
-    mv "${stage}/setup.sh" "$SCRIPT_PATH"
+    # Старый lib удаляется только после полного успеха. Если не встал сам
+    # lib — возвращаем прежний на место; после него установка смешанной
+    # быть уже не может: остальное — три файла в одном каталоге
+    if ! mv "${stage}/lib" "$live_lib"; then
+        [ -d "$old_lib" ] && mv "$old_lib" "$live_lib"
+        log_error_t "Не удалось поставить новые модули — вернул ${VERSION}" \
+"Could not put the new modules in place — restored ${VERSION}"
+        rm -rf "$stage"; return 1
+    fi
+    if ! mv "${stage}/setup.sh" "$SCRIPT_PATH" || ! mv "${stage}/MODULES" "${USFC_ROOT}/MODULES" \
+       || ! mv "${stage}/VERSION" "${USFC_ROOT}/VERSION"; then
+        rm -rf "$live_lib"; [ -d "$old_lib" ] && mv "$old_lib" "$live_lib"
+        log_error_t "Обновление прервано на замене файлов — модули ${VERSION} возвращены; если usfc не запускается, переустановите: curl -fsSL ${USFC_INSTALL_URL} | sudo bash" \
+"The update stopped while replacing files — ${VERSION} modules restored; if usfc fails to start, reinstall: curl -fsSL ${USFC_INSTALL_URL} | sudo bash"
+        rm -rf "$stage"; return 1
+    fi
     chmod +x "$SCRIPT_PATH"
-    mv "${stage}/MODULES" "${USFC_ROOT}/MODULES"
-    mv "${stage}/VERSION" "${USFC_ROOT}/VERSION"
     rm -rf "$stage" "$old_lib"
     return 0
+}
+
+# Версия — только цифры и точки: строка попадает в файл и в сравнение
+# sort -V, а обрывок ответа или HTML-страница ошибки версией не являются
+usfc_valid_version() {
+    [[ "${1:-}" =~ ^[0-9]+(\.[0-9]+)*$ ]]
 }
 
 check_for_update() {
@@ -241,6 +280,11 @@ check_for_update() {
         fi
     fi
 
+    if [ -n "$remote_version" ] && ! usfc_valid_version "$remote_version"; then
+        log_warn_t "Ответ сервера не похож на номер версии — проверка обновлений пропущена" \
+"The server reply does not look like a version number — skipping the update check"
+        return 1
+    fi
     if [ "$remote_version" = "$VERSION" ]; then
         return 1
     fi

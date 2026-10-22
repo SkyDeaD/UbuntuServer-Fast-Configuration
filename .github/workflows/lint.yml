@@ -206,6 +206,12 @@ jobs:
           # --config дают одинаковые ответы
           bash tests/test_cli.sh src/setup.sh
 
+      - name: Запись файлов, снимки, блоки .bashrc
+        run: |
+          # Снимок — первая копия за прогон; блоки вырезаются через write_file
+          # и не до конца файла; ключ не приклеивается к последней строке
+          bash tests/test_files.sh src/setup.sh
+
       - name: Каталоги пользователя (btop и ~/.config)
         run: |
           # install -d -o user давал владельца только последнему компоненту:

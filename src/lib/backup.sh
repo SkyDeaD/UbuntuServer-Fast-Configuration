@@ -41,16 +41,25 @@ backup_made() {
 # backup_file <путь> — сохранить копию, если файл существует.
 # Молчит про несуществующие: создание нового файла откатывать нечем,
 # для этого есть команды удаления на экране I.
+#
+# Первая копия за прогон — единственная. .bashrc за один заход дописывают
+# обёртка, cli и fastfetch; раньше каждая запись перезаписывала снимок, и
+# `usfc restore` возвращал файл, в котором уже были почти все наши правки
 backup_file() {
     local src="$1" dir dst
     [ -f "$src" ] || return 0
     [ "$USFC_DRY_RUN" = true ] && return 0
     dir="$(backup_session_dir)" || return 0
     dst="${dir}${src}"
+    [ -e "$dst" ] && return 0
     mkdir -p "$(dirname "$dst")" 2>/dev/null || return 0
     # -p сохраняет права и время: восстановленный sudoers с чужими правами
     # хуже, чем не восстановленный вовсе
-    cp -p "$src" "$dst" 2>/dev/null || return 0
+    if ! cp -p "$src" "$dst" 2>/dev/null; then
+        # запись всё равно пойдёт — но человек должен знать, что отката нет
+        log_warn_t "Снимок ${src} не сохранился (место на диске?) — откатить эту правку будет нечем" \
+"Could not snapshot ${src} (disk space?) — this change cannot be rolled back"
+    fi
     return 0
 }
 
@@ -88,6 +97,14 @@ backup_restore() {
         read -r stamp </dev/tty
         [ -z "$stamp" ] && { log_info_t "Отменено" \
 "Cancelled"; return 0; }
+    fi
+    # Метка — только в том виде, в каком её ставит backup.sh: иначе
+    # `restore ..` превращается в /var/backups, а `restore .` — в
+    # восстановление всех снимков разом в порядке find
+    if [[ ! "$stamp" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+(-restore)?$ ]]; then
+        log_error_t "Метка «${stamp}» не похожа на снимок (ГГГГММДД-ЧЧММСС-PID)" \
+"«${stamp}» does not look like a snapshot stamp (YYYYMMDD-HHMMSS-PID)"
+        return 1
     fi
     dir="${USFC_BACKUP_ROOT}/${stamp}"
     if [ ! -d "$dir" ]; then

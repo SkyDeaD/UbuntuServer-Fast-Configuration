@@ -83,7 +83,22 @@ preask_docker() {
         && DOCKER_AUTOSTART=Y || DOCKER_AUTOSTART=N
 }
 
+# Группы docker может не быть, если Docker поставлен не отсюда (docker.io,
+# вручную) — тогда usermod падает, а мы раньше всё равно писали «готово»
+docker_add_user() {
+    groupadd -f docker 2>/dev/null
+    if usermod -aG docker "$TARGET_USER"; then
+        log_info_t "Пользователь ${TARGET_USER} добавлен в группу docker — перелогинься для работы без sudo" \
+"${TARGET_USER} added to the docker group — re-login to use it without sudo"
+    else
+        log_error_t "Не удалось добавить ${TARGET_USER} в группу docker" \
+"Could not add ${TARGET_USER} to the docker group"
+        return 1
+    fi
+}
+
 apply_docker() {
+    local start_rc=0
     # Ветка «уже установлен» — как у apply_nginx. Без неё выбор этого пункта на
     # системе с Docker уходил в полную переустановку: ключ, репозиторий, apt.
     # Условие то же, что у status_docker, иначе меню и действие разойдутся
@@ -103,21 +118,21 @@ apply_docker() {
 "Autostart enabled"
             fi
         elif ask_bulk_yn DOCKER_AUTOSTART "Docker не запущен. Запустить и включить автозапуск?" "Docker is not running. Start it and enable autostart?" N; then
-            apply_service_autostart docker true
+            apply_service_autostart docker true || start_rc=1
         else
             log_info_t "Оставляю Docker выключенным" \
 "Leaving Docker switched off"
         fi
         # Docker мог приехать не отсюда (docker.io, ручная установка) — тогда
         # группы у пользователя нет, и sudo требуется на каждый docker-вызов
-        if [ "$TARGET_USER" != "root" ] && ! id -nG "$TARGET_USER" 2>/dev/null | grep -w docker >/dev/null; then
+        # -x по строкам, а не -w: для grep дефис — граница слова, и группа
+        # docker-users сходила бы за docker
+        if [ "$TARGET_USER" != "root" ] && ! id -nG "$TARGET_USER" 2>/dev/null | tr ' ' '\n' | grep -x docker >/dev/null; then
             if ask_yn_t "Добавить ${TARGET_USER} в группу docker (работа без sudo)?" "Add ${TARGET_USER} to the docker group (use it without sudo)?" Y; then
-                usermod -aG docker "$TARGET_USER"
-                log_info_t "Готово — перелогинься, чтобы группа применилась" \
-"Done — re-login for the group to take effect"
+                docker_add_user
             fi
         fi
-        return 0
+        return "$start_rc"
     fi
 
     if ! ask_yn_t "Установить Docker + Docker Compose (официальный репозиторий)?" "Install Docker + Docker Compose (official repository)?"; then return; fi
@@ -143,7 +158,12 @@ apply_docker() {
     run_logged "$REPLY_T" apt_get update -qq
     # grep БЕЗ -q — иначе SIGPIPE и вечно ложное условие, см. блок про ловушку
     # в начале файла. Здесь это и вскрылось: фолбэк срабатывал на каждой машине
-    if ! apt-cache policy docker-ce-cli 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
+    # В сухом прогоне repo-файл не записан и apt update не выполнялся —
+    # кандидата нет по построению, и проверка рапортовала ложный провал
+    if [ "$USFC_DRY_RUN" = true ]; then
+        log_info_t "[сухой прогон] наличие пакетов в репозитории Docker не проверяется" \
+"[dry run] not checking whether the Docker repository has packages"
+    elif ! apt-cache policy docker-ce-cli 2>/dev/null | grep 'Candidate:.*[0-9]' >/dev/null; then
         # Фолбэк на noble осмыслен только для Ubuntu: на Debian это чужая ветка
         # репозитория, её пакеты собраны под другие версии библиотек.
         # И падать на саму noble некуда — это и есть цель переключения
@@ -164,20 +184,20 @@ apply_docker() {
         apt_get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || return 1
     refresh_pkg_cache
 
-    apply_service_autostart docker "$autostart"
+    apply_service_autostart docker "$autostart" || start_rc=1
 
     # под прямым root группа docker бессмысленна: root и так может всё,
     # а usermod -aG docker root только путает вывод
     if [ "$TARGET_USER" != "root" ]; then
-        usermod -aG docker "$TARGET_USER"
-        log_info_t "Пользователь ${TARGET_USER} добавлен в группу docker — перелогинься для работы без sudo" \
-"${TARGET_USER} added to the docker group — re-login to use it without sudo"
+        docker_add_user
     else
         log_info_t "Работаем от root — в группу docker никого не добавляю" \
 "Running as root — not adding anyone to the docker group"
     fi
     log_success_t "Docker установлен: $(docker --version 2>/dev/null)" \
 "Docker installed: $(docker --version 2>/dev/null)"
+    # установлен, но не запустился — пункт не выполнен, сводка должна это показать
+    return "$start_rc"
 }
 
 disable_docker() {

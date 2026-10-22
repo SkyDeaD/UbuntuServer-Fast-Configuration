@@ -167,8 +167,8 @@ apply_newuser() {
             local copied=0
             while IFS= read -r line; do
                 [[ "$line" =~ $key_re ]] || continue
-                grep -qxF "$line" "$auth_keys" 2>/dev/null && continue
-                echo "$line" | append_file "$auth_keys"
+                grep -qxF -- "$line" "$auth_keys" 2>/dev/null && continue
+                authkeys_add "$auth_keys" "$line"
                 copied=$((copied + 1))
             done < "$root_keys"
             log_success_t "Скопировано ключей: ${copied}" \
@@ -194,10 +194,22 @@ apply_newuser() {
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
         t "Пароль для ${name}" "Password for ${name}"; local _p="$REPLY_T"
-        t "(Enter — без пароля, вход только по ключу):" "(Enter for none — key-only login):"
+        if [ "$existing" = true ]; then
+            t "(Enter — оставить текущий):" "(Enter keeps the current one):"
+        else
+            t "(Enter — без пароля, вход только по ключу):" "(Enter for none — key-only login):"
+        fi
         echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
         read -rs pw1 </dev/tty; echo ""
         if [ -z "$pw1" ]; then
+            # У существующей учётки пароль уже свой: блокировать его по Enter
+            # значило молча отнять у человека вход по паролю и sudo
+            if [ "$existing" = true ]; then
+                log_info_t "Пароль ${name} не меняю" \
+"Leaving the password of ${name} unchanged"
+                pw_set=true
+                break
+            fi
             if [ "$key_ok" = true ]; then
                 passwd -l "$name" >/dev/null 2>&1
                 log_success_t "Пароль не задан и заблокирован — вход только по SSH-ключу" \
@@ -232,11 +244,11 @@ apply_newuser() {
             log_success_t "Пароль установлен" \
 "Password set"
             pw_set=true
-        else
-            log_error_t "Не удалось установить пароль" \
-"Could not set the password"
+            break
         fi
-        break
+        # пользователь уже создан: без второй попытки он остался бы без пароля
+        log_error_t "Не удалось установить пароль — попробуй ещё раз" \
+"Could not set the password — try again"
     done
     unset pw1 pw2
     if [ "$pw_set" = false ]; then
@@ -247,8 +259,8 @@ apply_newuser() {
 "Set a password by hand: sudo passwd ${name}"
         else
             # попытки кончились, но ключ есть — молчать нельзя, иначе непонятно,
-            # с чем в итоге остался пользователь
-            passwd -l "$name" >/dev/null 2>&1
+            # с чем в итоге остался пользователь. Чужой пароль не трогаем
+            [ "$existing" = true ] || passwd -l "$name" >/dev/null 2>&1
             log_warn_t "Пароль так и не задан — вход только по SSH-ключу" \
 "No password was set — SSH key login only"
             log_info_t "Задать позже: sudo passwd ${name}" \

@@ -121,7 +121,7 @@ uninstall_self() {
     fi
 
     for p in "${USFC_RM_BASHRC[@]}"; do
-        sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$p"
+        remove_block "$p" vps-setup:self
     done
     [ "$drop_backups" = true ] && rm -rf "$USFC_BACKUP_ROOT"
     for p in "${USFC_RM_PATHS[@]}"; do
@@ -450,9 +450,9 @@ usfc backups. Без метки спросит её (нужен терминал
 подтверждения.
 EOF
             ;;
-        list)    echo "usfc list — профили и id пунктов для usfc apply" ;;
-        backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;
-        version) echo "usfc version — версия (то же: -V, --version)" ;;
+        list)    echo "usfc list — профили и id пунктов для usfc apply" ;;   # i18n-ok: пара — show_usage_en
+        backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;   # i18n-ok: пара — show_usage_en
+        version) echo "usfc version — версия (то же: -V, --version)" ;;   # i18n-ok: пара — show_usage_en
         *)
             cat <<EOF
 usfc ${VERSION} — UbuntuServer Fast Configuration

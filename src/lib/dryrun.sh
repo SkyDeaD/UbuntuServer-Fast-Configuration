@@ -56,6 +56,26 @@ remove_file() {
     rm -f "$1"
 }
 
+# remove_block <файл> <имя> — вырезать наш блок `# >>> <имя> >>>` …
+# `# <<< <имя> <<<` (в .bashrc). Через write_file, то есть со снимком и в
+# сухом прогоне без записи. Раньше это был `sed -i '/начало/,/конец/d'`:
+# мимо снимка, а без строки-конца он сносил всё до конца файла
+remove_block() {
+    local f="$1" start="# >>> $2 >>>" end="# <<< $2 <<<" tmp rc
+    grep -qF -- "$start" "$f" 2>/dev/null || return 0
+    if ! grep -qF -- "$end" "$f"; then
+        log_warn_t "В ${f} есть начало блока $2, но нет конца — не трогаю, поправь руками" \
+"${f} has the start of the $2 block but no end — leaving it alone, fix it by hand"
+        return 1
+    fi
+    # через временный файл: читать и обнулять один файл в одной трубе нельзя
+    tmp="$(mktemp)" || return 1
+    awk -v s="$start" -v e="$end" 'index($0, s) { skip = 1 } !skip { print } index($0, e) { skip = 0 }' "$f" > "$tmp"
+    write_file "$f" < "$tmp"; rc=$?
+    rm -f "$tmp"
+    return "$rc"
+}
+
 # append_file <путь> — то же, но дописать в конец
 append_file() {
     if [ "$USFC_DRY_RUN" = true ]; then
@@ -87,7 +107,7 @@ dry_run_enable() {
     mkswap()   { _dry_say "mkswap $*"; }
     fallocate(){ _dry_say "fallocate $*"; }
     dd()       { _dry_say "dd $*"; }
-    ufw()      { _dry_say "ufw $*"; }
+    groupadd() { _dry_say "groupadd $*"; }
     # modprobe грузит модуль в ядро — это изменение состояния машины.
     # modinfo рядом не подменяем: он только ищет файл модуля и ничего не делает
     modprobe() { _dry_say "modprobe $*"; }
@@ -123,6 +143,16 @@ dry_run_enable() {
         esac
     }
     swapoff() { _dry_say "swapoff $*"; }
+
+    # ufw status/show/version/app list|info только читают — без них статус
+    # пункта в предпросмотре всегда был «выключен», даже на активном UFW
+    ufw() {
+        case "${1:-}" in
+            status|show|version) command ufw "$@" ;;
+            app) case "${2:-}" in list|info) command ufw "$@" ;; *) _dry_say "ufw $*" ;; esac ;;
+            *) _dry_say "ufw $*" ;;
+        esac
+    }
 
     sed() {
         # мутирует только с -i
