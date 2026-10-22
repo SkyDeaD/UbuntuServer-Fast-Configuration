@@ -42,6 +42,20 @@ write_file() {
     cat > "$1"
 }
 
+# remove_file <путь> — удалить системный файл: снимок, потом rm. Сам rm в
+# сухом прогоне не подменяется (он в основном чистит временные файлы), поэтому
+# удаление системных файлов идёт только через эту функцию
+remove_file() {
+    [ -e "$1" ] || return 0
+    if [ "$USFC_DRY_RUN" = true ]; then
+        t "удаление" "removing"
+        _dry_say "${REPLY_T} ${1}"
+        return 0
+    fi
+    backup_file "$1"
+    rm -f "$1"
+}
+
 # append_file <путь> — то же, но дописать в конец
 append_file() {
     if [ "$USFC_DRY_RUN" = true ]; then

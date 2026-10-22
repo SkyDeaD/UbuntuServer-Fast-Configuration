@@ -424,8 +424,7 @@ apply_sshhardening() {
     } | write_file "$USFC_SSHD_DROPIN"
     # старое имя: оставленный рядом файл продолжал бы действовать
     if [ -f "$USFC_SSHD_DROPIN_OLD" ]; then
-        backup_file "$USFC_SSHD_DROPIN_OLD"
-        rm -f "$USFC_SSHD_DROPIN_OLD"
+        remove_file "$USFC_SSHD_DROPIN_OLD"
         touched+=("$USFC_SSHD_DROPIN_OLD")   # при откате вернётся из снимка
     fi
 

@@ -149,16 +149,140 @@ create_swapfile() {
     return 0
 }
 
-# ensure_fstab_swap <путь> — ровно одна запись с pri=10, без дублей.
-# Дубль опаснее, чем кажется: после ребута своп смонтируется дважды
-ensure_fstab_swap() {
-    local path="$1" esc
-    esc="$(printf '%s' "$path" | sed 's/[.[\*^$/]/\\&/g')"
-    if grep -qE "^${esc}\s" /etc/fstab 2>/dev/null; then
-        sed -i -E "s#^(${esc}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
-    else
-        echo "${path} none swap sw,pri=10 0 0" | append_file /etc/fstab
+# ═══════════════════════════════════════════════════════════════
+# Приоритет свопа в /etc/fstab
+# ═══════════════════════════════════════════════════════════════
+# До 5.0 здесь стоял sed, понимавший ровно одну форму строки:
+# `<путь> none swap sw …`. Всё остальное он молча пропускал — `defaults`,
+# `sw,nofail`, уже стоящий `pri=5`, точку монтирования `swap`, UUID=/LABEL=
+# у разделов, — а `swap swap` портил в `sw,pri=10ap`. Пункт при этом
+# рапортовал «приоритет 10», и после перезагрузки своп поднимался с -2.
+#
+# Теперь строка разбирается по полям. Совпадение — по пути, UUID или LABEL
+# устройства; в 4-м поле заменяется `pri=N` или дописывается `,pri=N`;
+# повторные строки на то же устройство комментируются (своп смонтировался бы
+# дважды); строки нет — добавляется. Запись через write_file: снимок для
+# `usfc restore` и честный сухой прогон. Путь к fstab — переменная ради
+# tests/test_fstab_swap.sh.
+USFC_FSTAB="${USFC_FSTAB:-/etc/fstab}"
+
+# _swap_ids <путь> → «путь UUID=… LABEL=… /dev/disk/by-uuid/…» через пробел.
+# blkid читает и swap-файл: mkswap пишет UUID и в него, хотя ссылаться на
+# файл через UUID= в fstab нельзя — такие строки тоже надо узнавать, чтобы
+# не оставить рядом дубль
+REPLY_SWAP_IDS=''
+_swap_ids() {
+    local path="$1" uuid label
+    REPLY_SWAP_IDS="$path"
+    uuid="$(blkid -o value -s UUID "$path" 2>/dev/null)"
+    label="$(blkid -o value -s LABEL "$path" 2>/dev/null)"
+    [ -n "$uuid" ]  && REPLY_SWAP_IDS="${REPLY_SWAP_IDS} UUID=${uuid} /dev/disk/by-uuid/${uuid}"
+    [ -n "$label" ] && REPLY_SWAP_IDS="${REPLY_SWAP_IDS} LABEL=${label} /dev/disk/by-label/${label}"
+    return 0
+}
+
+# _fstab_swap_rewrite <ids> <pri> — печатает новое содержимое fstab.
+# Отдельно от записи, чтобы тест мог сверить результат на таблице входов
+_fstab_swap_rewrite() {
+    awk -v ids=" $1 " -v pri="$2" -v path="${1%% *}" '
+        function ours(f) { return index(ids, " " f " ") > 0 }
+        /^[[:space:]]*(#|$)/ { print; next }
+        {
+            if (!(ours($1) && $3 == "swap")) { print; next }
+            if (done) { print "# usfc: duplicate swap entry: " $0; next }
+            done = 1
+            opts = ($4 == "") ? "sw" : $4
+            if (opts ~ /(^|,)pri=[0-9-]*(,|$)/) {
+                gsub(/(^|,)pri=[0-9-]*/, "", opts)
+                sub(/^,/, "", opts)
+                opts = (opts == "" ? "sw" : opts) ",pri=" pri
+            } else {
+                opts = opts ",pri=" pri
+            }
+            mp = ($2 == "" ? "none" : $2)
+            print $1 " " mp " swap " opts " " ($5 == "" ? 0 : $5) " " ($6 == "" ? 0 : $6)
+        }
+        END { if (!done) print path " none swap sw,pri=" pri " 0 0" }
+    ' "$USFC_FSTAB" 2>/dev/null
+}
+
+# fstab_set_swap_pri <путь> [приоритет] — привести fstab в порядок.
+# 0 — fstab содержит ровно одну строку на этот своп и в ней нужный pri
+fstab_set_swap_pri() {
+    local path="$1" pri="${2:-10}" new
+    _swap_ids "$path"
+    new="$(_fstab_swap_rewrite "$REPLY_SWAP_IDS" "$pri")" || return 1
+    [ -n "$new" ] || return 1
+    if [ -f "$USFC_FSTAB" ] && [ "$new" = "$(cat "$USFC_FSTAB")" ]; then
+        return 0
     fi
+    printf '%s\n' "$new" | write_file "$USFC_FSTAB"
+}
+
+# fstab_swap_pri <путь> → REPLY_FSTAB_PRI: приоритет из fstab для этого свопа,
+# пусто — строки нет или в ней нет pri=. Нужен статусу: рабочий приоритет и
+# записанный в fstab — разные вещи, и после перезагрузки остаётся только второй
+REPLY_FSTAB_PRI=''
+fstab_swap_pri() {
+    _swap_ids "$1"
+    REPLY_FSTAB_PRI="$(awk -v ids=" ${REPLY_SWAP_IDS} " '
+        /^[[:space:]]*(#|$)/ { next }
+        index(ids, " " $1 " ") && $3 == "swap" {
+            if (match($4, /(^|,)pri=[0-9-]+/)) {
+                s = substr($4, RSTART, RLENGTH); sub(/^,?pri=/, "", s); print s
+            }
+            exit
+        }' "$USFC_FSTAB" 2>/dev/null)"
+}
+
+# swap_runtime_pri <путь> → REPLY_SWAP_RUNTIME_PRI: приоритет по swapon
+REPLY_SWAP_RUNTIME_PRI=''
+swap_runtime_pri() {
+    REPLY_SWAP_RUNTIME_PRI="$(swapon --show --noheadings --raw 2>/dev/null | awk -v p="$1" '$1==p {print $5; exit}')"
+}
+
+# swap_set_pri <путь> [приоритет] — fstab + приоритет прямо сейчас + проверка.
+# Сменить приоритет работающего свопа можно только через swapoff, а swapoff
+# выгружает занятые страницы в RAM. Если они туда не влезут — не трогаем
+# работающий своп: fstab уже исправлен, приоритет применится после
+# перезагрузки, и мы так и говорим
+swap_set_pri() {
+    local path="$1" pri="${2:-10}" used_mb=0 avail_mb
+    if ! fstab_set_swap_pri "$path" "$pri"; then
+        log_error_t "Не удалось записать приоритет ${pri} для ${path} в ${USFC_FSTAB}" \
+"Could not write priority ${pri} for ${path} to ${USFC_FSTAB}"
+        return 1
+    fi
+    [ "$USFC_DRY_RUN" = true ] && return 0
+
+    swap_runtime_pri "$path"
+    [ "$REPLY_SWAP_RUNTIME_PRI" = "$pri" ] && return 0
+
+    used_mb="$(human_to_mb "$(swapon --show --noheadings --raw 2>/dev/null | awk -v p="$path" '$1==p {print $4; exit}')")"
+    avail_mb="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$avail_mb" =~ ^[0-9]+$ ]] || avail_mb=0
+    if [ -n "$REPLY_SWAP_RUNTIME_PRI" ] && [ "$used_mb" -gt 0 ] && [ "$used_mb" -ge $(( avail_mb - 200 )) ]; then
+        log_warn_t "В ${path} занято ${used_mb} МБ, а свободной памяти ${avail_mb} МБ — не отключаю его сейчас" \
+"${path} holds ${used_mb} MB and only ${avail_mb} MB of memory is free — not turning it off now"
+        log_info_t "Приоритет ${pri} записан в fstab и применится после перезагрузки" \
+"Priority ${pri} is written to fstab and takes effect after a reboot"
+        return 0
+    fi
+    [ -n "$REPLY_SWAP_RUNTIME_PRI" ] && swapoff "$path" 2>/dev/null
+    if ! swapon -p "$pri" "$path" 2>/dev/null; then
+        # не включился с приоритетом — хотя бы вернуть как было, без свопа не оставлять
+        swapon "$path" 2>/dev/null
+        log_error_t "Не удалось включить ${path} с приоритетом ${pri}" \
+"Could not enable ${path} with priority ${pri}"
+        return 1
+    fi
+    swap_runtime_pri "$path"
+    if [ "$REPLY_SWAP_RUNTIME_PRI" != "$pri" ]; then
+        log_error_t "${path} работает с приоритетом ${REPLY_SWAP_RUNTIME_PRI:-?}, а не ${pri}" \
+"${path} runs with priority ${REPLY_SWAP_RUNTIME_PRI:-?}, not ${pri}"
+        return 1
+    fi
+    return 0
 }
 
 # resize_swapfile <путь> <новый_МБ> — пересоздание уже работающего свопа.
@@ -207,12 +331,16 @@ resize_swapfile() {
     fi
 
     if create_swapfile "$path" "$new_mb"; then
-        ensure_fstab_swap "$path"
-        swapoff "$path" 2>/dev/null
-        swapon -a 2>/dev/null           # поднимаем уже с приоритетом из fstab
-        log_success_t "swap пересоздан: ${new_mb} МБ, приоритет 10" \
+        # успех объявляем только после проверки: раньше «приоритет 10»
+        # печатался безусловно, даже когда fstab не поменялся
+        if swap_set_pri "$path" 10; then
+            log_success_t "swap пересоздан: ${new_mb} МБ, приоритет 10" \
 "swap recreated: ${new_mb} MB, priority 10"
-        return 0
+            return 0
+        fi
+        log_warn_t "swap пересоздан (${new_mb} МБ), но приоритет 10 выставить не удалось" \
+"swap recreated (${new_mb} MB), but priority 10 could not be set"
+        return 1
     fi
 
     # не получилось — машина сейчас без свопа, это надо исправить или хотя бы
@@ -220,9 +348,7 @@ resize_swapfile() {
     log_error_t "Не удалось создать своп размером ${new_mb} МБ" \
 "Could not create a ${new_mb} MB swap file"
     if create_swapfile "$path" "$old_mb"; then
-        ensure_fstab_swap "$path"
-        swapoff "$path" 2>/dev/null
-        swapon -a 2>/dev/null
+        swap_set_pri "$path" 10
         log_warn_t "Вернул прежний размер ${old_mb} МБ — система со свопом" \
 "Restored the previous size ${old_mb} MB — the system has swap again"
     else

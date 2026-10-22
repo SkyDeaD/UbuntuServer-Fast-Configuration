@@ -193,6 +193,12 @@ jobs:
           # заглушками этого не увидеть
           bash tests/test_uninstall.sh src/setup.sh
 
+      - name: Приоритет свопа в fstab
+        run: |
+          # sed понимал одну форму строки и молча пропускал defaults, nofail,
+          # pri=5, UUID=/LABEL= — после перезагрузки своп поднимался с -2
+          bash tests/test_fstab_swap.sh src/setup.sh
+
       - name: Чужие drop-in'ы sshd
         run: |
           # sshd берёт ПЕРВОЕ значение ключа. Файл провайдера 00-*.conf с
