@@ -8,14 +8,16 @@
 
 ![Ubuntu 24.04 | 26.04](https://img.shields.io/badge/Ubuntu-24.04%20%7C%2026.04-E95420?logo=ubuntu&logoColor=white)
 ![Debian 12 | 13](https://img.shields.io/badge/Debian-12%20%7C%2013-A81D33?logo=debian&logoColor=white)
-![bash](https://img.shields.io/badge/bash-%3E%3D5.0-4EAA25?logo=gnubash&logoColor=white)
+![bash](https://img.shields.io/badge/bash-%3E%3D4.0-4EAA25?logo=gnubash&logoColor=white)
 ![license MIT](https://img.shields.io/badge/license-MIT-green)
 
 </div>
 
 <p align="center"><a href="README.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
-Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 14-item menu that does all of it, asking only where the decision actually matters — not where it doesn't.
+Every time you spin up a new VPS it's the same routine: get a decent `ls` going, install Docker, sort out swap on a small box, lock SSH down to keys only, remember UFW. So instead of doing the same setup by hand every time, I wrote a script with a 19-item menu that does all of it, asking only where the decision actually matters to you — not where it doesn't.
+
+It works on Ubuntu and Debian, speaks Russian and English, and besides the menu it can set up a server with one command from cloud-init or Ansible, show a dry run, check the server with an audit and snapshot configs before changing them.
 
 ## Requirements
 
@@ -26,12 +28,11 @@ On anything else the script refuses to act: it checks the distribution at startu
 ## Contents
 
 - [Quick start](#quick-start)
-- [What each item does](#what-each-item-does)
+- [Menu items](#menu-items)
 - [Server audit](#server-audit)
-- [Non-interactive use](#non-interactive-use)
-- [All flags](#all-flags)
 - [Config snapshots and rollback](#config-snapshots-and-rollback)
 - [Interface language](#interface-language)
+- [Documentation](#documentation)
 - [Customization](#customization)
 - [FAQ](#faq)
 - [Contributing](#contributing)
@@ -39,11 +40,13 @@ On anything else the script refuses to act: it checks the distribution at startu
 
 ## Quick start
 
+### The menu
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh | sudo bash && source ~/.bashrc
 ```
 
-Installs itself as the `usfc` command and opens the menu right away — no waiting: `apt update` no longer runs at startup, it's pulled in lazily and only before an actual install. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session automatically, so new aliases/prompt show up right away, no manual `source` or reconnect (more on this in the FAQ).
+Installs itself as the `usfc` command and opens the menu right away — no waiting: `apt update` does not run at startup, it's pulled in lazily and only before an actual install. A `usfc()` shell function (not an alias) gets added to `.bashrc` automatically on first run — after that just `usfc`, no `sudo` needed, and once the menu closes it re-sources `.bashrc` into your own session, so new aliases and the prompt show up right away.
 
 On the very first run it asks a single question — "what is this server for?" — and turns the answer into a ready-made profile. You can decline right away: the fifth option opens the regular menu.
 
@@ -58,318 +61,160 @@ On the very first run it asks a single question — "what is this server for?" �
 
 </div>
 
-Inside the menu: a number (`5`, or several at once: `1 3 5` or `1,3,5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations — what zram is, whether nginx and Docker should autostart, whether the Cloudflare plugin (and its token) is needed. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`, and `R` too) — per-item help and rollback: what each item does, its current status, how to switch it off and how to remove it entirely. `H` — alias reference, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`), several at once (`1 3 5` or `1,3,5`), a range (`1-5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped and why. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`) — per-item help and rollback, `H` — alias reference, `D` — audit, `U` — remove `usfc` itself.
 
-Items marked with `⇄` in the table switch off by picking them again: the script sees the setting is applied and offers the opposite action. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
+Items marked with `⇄` switch off by picking them again: the script sees the setting is applied and offers the opposite action. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
+
+### One command, no menu
+
+The same installer takes a command and runs it without a terminal — that's how a server gets set up from cloud-init:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
+  | sudo bash -s -- apply basepkgs,cli,docker,zram,ufw --allow 443,51820/udp --swap 2048 --yes
+```
+
+`apply` takes item ids, their numbers or profiles (`minimal`, `web`, `dockerhost`, `secure`) in any mix. Answers to item questions come from flags or an answers file. To see what would be done without changing anything, add `--dry-run`.
+
+Every command, flag, answers-file key and exit code is in the [CLI reference](docs/CLI.en.md). Coming from 4.x, where it was `--apply` and `--audit`? Read the [migration guide](docs/MIGRATION-5.en.md).
 
 ### Running on a bare server (root only)
 
-Plenty of hosts hand you a VPS with nothing but `root`. The script notices and **offers to create a regular sudo user first** (defaults to yes):
-
-```
-[!] Скрипт запущен от имени root.
-[i] РЕКОМЕНДУЮ создать обычного пользователя с sudo: ...
-
-  Создать пользователя сейчас? [Y/n]:
-```
+Plenty of hosts hand you a VPS with nothing but `root`. The script notices and **offers to create a regular sudo user first** (defaults to yes): working as root is unsafe, SSH hardening doesn't work at all without a separate user, and aliases, fastfetch and tmux would land in `/root`.
 
 It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, and offers to **copy the keys from `/root/.ssh/authorized_keys`** — without that the new user simply can't log in if you reach the server by key. Passwords shorter than 8 characters are rejected: the server faces the internet, and brute-forcing runs around the clock. An empty password is allowed — the account is then key-only.
 
 The script then switches to the new user inside the running session, so aliases, fastfetch and tmux land in their home rather than `/root`. On exit it reminds you to reconnect as that user.
 
-Decline and nothing breaks: item **1 "Пользователь + sudo"** stays available in the menu. Like SSH hardening and UFW, it is skipped by `A` ("install everything") — a name and a password can't be silently defaulted.
+Decline and nothing breaks: item **1 "User + sudo"** stays available in the menu. In a batch it goes first, before the other questions. `usfc apply` does not run it: a name and a password can't be silently defaulted.
 
-### Flags
+## Menu items
 
-```bash
-usfc --apply web          # apply a set of items without the menu
-usfc --audit --json       # the server's state, machine-readable
-usfc --apply zram --yes   # apply and stop asking
-usfc --dry-run            # show what would be done
-usfc --help               # every flag in one list
-```
+| # | id | Item | What it does | ⇄ |
+|---|---|---|---|---|
+| 1 | `newuser` | User + sudo | creates a normal sudo user on a bare VPS | |
+| 2 | `hostname` | Hostname, time, NTP | server name, time zone, time synchronisation | |
+| 3 | `bbr` | TCP BBR | faster, steadier TCP on lossy links | ⇄ |
+| 4 | `basepkgs` | Base packages | micro, curl, git, htop, jq and the usual basics | |
+| 5 | `cli` | CLI tools + starship | modern ls/cat/find replacements plus a prompt | |
+| 6 | `fastfetch` | fastfetch | server summary on every SSH login | |
+| 7 | `motd` | Login greeting | a server card instead of the stock greeting | ⇄ |
+| 8 | `tmux` | tmux | multiplexer: sessions survive a dropped link | |
+| 9 | `docker` | Docker + Compose | Docker CE + Compose from the official repository | ⇄ |
+| 10 | `nginx` | nginx-full | web server and reverse proxy | ⇄ |
+| 11 | `certbot` | Certbot + plugins | TLS certificates, wildcard included via DNS | |
+| 12 | `dockerlog` | Docker log rotation | caps container logs so they cannot eat the disk | ⇄ |
+| 13 | `journald` | systemd journal cap | caps journald size so it cannot eat the disk | ⇄ |
+| 14 | `fail2ban` | fail2ban | bans SSH password guessing | ⇄ |
+| 15 | `notify` | Telegram alerts | SSH logins, fail2ban bans, reboot required | ⇄ |
+| 16 | `unattended` | unattended-upgrades | installs security updates on its own | ⇄ |
+| 17 | `zram` | ZRAM + swap + earlyoom | compressed memory, backup swap, OOM protection | ⇄ |
+| 18 | `sshhardening` | SSH hardening | key-only login, root login disabled | |
+| 19 | `ufw` | UFW firewall | closes everything except what is needed | ⇄ |
 
-The full reference with ready-made commands is [below](#all-flags).
-
-`USFC_APT_LOCK_TIMEOUT` (300 s by default) controls how long to wait for the dpkg lock. The wait is needed because on a freshly booted server `apt-daily.timer` starts `unattended-upgrades`, which holds `/var/lib/dpkg/lock-frontend` for minutes — without waiting, every install would fail instantly with `E: Could not get lock`.
-
-A full log of every command run is always written to `/var/log/usfc.log`, even when the screen only shows a spinner.
-
-Color is disabled by the `NO_COLOR` variable (its value does not matter, only its presence), and also automatically when `TERM=dumb` or output is not a terminal — e.g. `usfc > log.txt`.
-
-Don't trust `curl | sudo bash` and want to reproduce the same thing by hand, item by item? — here's the [manual guide](docs/MANUAL.en.md).
-
-What changed between versions — see [CHANGELOG.en.md](CHANGELOG.en.md).
-
-## What each item does
+Sections: "system" — 1–3, "base" — 4–8, "services" — 9–11, "hardening" — 12–19. The hardening section comes last on purpose: UFW suggests its port list from what the server is actually listening on, and if Docker and nginx came up earlier, their ports are already in the list.
 
 <details>
-<summary>Base, services, hardening — in order</summary>
+<summary>What each item does — in detail</summary>
 
-**Пользователь + sudo (user + sudo)** — creates a regular sudo user, copies SSH keys over from `/root`, and points the rest of the setup at them. This is what you want when the server arrived with only `root`. See above.
+**User + sudo** — creates a regular sudo user, copies SSH keys over from `/root`, and points the rest of the setup at them. This is what you want when the server arrived with only `root`. See above.
 
-**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server. After the install a list is printed: what arrived just now, what was already there, and a one-line note on why each package is there — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs. `certbot` moved out into its own item (see below).
+**Hostname, time, NTP** — sets the server name with `hostnamectl` and makes the `127.0.1.1` line in `/etc/hosts` match it, otherwise sudo and some services stall on name lookups. When cloud-init is installed it is told not to reset the name on reboot. The time zone can be found by part of its name ("mosc"). Time is synchronised by `systemd-timesyncd`; an already running chrony is left alone.
 
-**CLI tools + starship** — modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd`; `ncdu` for disk usage) plus the starship prompt — bundled together since it's all the same "what the terminal looks and feels like" layer. `.bashrc` aliases (`ls`/`ll`/`la`/`lt`/`cat`/`catp`/`scat`/`fd`) and the zoxide/starship `eval` lines are written by this same item, not a separate step later.
+**TCP BBR** — turns on the BBR congestion control together with the `fq` queue. The default cubic treats every lost packet as congestion and slows down; BBR works from measured bandwidth and delay, so throughput on international and mobile links is noticeably steadier. Most useful for proxies, VPNs and file serving. Only works when the kernel supports BBR.
 
-**fastfetch** — shows server info (OS, kernel, memory, disk, IP) on every SSH login. Version 2.64.0 or newer (older releases don't support the padding syntax in format strings that the bundled `config.jsonc` relies on). The config and login autorun get written to `.bashrc` by this same item.
+**Base packages** — `micro`, `curl`, `wget`, `git`, `nano`, `unzip`, `htop`, `jq`, `rsync`, and a few other things you'd normally install in the first minute on any server. After the install a list is printed: what arrived just now, what was already there, and a one-line note on why each package is there — including `software-properties-common`, without which `add-apt-repository` won't work, which the fastfetch PPA step needs.
 
-**tmux** — a terminal multiplexer: keeps your session alive across disconnects (just reconnect over SSH and everything you had running is still there, including multiple windows/panes). Installed with a minimal config (mouse support, 10000-line history).
+**CLI tools + starship** — modern replacements for the usual suspects (`eza` instead of `ls`, with icons; `bat`/`batcat` instead of `cat`, with syntax highlighting; `fd`/`fdfind` instead of `find`; `ripgrep`; `zoxide` — a smarter `cd`; `ncdu` for disk usage) plus the starship prompt — bundled together since it's all the same "what the terminal looks and feels like" layer. `.bashrc` gets the aliases, the functions `ports`, `dps`, `extract`, `myip`, and the zoxide/starship `eval` lines. The prompt is one of three presets: `minimal`, `git` or `powerline`.
 
-**Docker + Compose** — CE + Compose plugin from the official Docker repo (not the `docker.io` package from Ubuntu's own repos — that one's stale).
+**fastfetch** — shows server info (OS, kernel, memory, disk, IP) on SSH login. Runs only on an SSH login, not inside tmux, and not when the "Login greeting" item is installed — so the summary isn't printed twice.
 
-**nginx-full** — web server / reverse proxy.
+**Login greeting** — a server card of its own instead of the stock motd: name, OS, kernel, virtualisation, IP, uptime, load, vCPUs, RAM and disk bars, swap, the number of running containers and warnings (updates available, reboot required). No network calls. The stock greeting and provider scripts in `/etc/update-motd.d` are listed and switched off with your consent; choosing the item again restores everything.
+
+**tmux** — a terminal multiplexer: keeps your session alive across disconnects (just reconnect over SSH and everything you had running is still there, including multiple windows and panes). Installed with a minimal config (mouse support, 10000-line history).
+
+**Docker + Compose** — CE + Compose plugin from the official Docker repo (not the `docker.io` package from the distribution's repos — that one's stale). Optionally lazydocker, a terminal UI for containers, from the GitHub release with its sha256 verified.
+
+**nginx-full** — web server and reverse proxy.
 
 > **About nginx and Docker autostart.** Both packages start their service themselves, from postinst. The script asks about that **before** installing, and the default answer is **no** — you don't always want the server up right now. So that "don't start it" means exactly that, rather than "start it and immediately kill it" (nginx would grab `:80` in between), the install is wrapped in `policy-rc.d`. A deliberately disabled service counts as a finished state in the menu, not an unfinished one, so it stops nagging.
 >
 > **You can change your mind later.** On an installed system both items act as switches: they show the current state and offer the opposite — stop a running service, or start a stopped one along with its autostart. For Docker both units go down together, `docker.service` and `docker.socket`: without the second one the daemon comes back on the first request to the socket, and "autostart disabled" would be a lie.
 
-**Certbot + plugins** — `certbot` itself, plus optionally the `nginx` plugin (HTTP-01, ordinary certificates) and the `dns-cloudflare` plugin (DNS-01, required for wildcards). For Cloudflare it offers to create `/root/.secrets/certbot/cloudflare.ini` with your API token (hidden input, mode `600`; the token needs `Zone:DNS:Edit`). Decline and the menu keeps showing `! токен CF не задан`, because the plugin is useless without that file.
+**Certbot + plugins** — `certbot` itself, plus optionally the `nginx` plugin (HTTP-01, ordinary certificates) and the `dns-cloudflare` plugin (DNS-01, required for wildcards). For Cloudflare it offers to create `/root/.secrets/certbot/cloudflare.ini` with your API token (hidden input, mode `600`; the token needs `Zone:DNS:Edit`). Decline and the menu keeps showing `! CF token not set`, because the plugin is useless without that file.
 
 > **About the python-cloudflare 2.20 WARNING.** The plugin declares `Depends: python3-cloudflare (<< 3.0)`, and Ubuntu 26.04's archive carries exactly one matching version — `2.20.0` — with the banner left intact. Verified on a live system: it fires from the client constructor, i.e. **when a certificate is actually issued**, not at install time — `apt install`, `certbot --version` and `certbot plugins` stay quiet. It cannot be turned off: `warn_warning_2_20()` calls `warnings.simplefilter('always', ...)` itself, overriding both `PYTHONWARNINGS` and `python3 -W ignore`. It does not affect issuance — the version is pinned by the package's own dependency, not dragged in by `pip`. The script warns about it up front so the banner doesn't look like a failure.
 
 It also offers to drop `ssl-dhparams.pem` and `options-ssl-nginx.conf` into `/etc/letsencrypt/`. Only certbot's nginx *installer* creates those, and issuing a wildcard via `certbot certonly` never does — so a typical nginx config that references them takes the server down on start. Both files are copied out of the certbot package itself; nothing is generated or downloaded.
 
-**Docker log rotation** — caps container logs at 10 MB per file: without this, Docker's logs are unbounded by default and can eventually fill up the disk.
+**Docker log rotation** — caps container logs (10 MB per file, 3 files): without this, Docker's logs are unbounded by default and can eventually fill up the disk. An existing `daemon.json` is extended, not overwritten. The setting takes effect after Docker restarts — the item offers that, warning that the containers restart along with the daemon.
 
-**fail2ban** — bans an IP after a few failed SSH login attempts (brute-force protection). Configured for the server's actual SSH port, not hardcoded to 22.
+**systemd journal cap** — by default journald may take up to 10% of the disk (but not more than 4 GB). On a small VPS that is gigabytes of logs nobody reads. The item sets `SystemMaxUse`: 5% of the disk, between 100 and 1000 MB, and trims the journal to the cap right away.
 
-**unattended-upgrades** — installs security updates on its own, no input needed from you.
+**fail2ban** — bans an IP after a few failed SSH login attempts (brute-force protection). Configured for the server's actual SSH port, not hardcoded to 22, and writes its own file in `jail.d`, leaving `jail.local` alone.
+
+**Telegram alerts** — three kinds of messages to pick from: an SSH login, a fail2ban ban, a reboot needed after updates. You need a bot from @BotFather; usfc can find the `chat_id` itself. The token lives only in `/etc/usfc/notify.conf` (mode `600`) — not in the log, not in command arguments, not in `usfc export`. The alert never delays an SSH login, and a failed send never breaks it.
+
+**unattended-upgrades** — installs security updates on its own, no input needed from you. Optionally a reboot window: some updates (kernel, libc) only take effect after a reboot, and usfc can allow a reboot at a set time, say 04:00. By default it won't reboot while someone is logged in over SSH.
 
 **ZRAM + swap + earlyoom** — zram (compressed memory living in RAM itself; how much % of RAM to give it is now asked at install time, 75% by default) plus a backup swap file on disk at a lower priority, so it only kicks in once zram runs out. Its size is asked, and the default is computed as **`min(RAM, free/4)`**, clamped to 512–4096 MB: the file is a backstop *under* zram, so it scales with memory, while dividing by 4 keeps it from eating a tight disk. If a swap file already exists, the script shows its current size next to the recommended one and offers to recreate it — but only when they differ by more than 10%, and only for files: it does not touch partition or LVM sizes. Plus `vm.swappiness=80`/`vm.vfs_cache_pressure=50`, and optionally `earlyoom` — protection against the whole server locking up when memory runs out.
 
-**SSH hardening** — switches login to key-only, disables password login and root login. The riskiest item in the menu, and the only one with a self-test before it applies anything: before disabling the password, it sets up a one-time key and actually verifies login with it — if that check fails, it automatically rolls back the config and leaves the password enabled.
+**SSH hardening** — switches login to key-only, disables password login (keyboard-interactive included) and root login. The riskiest item in the menu, hence the self-test: before disabling the password, it sets up a one-time key and actually verifies login with it — if that check fails, it automatically rolls back the config and leaves the password enabled. Foreign settings that would override ours (say, a provider drop-in `00-*.conf` or `50-cloud-init.conf` with `PasswordAuthentication yes`) are found up front: the script shows the file and line and comments them out with your consent. Also here: moving SSH to another port in two steps — the old port closes only once you confirm a login on the new one.
 
-**UFW** — a firewall: closes every port except the ones that matter (the SSH port, and whatever the server is already actually listening on at the time it's enabled).
-
-The hardening section comes last on purpose: UFW scans actually-listening ports when it enables, and if Docker/nginx are already up, the firewall sees their ports immediately instead of only port 22.
+**UFW** — a firewall: blocks incoming connections to every port except SSH and the ones you allow. The list is suggested from what the server listens on right now — TCP and UDP, with the process name — and you can edit it: add the port of a service that isn't running yet (`443`, `51820/udp`, `1000:2000/tcp`) or drop one. Also here: ping replies and, if Docker is installed, tying it to UFW: Docker publishes container ports **past** UFW, so without this `-p 8080:80` is open to the world even with the firewall on. Change ports later with `usfc firewall`.
 
 </details>
 
 ## Server audit
 
-The script does more than set things up — it also answers "what is going on with this server right now". Key `D` in the menu, or `usfc --audit`:
+The script doesn't just set things up — it also answers "what's going on with this server right now". The `D` key in the menu, or `sudo usfc audit`. Sample output (shortened):
 
-```
+```text
 Network
 ! Public ports: 22
-    The firewall is off, so all of them are reachable. Item 14
+    The firewall is off, so all of them are reachable. Item 19
 
 Access
 ! Password login is allowed
-    SSH brute-forcing runs around the clock. Item 13
-✓ Root login: prohibit-password
+    SSH brute-forcing runs around the clock. Item 18
 ! fail2ban is not running
-    Item 10
-
-Summary:  healthy: 9   warnings: 3   critical: 0
+    Item 14
 ```
 
-It checks disk and inode usage (inodes run out before space does and look like "no space left" while gigabytes are free), memory and swap, failed systemd units, public ports against the UFW rules, password and root login, pending security updates, whether a reboot is needed, and certificate expiry.
+It checks disk space and inodes (they run out before space does and look like "no space left" with gigabytes free), memory and swap, failed systemd units, public ports against UFW rules, Docker ports past the firewall, password and root login, foreign sshd configs that override hardening, pending security updates, whether a reboot is needed, and certificate expiry.
 
-The audit is **read-only**. That is not a promise but a tested property: CI compares a snapshot of `/etc`, dpkg, `passwd/group` and swap taken before and after the run.
+`usfc audit --json` gives the same in machine-readable form — for monitoring. With critical findings the command exits with code `1`.
 
-## Non-interactive use
-
-The same thing without the menu — for cloud-init, Ansible and provisioning scripts:
-
-```bash
-usfc --apply web                  # a ready-made profile
-usfc --apply docker,nginx,ufw     # your own items
-usfc --apply all --dry-run        # show what would be done
-usfc --config /etc/usfc.conf      # answers from a file
-usfc --list                       # available profiles and ids
-```
-
-Arguments can be handed **to the installer itself** — then no menu opens, and no terminal is needed for it. This is the path for cloud-init and Ansible:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
-  | sudo bash -s -- --apply web
-
-# from a branch, with answers from a file, with a preview — all the same
-curl -fsSL .../install.sh | sudo bash -s -- --branch dev --apply zram --yes
-curl -fsSL .../install.sh | sudo bash -s -- --apply all --dry-run
-```
-
-The installer keeps only `--branch` and `--help` for itself; everything else goes to `usfc`. An explicit `--` hands even those two down.
-
-Profiles: `minimal`, `web`, `dockerhost`, `secure`. Exit codes are made for CI: `0` — applied, `1` — some items failed, `2` — could not work out what to apply.
-
-The config file is parsed line by line rather than sourced: `--config` pointing at an unvetted file must not be able to run commands.
-
-```ini
-ITEMS=web
-NGINX_AUTOSTART=Y
-DOCKER_AUTOSTART=N
-ZRAM_PERCENT=75
-SWAP_MB=2048
-```
-
-> **SSH hardening is skipped in non-interactive mode**, with an explicit message. Locking yourself out of a server because of somebody else's config file is not a fair price for automation. Configure it from the menu instead.
-
-> **Re-running is a genuine no-op.** Items that are already applied get skipped. This is not an optimisation but a question of meaning: in the menu, picking a `⇄` item again means "toggle", and without this check `--apply` from cloud-init would switch off what you asked it to switch on.
-
-### Dry run
-
-`--dry-run` shows what would happen and **does not change the system**. The interception does not live in individual functions but at the level of the commands themselves: `usermod`, `install`, `chmod`, `systemctl`, `swapon` and friends are shadowed for the duration of the run, and writes to system files all go through one shared point. Read-only calls (`systemctl is-active`, `sed` without `-i`) are passed through — without them the dry run would already lie about the current state.
-
-Completeness is verified by a test rather than by eye: a snapshot of the system before and after `--apply all --dry-run` must match.
-
-## All flags
-
-A reference for putting together the command you need. The short version is `usfc --help`.
-
-### Installing
-
-The installer keeps only `--branch` and `--help` for itself. Everything else goes to the installed `usfc`, and then **no menu opens** and no terminal is needed at all — this is the path for cloud-init and Ansible.
-
-```bash
-BASE=https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh
-
-curl -fsSL $BASE | sudo bash                              # install and open the menu
-curl -fsSL $BASE | sudo bash -s -- --apply web            # install and apply a profile right away
-curl -fsSL $BASE | sudo bash -s -- --branch dev           # install from the dev branch
-curl -fsSL $BASE | sudo bash -s -- --help                 # installer help
-curl -fsSL $BASE | sudo bash -s -- -- --branch feature/x  # hand --branch down to usfc
-```
-
-| Flag | What it does |
-|---|---|
-| `--branch <branch>`, `-b` | install from that branch, `main` by default |
-| `--help`, `-h` | installer help |
-| `--` | everything after it goes to `usfc`, even if it matches the installer's own flags |
-
-With no arguments and no terminal the installer does not try to open the menu: it says usfc is installed and exits zero.
-
-### Mode — what to do
-
-Exactly one of these. Without them the menu opens.
-
-| Flag | What it does |
-|---|---|
-| `--apply <what>` | apply items and exit, no menu |
-| `--audit` | show the server's state, changing nothing |
-| `--list` | show profiles and item ids |
-| `--backups` | show config snapshots |
-| `--restore [stamp]` | restore configs from a snapshot; without a stamp it asks which |
-| `--help`, `-h` | help |
-| `--version`, `-V` | version and exit |
-
-### Modifiers — how to do it
-
-These combine with the mode above.
-
-| Flag | What it does | Works with |
-|---|---|---|
-| `--dry-run` | show what would be done and change nothing | `--apply` |
-| `--yes`, `-y` | answer yes to the questions of the applied items | `--apply` only; for `--restore` it confirms the rollback |
-| `--config <file>` | take the answers from a file | `--apply` |
-| `--json` | print machine-readable output | `--audit` only |
-| `--lang ru\|en` | language for this run, not saved | anywhere |
-| `--no-update` | do not check for usfc updates | anywhere |
-| `--verbose` | raw command output instead of the spinner | anywhere |
-
-`--yes` is deliberately not global: of the 62 questions, 24 have a protective "no" default, among them removing usfc itself, stopping nginx and Docker, and disabling unattended-upgrades. Together with `--apply` those branches are unreachable — already applied items are skipped, and removal lives in the menu only.
-
-### What to put in `--apply`
-
-A profile, item ids separated by commas, or `all`.
-
-| Profile | What it includes |
-|---|---|
-| `minimal` | basepkgs cli unattended |
-| `web` | basepkgs cli docker nginx certbot fail2ban unattended zram ufw |
-| `dockerhost` | basepkgs cli docker dockerlog fail2ban unattended zram ufw |
-| `secure` | basepkgs fail2ban unattended sshhardening ufw |
-
-Item ids: `newuser` `basepkgs` `cli` `fastfetch` `tmux` `docker` `nginx` `certbot` `dockerlog` `fail2ban` `unattended` `zram` `sshhardening` `ufw`.
-
-`newuser` and `sshhardening` are skipped in non-interactive mode with an explicit message: a name and a password cannot be silently defaulted, and locking yourself out over someone else's config is not an acceptable price for automation. Already applied items are skipped, so re-running is a genuine no-op.
-
-### Answer file for `--config`
-
-```ini
-ITEMS=web
-NGINX_AUTOSTART=Y
-DOCKER_AUTOSTART=N
-ZRAM_PERCENT=75
-SWAP_MB=2048
-SYSCTL=Y
-CERTBOT_CF=N
-CF_TOKEN=
-```
-
-Parsed line by line, without `source`: stray keys are not executed, they produce a clear error.
-
-### Exit codes
-
-| Code | When |
-|---|---|
-| `0` | applied, or there was nothing to apply |
-| `1` | some items failed |
-| `2` | could not work out what to apply (a typo in a profile or id), or `--json` without `--audit` |
-
-### Environment variables
-
-| Variable | What it does |
-|---|---|
-| `USFC_APT_LOCK_TIMEOUT` | how long to wait for the dpkg lock, 300 s by default |
-| `USFC_BRANCH` | branch for the installer, same as `--branch` |
-| `USFC_LANG` | language for this run, same as `--lang` |
-| `NO_COLOR` | disable colour; its presence matters, not its value |
-
-### Ready-made commands
-
-```bash
-# bring up a web server on a clean machine in one line, no questions
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
-  | sudo bash -s -- --apply web --yes
-
-# see what would be done, and do nothing
-sudo usfc --apply all --dry-run
-
-# memory only: zram, swap and sysctl, without extra questions
-sudo usfc --apply zram --yes
-
-# deploy from your own answer file
-curl -fsSL https://raw.githubusercontent.com/SkyDeaD/UbuntuServer-Fast-Configuration/main/install.sh \
-  | sudo bash -s -- --config /root/usfc.conf --apply all
-
-# audit into monitoring, daily from cron
-sudo usfc --audit --json > /var/lib/node_exporter/usfc.json
-
-# English interface for a single run
-sudo usfc --lang en --audit
-
-# roll configs back to the latest snapshot, from a script
-sudo usfc --backups
-sudo usfc --restore 20260821-050600-3691 --yes
-```
+The audit **only reads**. That is not a promise but a checked property: CI has a test that compares a snapshot of `/etc`, dpkg, `passwd/group` and swap before and after the run.
 
 ## Config snapshots and rollback
 
-Before overwriting any system file, the script copies it into `/var/backups/usfc/<stamp>`:
+Before overwriting any system file, the script copies it into `/var/backups/usfc/<label>`:
 
 ```bash
-usfc --backups                    # what is there
-usfc --restore 20260810-1021-4242 # put it back
+sudo usfc backups                       # what is there
+sudo usfc restore 20261023-040000-3691  # put it back
 ```
 
-Snapshots are taken automatically, and only for the files the script itself edits: `sshd_config.d/10-hardening.conf`, `fstab`, `daemon.json`, `20auto-upgrades`, `99-zram.conf`, `zramswap`, `.bashrc` and the rest. Restoring takes another snapshot first — undoing the undo has to be possible too.
+Replace `20261023-040000-3691` with a label from the list.
+
+Snapshots are taken automatically, and only for the files the script itself edits: `sshd_config.d/00-usfc-hardening.conf`, `fstab`, `daemon.json`, `before.rules`, `.bashrc` and the rest. Files that did not exist before usfc are removed on rollback. Restoring takes another snapshot first — undoing the undo has to be possible too.
+
+A full log of every command run is always written to `/var/log/usfc.log`, even when the screen only shows a spinner.
 
 ## Interface language
 
-On the very first run the script asks in both languages at once, because at that point there is no way to know which one you read:
+On the very first run the script asks in both languages at once, because at that point there is no way to know which one you read. The choice is remembered and survives updates. Change it later with the `L` key in the menu. The `--lang en` flag applies to a single run and saves nothing: running once in another language should not quietly re-teach the tool.
 
-```
-Язык интерфейса  /  Interface language
-  1) Русский
-  2) English
-Выбор / Choice [1]:
-```
+## Documentation
 
-The choice is remembered and survives updates. Change it later with the `L` key in the menu. The `--lang` flag applies to a single run and saves nothing: running once in another language should not quietly re-teach the tool.
+| Document | What for |
+|---|---|
+| [docs/CLI.en.md](docs/CLI.en.md) | Reference: commands, flags, answers file, exit codes, environment variables |
+| [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md) | Moving from 4.x: old flags → new commands, what changes on configured servers |
+| [docs/TROUBLESHOOTING.en.md](docs/TROUBLESHOOTING.en.md) | What to do if password login still works, swap has no priority, Telegram is silent |
+| [docs/MANUAL.en.md](docs/MANUAL.en.md) | Manual guide: the same by hand, item by item, without `curl \| sudo bash` |
+| [CHANGELOG.en.md](CHANGELOG.en.md) | What changed between versions |
 
 ## Customization
 
@@ -381,14 +226,14 @@ Your own fork — the `USFC_REPO_RAW_BASE` environment variable overrides where 
 
 Since 4.0.0 this is not a single file but an entry point plus modules:
 
-```
+```text
 src/setup.sh        loader: bootstrap, self-healing, module loading
 src/MODULES         manifest — also the load order and the menu order
 src/lib/*.sh        core by layers: logging, layout, apt, updates, audit…
 src/lib/items/*.sh  one file per menu item
 ```
 
-**Adding an item means one new file in `src/lib/items/` and one line in `MODULES`.** An item registers itself, so there are no six parallel arrays to keep in sync any more:
+**Adding an item means one new file in `src/lib/items/` and one line in `MODULES`.** An item registers itself:
 
 ```bash
 usfc_item docker сервисы "Docker + Compose" "Docker CE + Compose из официального репозитория" \
@@ -409,7 +254,7 @@ The English variant is optional: until it exists, the Russian text is shown.
 <details>
 <summary>Icons/fonts in the terminal look like boxes or garbled characters</summary>
 
-That's your local terminal's (the client's) font, not the server's — the Nerd Font that renders `eza`/`starship`/`fastfetch` icons is installed and configured in whatever app you SSH from; the script has no way to affect that.
+That's your local terminal's (the client's) font, not the server's — the Nerd Font that renders `eza`/`fastfetch` icons is installed and configured in whatever app you SSH from; the script has no way to affect that. The starship prompt in any of usfc's three presets needs no Nerd Font — this only concerns `eza` icons.
 
 </details>
 
@@ -423,17 +268,32 @@ The official Docker repo sometimes lags behind fresh Ubuntu releases — the scr
 <details>
 <summary>What does not work on Debian</summary>
 
-Almost everything works. There are exactly two differences, both verified on real images:
+Almost everything works. The differences:
 
 - **Debian 12 (bookworm)** — no `eza` and no `fastfetch` in the repositories. `eza` simply drops out of the CLI set, and the `ls`/`ll`/`la`/`lt` aliases are not written to `.bashrc` (they would break `ls`). The fastfetch item explains that the package is missing and points at the `.deb` on GitHub.
 - **Debian 13 (trixie)** — everything is there except `software-properties-common`, which is only needed for PPAs, i.e. only on Ubuntu.
+- **Login greeting** on Debian shows no count of pending updates: that cache only exists on Ubuntu.
+
+</details>
+
+<details>
+<summary>Why the CPU in a VM shows up as "Xeon (Skylake, IBRS)"</summary>
+
+Inside a virtual machine the CPU model is set by the provider's hypervisor, not by the hardware. Providers often give guests a generic CPU model so the VM can move between hosts with different processors — hence "Skylake" on a server that physically runs on newer hardware. The script shows what the kernel sees, and that can't be changed from inside the VM. More in the [manual guide](docs/MANUAL.en.md#faq).
+
+</details>
+
+<details>
+<summary>Where the provider's login greeting comes from and how to remove it</summary>
+
+The login text is assembled from the scripts in `/etc/update-motd.d/` and the static `/etc/motd`. Providers drop their own scripts and ads there, and cloud-init may write to motd too. Item **7 "Login greeting"** lists everything it finds and, with your consent, switches it off without deleting: choosing the item again puts it back.
 
 </details>
 
 <details>
 <summary>I want to reconsider SSH hardening or UFW without rebuilding the server</summary>
 
-Run `usfc` again — for already-configured items the menu shows the current state and asks whether to change it.
+Run `usfc` again — for already-configured items the menu shows the current state and asks whether to change it. Firewall ports change without the menu too: `sudo usfc firewall --allow 8443`.
 
 </details>
 

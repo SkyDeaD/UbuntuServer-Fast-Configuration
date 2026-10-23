@@ -407,6 +407,10 @@ _usage_answer_flags() {
             host)  if [ "$USFC_LANG" = en ]; then name="${fl} <name>"; else name="${fl} <имя>"; fi ;;   # i18n-ok: пара на той же строке
             tz)    name="${fl} <Area/City>" ;;
             starship) if [ "$USFC_LANG" = en ]; then name="${fl} <style>"; else name="${fl} <вид>"; fi ;;   # i18n-ok: пара на той же строке
+            port)  name="${fl} <22|1024..65535>" ;;
+            time)  if [ "$USFC_LANG" = en ]; then name="${fl} <HH:MM|off>"; else name="${fl} <ЧЧ:ММ|off>"; fi ;;   # i18n-ok: пара на той же строке
+            chat)  name="${fl} <chat_id|@channel>" ;;
+            events) name="${fl} <ssh,ban,reboot>" ;;
             *)   name="${fl} <N>" ;;
         esac
         if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
@@ -458,8 +462,12 @@ $(_usage_answer_flags)
   ITEMS              что применять, если <что> не задано
 $(_usage_answer_keys)
 
-Флаг для пункта, которого нет в списке, — ошибка. SSH hardening и создание
-пользователя в apply не выполняются: им нужен человек у терминала.
+Флаг для пункта, которого нет в списке, — ошибка. Создание пользователя
+в apply не выполняется; SSH hardening — только перенос порта по --ssh-port,
+остальное ему нужно делать у терминала.
+
+Секреты (CF_TOKEN, TG_TOKEN) флагов не имеют: командную строку видно в ps.
+Передавайте их файлом ответов (--set тоже виден в ps).
 
 Коды возврата: 0 — всё применилось или нечего применять; 1 — часть пунктов
 не удалась; 2 — ошибка в аргументах или в файле ответов.
@@ -583,8 +591,12 @@ Answers file keys:
   ITEMS              what to apply when <what> is not given
 $(_usage_answer_keys)
 
-A flag for an item that is not in the list is an error. SSH hardening and
-user creation are not run by apply: they need a person at the terminal.
+A flag for an item that is not in the list is an error. User creation is
+not run by apply; SSH hardening only moves the port with --ssh-port, the rest
+of it needs a person at the terminal.
+
+Secrets (CF_TOKEN, TG_TOKEN) have no flags: a command line is visible in ps.
+Pass them in the answers file (--set is visible in ps too).
 
 Exit codes: 0 — everything applied or nothing to do; 1 — some items failed;
 2 — an error in the arguments or the answers file.
