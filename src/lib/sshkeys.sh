@@ -14,6 +14,16 @@ authkeys_add() {
     fi
 }
 
+# authkeys_count <файл> → REPLY_AUTHKEYS_COUNT — сколько в нём ключей. Ключи
+# бывают и с опциями впереди (`restrict ssh-ed25519 …`), поэтому тип ключа
+# ищем в любом поле, а не только в начале строки; комментарии не считаются
+REPLY_AUTHKEYS_COUNT=0
+authkeys_count() {
+    REPLY_AUTHKEYS_COUNT="$(grep -vE '^[[:space:]]*#' "$1" 2>/dev/null \
+        | grep -cE '(^|[[:space:]])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9]+|sk-(ssh|ecdsa)-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/]')"
+    [[ "$REPLY_AUTHKEYS_COUNT" =~ ^[0-9]+$ ]] || REPLY_AUTHKEYS_COUNT=0
+}
+
 # ── sudo без пароля ──────────────────────────────────────────────────────────
 # Пользователь «только по ключу» с заблокированным паролем в группе sudo
 # не может sudo вовсе: правило %sudo требует пароль. Раньше NOPASSWD

@@ -116,6 +116,44 @@ want=$'Port 2222\n# usfc: PasswordAuthentication yes\nX11Forwarding no\n# usfc: 
 if [ "$(cat "$D/00-x.conf")" = "$want" ]; then ok "закомментированы ровно строки 2 и 4"; else
     bad "результат: $(cat "$D/00-x.conf" | tr '\n' '|')"; fi
 
+# ── 8. authorized_keys: подсчёт ключей и временный ключ самопроверки ────────
+echo ""
+echo "authorized_keys"
+# Переменные ниже читаются внутри backup_file и ssh_selftest_end
+# shellcheck disable=SC2034
+USFC_BACKUP_DIR="$TMP/backup"
+# shellcheck disable=SC2034
+USFC_LOG=/dev/null
+# shellcheck disable=SC2034
+TARGET_USER="$(id -un)"
+# shellcheck disable=SC2034
+SSH_TEST_GID="$(id -g)"
+AK="$TMP/authorized_keys"
+REAL='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIRealKeyRealKeyRealKeyRealKey me@laptop'
+printf '# только комментарий\n\n' > "$AK"
+authkeys_count "$AK"
+[ "$REPLY_AUTHKEYS_COUNT" = 0 ] && ok "файл из комментариев — 0 ключей" || bad "комментарии посчитаны как $REPLY_AUTHKEYS_COUNT ключ(а)"
+printf '# ssh-ed25519 AAAAold\nrestrict,from="10.0.0.1" %s\n%s\n' "$REAL" "$REAL" > "$AK"
+authkeys_count "$AK"
+[ "$REPLY_AUTHKEYS_COUNT" = 2 ] && ok "ключ с опциями посчитан, закомментированный — нет" || bad "посчитано $REPLY_AUTHKEYS_COUNT вместо 2"
+
+# ровно находка ревью: последний ключ без перевода строки
+printf '%s' "$REAL" > "$AK"
+SSH_TEST_DIR="$(mktemp -d)"; SSH_TEST_AUTH="$AK"
+SSH_TEST_PUB='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITempKeyTempKeyTempKeyTempKey usfc-selftest'
+authkeys_add "$SSH_TEST_AUTH" "$SSH_TEST_PUB" >/dev/null 2>&1
+same_lines="$(grep -cxF "$SSH_TEST_PUB" "$AK")"
+[ "$same_lines" = 1 ] && ok "временный ключ лёг отдельной строкой" || bad "временный ключ склеился: $(tr '\n' '|' < "$AK")"
+ssh_selftest_end >/dev/null 2>&1
+[ "$(cat "$AK")" = "$REAL" ] && ok "после самопроверки настоящий ключ на месте" || bad "authorized_keys после самопроверки: «$(tr '\n' '|' < "$AK")»"
+
+# строка, где временный ключ — лишь часть, не удаляется
+# shellcheck disable=SC2034
+SSH_TEST_DIR="$(mktemp -d)"; SSH_TEST_PUB="$REAL"
+printf 'command="x" %s\n' "$REAL" > "$AK"
+ssh_selftest_end >/dev/null 2>&1
+[ -s "$AK" ] && ok "удаляется только строка, равная ключу целиком" || bad "удалена чужая строка с ключом внутри"
+
 echo ""
 [ "$fail" -eq 0 ] && echo "drop-in'ы sshd: все проверки пройдены" || echo "drop-in'ы sshd: ЕСТЬ ОШИБКИ"
 exit "$fail"

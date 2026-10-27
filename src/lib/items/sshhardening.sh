@@ -248,7 +248,9 @@ ssh_selftest_begin() {
     SSH_TEST_PUB="$(cat "${SSH_TEST_KEY}.pub")"
     SSH_TEST_TRAPS="$(trap -p INT TERM)"
     trap 'ssh_selftest_end; exit 130' INT TERM
-    echo "$SSH_TEST_PUB" | append_file "$SSH_TEST_AUTH"
+    # authkeys_add: файл без перевода строки в конце склеил бы временный ключ
+    # с настоящим, и ssh_selftest_end унёс бы их вместе
+    authkeys_add "$SSH_TEST_AUTH" "$SSH_TEST_PUB"
 }
 
 # ssh_selftest [порт] — вход по временному ключу на 127.0.0.1
@@ -263,7 +265,8 @@ ssh_selftest() {
 ssh_selftest_end() {
     [ -n "$SSH_TEST_DIR" ] || return 0
     if [ -n "$SSH_TEST_PUB" ] && [ -f "$SSH_TEST_AUTH" ]; then
-        { grep -vF "$SSH_TEST_PUB" "$SSH_TEST_AUTH" > "${SSH_TEST_AUTH}.tmp"; [ $? -le 1 ]; } \
+        # -x: только строка, равная временному ключу целиком
+        { grep -vxF "$SSH_TEST_PUB" "$SSH_TEST_AUTH" > "${SSH_TEST_AUTH}.tmp"; [ $? -le 1 ]; } \
             && mv "${SSH_TEST_AUTH}.tmp" "$SSH_TEST_AUTH"
         rm -f "${SSH_TEST_AUTH}.tmp"
         chown "${TARGET_USER}:${SSH_TEST_GID}" "$SSH_TEST_AUTH"
@@ -899,6 +902,16 @@ apply_sshhardening() {
     # Файлы, которые мы тронули помимо своего drop-in: при откате они
     # возвращаются из снимка (restore_touched ниже)
     local -a touched=()
+    # Вернуть закомментированные чужие строки и sshd_config из снимка — на
+    # любом выходе после их правки, включая ранние (нет ключа, самопроверка
+    # не прошла): иначе правка дождалась бы ближайшего рестарта sshd без нас
+    restore_touched() {
+        local f snap
+        for f in "${touched[@]}"; do
+            snap="${USFC_BACKUP_DIR}${f}"
+            [ -f "$snap" ] && cp -p "$snap" "$f"
+        done
+    }
 
     # Конфликты ищем ДО всего остального, в том числе до сухого прогона:
     # поиск только читает, а показать его в предпросмотре — самое полезное,
@@ -989,13 +1002,11 @@ apply_sshhardening() {
     fi
 
     ensure_ssh_dir "$TARGET_USER" "$TARGET_HOME" || { log_error_t "Не удалось подготовить ~/.ssh" \
-"Could not prepare ~/.ssh"; return 1; }
+"Could not prepare ~/.ssh"; restore_touched; return 1; }
     local AUTH_KEYS="$REPLY_AUTHKEYS"
 
-    # Ключи бывают и с опциями впереди (`restrict ssh-ed25519 …`), поэтому
-    # ищем тип ключа в любом поле, а не только в начале строки
     local key_count
-    key_count="$(grep -cE '(^|[[:space:]])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9]+|sk-(ssh|ecdsa)-[^[:space:]]+)[[:space:]]' "$AUTH_KEYS" 2>/dev/null)"
+    authkeys_count "$AUTH_KEYS"; key_count="$REPLY_AUTHKEYS_COUNT"
     if [ "${key_count:-0}" -gt 0 ]; then
         log_info_t "В authorized_keys уже есть ${key_count} ключ(ей)" \
 "authorized_keys already holds ${key_count} key(s)"
@@ -1008,23 +1019,18 @@ apply_sshhardening() {
         add_pubkey_interactive "$AUTH_KEYS"
     fi
 
-    if [ ! -s "$AUTH_KEYS" ]; then
-        log_error_t "authorized_keys пуст — отключать пароль нельзя. Hardening прерван." \
-"authorized_keys is empty — disabling the password is not safe. Hardening aborted."
+    # Считаем ключи, а не размер файла: в файле из одних комментариев
+    # самопроверка пройдёт временным ключом, а после неё войти будет нечем
+    authkeys_count "$AUTH_KEYS"
+    if [ "$REPLY_AUTHKEYS_COUNT" -eq 0 ]; then
+        log_error_t "В authorized_keys нет ни одного ключа — отключать пароль нельзя. Hardening прерван." \
+"authorized_keys holds no keys — disabling the password is not safe. Hardening aborted."
+        restore_touched
         return 1
     fi
 
     # Временный ключ для самопроверки — см. ssh_selftest_begin
-    ssh_selftest_begin || return 1
-
-    # Вернуть закомментированные чужие строки из снимка — при любом откате
-    restore_touched() {
-        local f snap
-        for f in "${touched[@]}"; do
-            snap="${USFC_BACKUP_DIR}${f}"
-            [ -f "$snap" ] && cp -p "$snap" "$f"
-        done
-    }
+    ssh_selftest_begin || { restore_touched; return 1; }
 
     log_info_t "Проверяю базовый вход по ключу (до изменений конфига)..." \
 "Checking that key login works at all (before touching the config)..."
