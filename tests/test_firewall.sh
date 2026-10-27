@@ -121,6 +121,58 @@ fw_docker_set off >/dev/null 2>&1 || bad "fw_docker_set off вернул оши�
 cmp -s "$UFW_DIR/after.rules" "$FIX/after.rules" && ok "off возвращает исходник байт-в-байт" \
     || { bad "after.rules отличается"; diff "$FIX/after.rules" "$UFW_DIR/after.rules" | head; }
 
+echo "Docker: правило маршрута — на адрес контейнера"
+# два контейнера с одним внутренним портом: сайт 8080→80 и админка 9000→80
+docker() {
+    case "$1" in
+        ps)      printf 'site 0.0.0.0:8080->80/tcp, [::]:8080->80/tcp\nadmin 0.0.0.0:9000->80/tcp\n' ;;
+        inspect) case "${*: -1}" in site) echo "172.17.0.2 " ;; admin) echo "172.17.0.3 " ;; esac ;;
+    esac
+}
+ROUTES="$TMP/routes"; : > "$ROUTES"
+saved_fw_ufw="$(declare -f _fw_ufw)"
+_fw_ufw() { printf '%s\n' "$*" >> "$ROUTES"; }
+ufw()     { printf 'DEL %s\n' "$*" >> "$ROUTES"; }
+fw_docker_route allow '' 8080/tcp >/dev/null 2>&1
+same_route="$(cat "$ROUTES")"
+[ "$same_route" = "route allow proto tcp from any to 172.17.0.2 port 80" ] \
+    && ok "--allow 8080 открывает только сайт" || bad "правила: $(tr '\n' '|' < "$ROUTES")"
+: > "$ROUTES"
+fw_docker_route delete '' 9000/tcp >/dev/null 2>&1
+[ "$(cat "$ROUTES")" = "DEL route delete allow proto tcp from any to 172.17.0.3 port 80" ] \
+    && ok "--deny 9000 снимает правило только админки" || bad "удаление: $(tr '\n' '|' < "$ROUTES")"
+: > "$ROUTES"
+fw_docker_route allow '' 5432/tcp >/dev/null 2>&1
+[ ! -s "$ROUTES" ] && ok "порт без контейнера — правила маршрута нет" || bad "лишнее правило: $(tr '\n' '|' < "$ROUTES")"
+docker() { :; }
+unset -f ufw
+eval "$saved_fw_ufw"
+
+echo "«-» в вопросе о портах — только SSH"
+saved_listen="$(declare -f fw_listening)"
+saved_ask="$(declare -f ask_text_t)"
+# shellcheck disable=SC2034
+fw_listening() { REPLY_FW_LISTEN=$'80/tcp nginx\n5432/tcp postgres'; }
+# shellcheck disable=SC2034
+ask_text_t() { REPLY_TEXT="$FAKE_ANSWER"; }
+# shellcheck disable=SC2034
+SSH_PORT=22
+reset_bulk_answers
+FAKE_ANSWER=-
+_ufw_ask_ports >/dev/null 2>&1
+_ufw_proposed
+[ -z "$REPLY_FW_PORTS" ] && [ -z "$UFW_ALLOW_BULK" ] \
+    && ok "«-» — список пуст, слушающие порты не подставляются" || bad "«-» дал «${REPLY_FW_PORTS}»"
+FAKE_ANSWER=443
+_ufw_ask_ports >/dev/null 2>&1
+_ufw_proposed
+[ "$REPLY_FW_PORTS" = 443/tcp ] && ok "ответ после «-» снова работает" || bad "после «-»: «${REPLY_FW_PORTS}»"
+reset_bulk_answers
+_ufw_proposed
+[ "$REPLY_FW_PORTS" = "80/tcp 5432/tcp" ] && ok "без ответа — предложены слушающие порты" || bad "без ответа: «${REPLY_FW_PORTS}»"
+eval "$saved_listen"
+eval "$saved_ask"
+
 echo "разбор usfc firewall"
 # fa <аргументы> — разбор и применение ответов в подоболочке, как в main:
 # порты и адрес проверяет answer_set, ошибка — код 2.

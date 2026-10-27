@@ -62,8 +62,12 @@ _ufw_show_listening() {
 }
 
 # _ufw_proposed → REPLY_FW_PORTS: заданный список (--allow, UFW_ALLOW или
-# ответ preask) или всё, что слушает наружу, кроме SSH (он разрешается всегда)
+# ответ preask), пусто после ответа «-» (UFW_SSH_ONLY_BULK) или всё, что
+# слушает наружу, кроме SSH (он разрешается всегда)
 _ufw_proposed() {
+    if [ "$UFW_SSH_ONLY_BULK" = Y ]; then
+        REPLY_FW_PORTS=''; REPLY_FW_ERR=''; return 0
+    fi
     if [ -n "$UFW_ALLOW_BULK" ]; then
         fw_parse_ports "$UFW_ALLOW_BULK"; return
     fi
@@ -78,14 +82,16 @@ _ufw_proposed() {
 }
 
 # _ufw_ask_ports — поправить список руками; «-» — только SSH.
-# Ответ — в UFW_ALLOW_BULK, его же прочтёт apply_ufw
+# Ответ — в UFW_ALLOW_BULK, его же прочтёт apply_ufw. «-» нельзя хранить
+# пустым UFW_ALLOW_BULK: пустой список значит «не задан», и _ufw_proposed
+# подставил бы всё, что слушает. Поэтому отдельный признак UFW_SSH_ONLY_BULK
 _ufw_ask_ports() {
     _ufw_proposed
     local def="${REPLY_FW_PORTS// /,}"
     while :; do
         ask_text_t "Какие порты открыть кроме SSH (${SSH_PORT})? «-» — никаких" "Which ports to open besides SSH (${SSH_PORT})? «-» — none" "${def:--}"
-        if [ "$REPLY_TEXT" = - ]; then UFW_ALLOW_BULK=''; return 0; fi
-        if fw_parse_ports "$REPLY_TEXT"; then UFW_ALLOW_BULK="$REPLY_FW_PORTS"; return 0; fi
+        if [ "$REPLY_TEXT" = - ]; then UFW_ALLOW_BULK=''; UFW_SSH_ONLY_BULK=Y; return 0; fi
+        if fw_parse_ports "$REPLY_TEXT"; then UFW_ALLOW_BULK="$REPLY_FW_PORTS"; UFW_SSH_ONLY_BULK=''; return 0; fi
         log_warn "$REPLY_FW_ERR"
     done
 }

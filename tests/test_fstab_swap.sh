@@ -112,6 +112,15 @@ check "UUID= и путь на одно устройство — второй д�
     'UUID=1111-aaaa none swap sw,pri=10 0 0'$'\n''# usfc: duplicate swap entry: /dev/vda2 none swap sw 0 0'
 
 echo ""
+echo "LVM: swapon видит /dev/dm-1, в fstab — /dev/mapper/…"
+mkdir -p "$TMP/dev/mapper"
+: > "$TMP/dev/dm-1"
+ln -s ../dm-1 "$TMP/dev/mapper/vg-swap_1"
+check "строка /dev/mapper узнаётся, дубль не дописывается" "$TMP/dev/dm-1" \
+    "$TMP/dev/mapper/vg-swap_1 none swap sw 0 0" \
+    "$TMP/dev/mapper/vg-swap_1 none swap sw,pri=10 0 0"
+
+echo ""
 echo "чтение приоритета для статуса"
 printf '/swapfile none swap sw,pri=10 0 0\n' > "$USFC_FSTAB"
 fstab_swap_pri /swapfile

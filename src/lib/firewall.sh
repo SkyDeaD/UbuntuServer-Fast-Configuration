@@ -264,7 +264,7 @@ fw_ping_set() {
 #   • только iptables-бэкенд Docker. В экспериментальном nftables-бэкенде
 #     (29.0+, firewall-backend: nftables) цепочки DOCKER-USER нет;
 #   • только IPv4: для after6.rules ufw-docker своего блока не публикует;
-#   • правило маршрута пишется на порт КОНТЕЙНЕРА: для `-p 8080:80` это 80.
+#   • правило маршрута пишется на адрес и порт КОНТЕЙНЕРА (см. fw_docker_route).
 FW_DOCKER_BEGIN='# BEGIN UFW AND DOCKER'
 FW_DOCKER_END='# END UFW AND DOCKER'
 fw_docker_block() {
@@ -324,24 +324,38 @@ fw_docker_published() {
           } }')"
 }
 
+# fw_docker_ip <контейнер> → REPLY_FW_DOCKER_IP: его адреса через пробел
+REPLY_FW_DOCKER_IP=''
+fw_docker_ip() {
+    REPLY_FW_DOCKER_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' "$1" 2>/dev/null)"
+}
+
 # fw_docker_route <allow|delete> <откуда|''> <порт/протокол> — правило
-# маршрута к контейнерам. Если порт опубликован с другим номером внутри
-# (8080→80), правило пишется на порт контейнера: DOCKER-USER видит пакет
-# уже после DNAT
+# маршрута к контейнеру, который опубликовал этот порт. DOCKER-USER видит
+# пакет уже после DNAT, поэтому правило — на адрес и порт КОНТЕЙНЕРА, как
+# у `ufw-docker allow`. Без адреса (`to any port 80`) разрешение 8080→80
+# открыло бы и 9000→80 соседнего контейнера, а снятие — закрыло бы его.
+# Цена схемы та же, что у ufw-docker: контейнер, пересозданный с другим
+# адресом, снаружи закрыт, пока порт не разрешат заново
 fw_docker_route() {
-    local act="$1" from="${2:-any}" p="$3" ports="${3%/*}" proto="${3#*/}" hp rest cp
+    local act="$1" from="${2:-any}" p="$3" proto="${3#*/}" hp cp name ip rc=0 found=false
     fw_docker_published
-    while read -r hp cp rest; do
-        [ "$hp" = "$p" ] && [ "$cp" != "$ports" ] && ports="$ports $cp"
+    while read -r hp cp name; do
+        [ -n "$hp" ] && [ "$hp" = "$p" ] || continue
+        fw_docker_ip "$name"
+        for ip in $REPLY_FW_DOCKER_IP; do
+            found=true
+            if [ "$act" = delete ]; then
+                ufw route delete allow proto "$proto" from "$from" to "$ip" port "$cp" >/dev/null 2>&1
+            else
+                _fw_ufw route allow proto "$proto" from "$from" to "$ip" port "$cp" || rc=1
+            fi
+        done
     done <<< "$REPLY_FW_DOCKER"
-    local rc=0 n
-    for n in $ports; do
-        if [ "$act" = delete ]; then
-            ufw route delete allow proto "$proto" from "$from" to any port "$n" >/dev/null 2>&1
-        else
-            _fw_ufw route allow proto "$proto" from "$from" to any port "$n" || rc=1
-        fi
-    done
+    if [ "$found" = false ] && [ "$act" = allow ]; then
+        log_info_t "${p}: сейчас его не публикует ни один контейнер — после запуска контейнера повторите --allow" \
+"${p}: no container publishes it right now — repeat --allow once the container is up"
+    fi
     return "$rc"
 }
 

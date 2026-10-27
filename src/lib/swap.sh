@@ -178,6 +178,24 @@ _swap_ids() {
     label="$(blkid -o value -s LABEL "$path" 2>/dev/null)"
     [ -n "$uuid" ]  && REPLY_SWAP_IDS="${REPLY_SWAP_IDS} UUID=${uuid} /dev/disk/by-uuid/${uuid}"
     [ -n "$label" ] && REPLY_SWAP_IDS="${REPLY_SWAP_IDS} LABEL=${label} /dev/disk/by-label/${label}"
+    # LVM и dm: swapon называет устройство по ядру (/dev/dm-1), а в fstab оно
+    # записано как /dev/mapper/vg-swap, /dev/vg/swap, by-id или PARTUUID=.
+    # Строку, которая указывает на то же устройство, добавляем как есть —
+    # иначе END в _fstab_swap_rewrite дописал бы вторую строку на тот же своп
+    local real f1 typ dev
+    real="$(readlink -f "$path" 2>/dev/null)"
+    [ -n "$real" ] && [ -r "$USFC_FSTAB" ] || return 0
+    while read -r f1 _ typ _; do
+        [ "$typ" = swap ] || continue
+        case "$f1" in
+            ''|\#*) continue ;;
+            UUID=*|LABEL=*|PARTUUID=*|PARTLABEL=*)
+                dev="$(blkid -l -o device -t "$f1" 2>/dev/null)" ;;
+            *)  dev="$f1" ;;
+        esac
+        [ -n "$dev" ] || continue
+        [ "$(readlink -f "$dev" 2>/dev/null)" = "$real" ] && REPLY_SWAP_IDS="${REPLY_SWAP_IDS} ${f1}"
+    done < "$USFC_FSTAB"
     return 0
 }
 
