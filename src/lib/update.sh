@@ -144,6 +144,18 @@ usfc_parse_manifest() {
     [ "${#REPLY_MANIFEST[@]}" -gt 0 ]
 }
 
+# usfc_stage_loads <setup.sh> — скачанная версия загружается целиком. Код
+# возврата source — это код последней команды, а не «всё загрузилось»,
+# поэтому спрашиваем у загруженного кода сам результат: main и parse_args
+# на месте. Вывод «OK» сравниваем целиком: exit внутри модуля его не даст
+usfc_stage_loads() {
+    local out
+    out="$(USFC_SOURCE_ONLY=1 USFC_NO_UPDATE=1 bash -c \
+        'source "$1" >/dev/null 2>&1; declare -F main parse_args >/dev/null && echo OK' \
+        _ "$1" 2>/dev/null)"
+    [ "$out" = OK ]
+}
+
 # install_update <новая версия> — 0 если установили и можно перезапускаться
 install_update() {
     local new_version="$1"
@@ -206,7 +218,7 @@ install_update() {
     # Синтаксис каждого модуля проверен, но этого мало: модуль с ошибкой на
     # верхнем уровне (не та функция, не тот порядок) проходит bash -n. Новый
     # код загружается целиком до того, как заменит рабочий
-    if ! USFC_SOURCE_ONLY=1 USFC_NO_UPDATE=1 bash -c 'source "$1"' _ "${stage}/setup.sh" >/dev/null 2>&1; then
+    if ! usfc_stage_loads "${stage}/setup.sh"; then
         log_error_t "Новая версия ${new_version} не загружается — остаюсь на ${VERSION}" \
 "Version ${new_version} fails to load — staying on ${VERSION}"
         rm -rf "$stage"; return 1

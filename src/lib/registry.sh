@@ -21,6 +21,7 @@ ITEM_SHORT=()
 ITEM_FULL=()
 ROLLBACK_NOTES=()
 DISABLE_SUPPORTED=()
+RECONF_SUPPORTED=()
 
 # usfc_item <id> <раздел> <название> <краткое> [англ. название] [англ. краткое]
 # Английские варианты необязательны: пока их нет, показывается русский —
@@ -85,6 +86,13 @@ usfc_item_toggle() {
     DISABLE_SUPPORTED+=("$1")
 }
 
+# ⇄-пункт, у которого есть что настроить заново (окно перезагрузки,
+# получатель уведомлений): повторный выбор в меню сначала спрашивает
+# «настроить заново?» и только на «нет» ведёт к disable_<id>
+usfc_item_reconf() {
+    RECONF_SUPPORTED+=("$1")
+}
+
 # Буквы разделов. Раньше раскрытие B/S/P было зашито числами прямо в main()
 # ("B) valid+=(1 2 3 4)"), и любой новый пункт молча ломал его. Теперь это
 # единственный источник истины, а номера выводятся из ITEM_SECTIONS.
@@ -133,5 +141,11 @@ expand_section_letter() {
 item_supports_disable() {
     local id="${1:-}" d
     for d in "${DISABLE_SUPPORTED[@]}"; do [ "$d" = "$id" ] && return 0; done
+    return 1
+}
+
+item_supports_reconf() {
+    local id="${1:-}" d
+    for d in "${RECONF_SUPPORTED[@]+"${RECONF_SUPPORTED[@]}"}"; do [ "$d" = "$id" ] && return 0; done
     return 1
 }

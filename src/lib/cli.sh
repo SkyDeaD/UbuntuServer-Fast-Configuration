@@ -203,14 +203,16 @@ _cli_old_form() {
 }
 
 # _cli_value <опция> <следующее слово> — значение опции. Значение,
-# похожее на опцию, — ошибка: иначе `--lang --audit` поставил бы язык «--audit»
+# похожее на опцию, — ошибка: иначе `--lang --audit` поставил бы язык «--audit».
+# Отрицательное число — значение, а не опция: chat_id группы в Telegram
+# выглядит как -1001234567890, и его печатает однострочная команда usfc export
 REPLY_CLI_VAL=''; REPLY_CLI_SHIFT=1
 _cli_value() {
     local opt="$1"
     case "$opt" in
         *=*) REPLY_CLI_VAL="${opt#*=}"; REPLY_CLI_SHIFT=1 ;;
         *)
-            if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == -* ]]; then
+            if [ "$#" -lt 2 ] || [ -z "$2" ] || { [[ "$2" == -* ]] && ! [[ "$2" =~ ^-[0-9]+$ ]]; }; then
                 _cli_die "${opt} требует значение" "${opt} needs a value"
             fi
             REPLY_CLI_VAL="$2"; REPLY_CLI_SHIFT=2 ;;
@@ -258,6 +260,9 @@ parse_args() {
                 _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
                 [[ "$REPLY_CLI_VAL" == *=* ]] || _cli_die "--set: ожидается КЛЮЧ=значение" "--set: expected KEY=value"
                 _answer_row key "${REPLY_CLI_VAL%%=*}" || _cli_die "--set: неизвестный ключ ${REPLY_CLI_VAL%%=*}" "--set: unknown key ${REPLY_CLI_VAL%%=*}"
+                # секрет в argv виден любому через ps — только файлом ответов
+                [ "$REPLY_ANS_TYPE" = secret ] && _cli_die "--set: ${REPLY_ANS_KEY} — секрет, его видно в ps; передайте файлом ответов (--config, права 600)" \
+"--set: ${REPLY_ANS_KEY} is a secret and would show up in ps; pass it in an answers file (--config, mode 600)"
                 USFC_FLAG_ANS[$REPLY_ANS_KEY]="${REPLY_CLI_VAL#*=}"; used+=("--set:apply firewall") ;;
             --deny|--deny=*)
                 # закрыть порт — только в firewall: у пункта ufw такого вопроса нет
@@ -467,7 +472,7 @@ $(_usage_answer_keys)
 остальное ему нужно делать у терминала.
 
 Секреты (CF_TOKEN, TG_TOKEN) флагов не имеют: командную строку видно в ps.
-Передавайте их файлом ответов (--set тоже виден в ps).
+Передавайте их файлом ответов; --set для них отклоняется.
 
 Коды возврата: 0 — всё применилось или нечего применять; 1 — часть пунктов
 не удалась; 2 — ошибка в аргументах или в файле ответов.
@@ -596,7 +601,7 @@ not run by apply; SSH hardening only moves the port with --ssh-port, the rest
 of it needs a person at the terminal.
 
 Secrets (CF_TOKEN, TG_TOKEN) have no flags: a command line is visible in ps.
-Pass them in the answers file (--set is visible in ps too).
+Pass them in the answers file; --set refuses them.
 
 Exit codes: 0 — everything applied or nothing to do; 1 — some items failed;
 2 — an error in the arguments or the answers file.

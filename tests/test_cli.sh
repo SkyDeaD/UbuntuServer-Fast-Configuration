@@ -66,6 +66,8 @@ expect "--swap без значения"              2 "" "требует зна
 expect "--swap не глотает --yes"          2 "" "требует значение"    -- apply web --swap --yes
 expect "--set без ="                      2 "" "КЛЮЧ=значение"       -- apply web --set SWAP_MB
 expect "--set с неизвестным ключом"       2 "" "неизвестный ключ"    -- apply web --set FOO=1
+expect "--set с секретом CF_TOKEN"        2 "" "секрет"              -- apply certbot --set CF_TOKEN=abc
+expect "--set с секретом TG_TOKEN"        2 "" "секрет"              -- apply notify --set TG_TOKEN=1:a
 expect "restore без метки и без терминала" 2 "" "метку снимка"       -- restore </dev/null
 
 echo ""
@@ -84,6 +86,8 @@ expect "--swap=2048"                      0 "apply|zram||false|false|false|SWAP_
 expect "--sysctl / --no-sysctl"           0 "apply|zram||false|false|false|SYSCTL=N" "" -- apply zram --no-sysctl
 expect "--ufw даёт Y"                     0 "apply|ufw||false|false|false|UFW=Y" "" -- apply ufw --ufw
 expect "--set KEY=VALUE"                  0 "apply|ufw||false|false|false|UFW=yes" "" -- apply ufw --set UFW=yes
+expect "--tg-chat с минусом — значение"   0 "apply|notify||false|false|false|TG_CHAT=-1001234567890" "" -- apply notify --tg-chat -1001234567890
+expect "минус не делает опцию значением"  2 "" "требует значение"    -- apply notify --tg-chat --yes
 expect "--no- у флага со значением — нет" 2 "" "неизвестная опция" -- apply zram --no-swap
 
 echo ""
@@ -186,6 +190,22 @@ via_flags="$( parse_args apply ${line} >/dev/null 2>&1; apply_cli_answers >/dev/
 [[ "$via_cfg" == rc=0* ]] && [ "$via_cfg" = "$via_flags" ] && ok "файл export и его команда дают одни ответы" \
     || bad "файл: «$via_cfg», команда: «$via_flags»"
 echo "    ($via_cfg)"
+
+echo ""
+echo "проверка скачанного обновления перед заменой"
+# usfc_stage_loads смотрит не на код возврата source, а на то, что код
+# реально загрузился: модуль, ломающий загрузку посреди файла, отсеивается
+stg="$(mktemp -d)"
+cp -R "$(dirname "${1:-src/setup.sh}")/." "$stg/"
+usfc_stage_loads "$stg/setup.sh" && ok "целая версия загружается" || bad "целая версия отвергнута"
+last_mod="$(grep -v '^[[:space:]]*\(#\|$\)' "$stg/MODULES" | tail -1)"
+cp "$stg/$last_mod" "$stg/keep.sh"
+printf '\nunset -f main\ntrue\n' >> "$stg/$last_mod"
+usfc_stage_loads "$stg/setup.sh" && bad "версия без main принята" || ok "без main — отвергнута, хотя source вернул 0"
+cp "$stg/keep.sh" "$stg/$last_mod"
+printf '\nexit 0\n' >> "$stg/$(grep -v '^[[:space:]]*\(#\|$\)' "$stg/MODULES" | head -1)"
+usfc_stage_loads "$stg/setup.sh" && bad "exit 0 в первом модуле принят" || ok "exit 0 посреди загрузки — отвергнута"
+rm -rf "$stg"
 
 echo ""
 [ "$fail" -eq 0 ] && echo "командная строка: все проверки пройдены" || echo "командная строка: ЕСТЬ ОШИБКИ"

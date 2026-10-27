@@ -72,5 +72,63 @@ preask_bulk_answers tmux nosuchitem >/dev/null 2>&1
 [[ "$USFC_PREASK_IDS" == *" nosuchitem "* ]] && ok "весь список доступен предзапросам" || bad "USFC_PREASK_IDS: ${USFC_PREASK_IDS}"
 
 echo ""
+echo "применённый пункт с новыми ответами прогоняется ещё раз"
+# каждая строка: <id> <переменная> <значение> — ответ, ради которого
+# filter_pending не должен отсеять уже применённый пункт
+while read -r id var val; do
+    reset_bulk_answers
+    _item_has_new_answers "$id" && bad "${id}: без ответов считается «есть новые»"
+    printf -v "$var" '%s' "$val"
+    _item_has_new_answers "$id" && ok "${id}: ${var}" || bad "${id}: ${var} не заставил прогнать пункт"
+done <<'ROWS'
+hostname HOSTNAME_BULK node-1
+hostname TIMEZONE_BULK UTC
+journald JOURNAL_MAX_BULK 200
+cli STARSHIP_PRESET_BULK git
+cli STARSHIP_PROD_BULK Y
+notify TG_CHAT_BULK 12345
+notify NOTIFY_EVENTS_BULK ssh
+motd MOTD_CLEAN_BULK Y
+docker LAZYDOCKER_BULK Y
+zram ZRAM_RECONF_BULK Y
+zram SWAP_BULK_MB 1024
+unattended REBOOT_TIME_BULK 04:00
+sshhardening SSH_PORT_NEW_BULK 2222
+ROWS
+reset_bulk_answers
+
+echo ""
+echo "меню: повторный выбор настроенного пункта"
+# process_item на применённом ⇄-пункте: у перенастраиваемого сначала
+# вопрос «настроить заново?», у остальных — сразу disable_<id>
+saved_pi="$(declare -f item_applied ask_yn_t apply_unattended disable_unattended apply_bbr disable_bbr)"
+ran=""
+item_applied() { return 0; }
+apply_unattended()   { ran="apply"; }
+disable_unattended() { ran="disable"; }
+apply_bbr()          { ran="apply"; }
+disable_bbr()        { ran="disable"; }
+# shellcheck disable=SC2034  # читается process_item
+BULK_MODE=false
+ua_n=0; bbr_n=0
+for i in "${!ITEM_IDS[@]}"; do
+    [ "${ITEM_IDS[$i]}" = unattended ] && ua_n=$((i + 1))
+    [ "${ITEM_IDS[$i]}" = bbr ] && bbr_n=$((i + 1))
+done
+ask_yn_t() { return 0; }
+ran=""; process_item "$ua_n" >/dev/null 2>&1
+[ "$ran" = apply ] && ok "unattended: «да» — настроить заново" || bad "unattended, «да»: ${ran}"
+ask_yn_t() { return 1; }
+ran=""; process_item "$ua_n" >/dev/null 2>&1
+[ "$ran" = disable ] && ok "unattended: «нет» — выключить" || bad "unattended, «нет»: ${ran}"
+ask_yn_t() { return 0; }
+ran=""; process_item "$bbr_n" >/dev/null 2>&1
+[ "$ran" = disable ] && ok "bbr: без вопроса — переключатель" || bad "bbr: ${ran}"
+item_supports_reconf notify && ok "notify перенастраивается" || bad "notify не помечен usfc_item_reconf"
+eval "$saved_pi"
+# shellcheck disable=SC2034
+BULK_MODE=true
+
+echo ""
 [ "$fail" -eq 0 ] && echo "паритет пакетного режима: все проверки пройдены" || echo "паритет пакетного режима: ЕСТЬ ОШИБКИ"
 exit "$fail"

@@ -100,6 +100,17 @@ reset; BULK_MODE=true; REBOOT_TIME_BULK=02:30
 apply_unattended >/dev/null 2>&1
 has "время из REBOOT_TIME_BULK" 'Time "02:30";' "$(conf)"
 has "вошедшие без ответа → дефолт N" 'WithUsers "false";' "$(conf)"
+# --yes отвечает «да» на любой ask_yn — здесь это ANS_USERS=Y. Без явного
+# ответа в пакете вопрос не задаётся, остаётся то, что стоит
+reset; BULK_MODE=true; REBOOT_TIME_BULK=02:30; ANS_USERS=Y
+apply_unattended >/dev/null 2>&1
+has "--yes без ответа не включает перезагрузку при вошедших" 'WithUsers "false";' "$(conf)"
+case "$QUESTIONS" in *Перезагружать*) bad "в пакете спросили про вошедших" ;; *) ok "в пакете про вошедших не спрашивали" ;; esac
+REBOOT_TIME_BULK=03:00; QUESTIONS=""
+printf '%s\n' 'Unattended-Upgrade::Automatic-Reboot "true";' 'Unattended-Upgrade::Automatic-Reboot-Time "02:30";' \
+    'Unattended-Upgrade::Automatic-Reboot-WithUsers "true";' > "$UA_REBOOT_FILE"
+apply_unattended >/dev/null 2>&1
+has "без ответа прежнее «true» сохраняется" 'WithUsers "true";' "$(conf)"
 reset; BULK_MODE=true; REBOOT_TIME_BULK=02:30; REBOOT_WITH_USERS_BULK=Y
 apply_unattended >/dev/null 2>&1
 has "REBOOT_WITH_USERS_BULK=Y → true" 'WithUsers "true";' "$(conf)"

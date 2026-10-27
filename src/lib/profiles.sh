@@ -356,12 +356,21 @@ usfc_check_profile_names() {
 }
 
 # _item_has_new_answers <id> — заданы ответы, ради которых уже применённый
-# пункт надо прогнать ещё раз
+# пункт надо прогнать ещё раз. Без этого `usfc apply hostname --hostname x`
+# на сервере, где пункт уже применён, молча ничего не делал. Сюда — только
+# ответы, которые apply_<id> на применённом пункте действительно читает
 _item_has_new_answers() {
     case "$1" in
         ufw)          fw_has_answers ;;
         unattended)   [ -n "${REBOOT_TIME_BULK}${REBOOT_WITH_USERS_BULK}" ] ;;
         sshhardening) [ -n "$SSH_PORT_NEW_BULK" ] ;;
+        hostname)     [ -n "${HOSTNAME_BULK}${TIMEZONE_BULK}" ] ;;
+        journald)     [ -n "$JOURNAL_MAX_BULK" ] ;;
+        cli)          [ -n "${STARSHIP_PRESET_BULK}${STARSHIP_PROD_BULK}" ] ;;
+        notify)       [ -n "${TG_TOKEN_BULK}${TG_CHAT_BULK}${NOTIFY_EVENTS_BULK}" ] ;;
+        motd)         [ -n "$MOTD_CLEAN_BULK" ] ;;
+        docker)       [ "$LAZYDOCKER_BULK" = Y ] ;;
+        zram)         [ "$ZRAM_RECONF_BULK" = Y ] || [ -n "$SWAP_BULK_MB" ] ;;
         *)            return 1 ;;
     esac
 }

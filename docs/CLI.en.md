@@ -352,7 +352,7 @@ quiet "no".
 
 Secrets (`CF_TOKEN`, `TG_TOKEN`) have no flags: any user can see the command
 line in `ps`. Pass them in an answers file with `600` permissions.
-`--set CF_TOKEN=…` technically works, but it shows up in `ps` just the same.
+`--set CF_TOKEN=…` is refused with exit code 2 for the same reason.
 
 ### Moving the SSH port
 

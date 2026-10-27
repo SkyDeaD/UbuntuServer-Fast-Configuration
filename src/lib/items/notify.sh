@@ -7,6 +7,7 @@ usfc_item notify защита "Уведомления в Telegram" \
     "Telegram alerts" \
     "SSH logins, fail2ban bans, reboot required"
 usfc_item_toggle notify
+usfc_item_reconf notify
 
 usfc_item_full notify "Шлёт в Telegram три вида сообщений (набор выбирается):
   ssh    — вход по SSH: пользователь, откуда, когда (pam_exec в /etc/pam.d/sshd);

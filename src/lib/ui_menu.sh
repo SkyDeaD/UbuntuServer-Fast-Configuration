@@ -200,8 +200,19 @@ process_item() {
     # Пункт с явными новыми настройками (ufw с портами, unattended со
     # временем перезагрузки) — не переключатель, а «применить ещё раз»:
     # тот же отсев, что в filter_pending, иначе прогон ВЫКЛЮЧИЛ бы пункт
+    local mode=apply
     if item_supports_disable "$id" && item_applied "$id" \
        && ! _item_has_new_answers "$id"; then
+        mode=disable
+        # Пункт с настройками (окно перезагрузки, получатель уведомлений):
+        # повторный выбор — прежде всего «поменять», а не сразу «выключить»
+        if item_supports_reconf "$id" && [ "$BULK_MODE" != true ]; then
+            echo ""
+            ask_yn_t "«${title}» уже настроен. Настроить заново? (нет — выключить)" \
+"\"${title}\" is already set up. Set it up again? (no — turn it off)" Y && mode=apply
+        fi
+    fi
+    if [ "$mode" = disable ]; then
         # У nginx и Docker disable_* — переключатель (см. комментарий там же),
         # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
         local verb

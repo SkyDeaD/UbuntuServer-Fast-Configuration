@@ -7,6 +7,7 @@ usfc_item unattended защита "unattended-upgrades" \
     "unattended-upgrades" \
     "installs security updates on its own"
 usfc_item_toggle unattended
+usfc_item_reconf unattended
 
 usfc_item_full unattended "Сам ставит security-обновления системы, без твоего участия.
 
@@ -155,7 +156,12 @@ _ua_reboot_apply() {
     fi
     users=false
     def=N; [ "$REPLY_UA_USERS" = true ] && def=Y
-    if ask_bulk_yn REBOOT_WITH_USERS_BULK "Перезагружать, даже если кто-то вошёл по SSH?" \
+    # Без явного ответа в пакете — то, что уже стоит (на новом сервере «нет»):
+    # ask_bulk_yn под --yes ответил бы «да», и перезагрузка молча стала бы
+    # выбивать вошедших по SSH
+    if [ "$BULK_MODE" = true ] && [ -z "$REBOOT_WITH_USERS_BULK" ]; then
+        [ "$def" = Y ] && users=true
+    elif ask_bulk_yn REBOOT_WITH_USERS_BULK "Перезагружать, даже если кто-то вошёл по SSH?" \
 "Reboot even if someone is logged in over SSH?" "$def"; then users=true; fi
     write_file "$UA_REBOOT_FILE" <<EOF
 // Managed by usfc: automatic reboot window for unattended-upgrades
