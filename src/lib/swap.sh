@@ -234,7 +234,7 @@ fstab_set_swap_pri() {
     if [ -f "$USFC_FSTAB" ] && [ "$new" = "$(cat "$USFC_FSTAB")" ]; then
         return 0
     fi
-    printf '%s\n' "$new" | write_file "$USFC_FSTAB"
+    printf '%s\n' "$new" | write_file_atomic "$USFC_FSTAB"
 }
 
 # fstab_swap_pri <путь> → REPLY_FSTAB_PRI: приоритет из fstab для этого свопа,

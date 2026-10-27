@@ -63,6 +63,8 @@ expect "--lang без значения"              2 "" "требует зна
 expect "--lang не глотает следующий флаг" 2 "" "требует значение"    -- --lang --verbose
 expect "--lang de"                        2 "" "ru или en"           -- --lang de
 expect "--swap без значения"              2 "" "требует значение"    -- apply web --swap
+expect "--config= с пустым значением"     2 "" "требует значение"    -- apply web --config=
+expect "--swap= с пустым значением"       2 "" "требует значение"    -- apply web --swap=
 expect "--swap не глотает --yes"          2 "" "требует значение"    -- apply web --swap --yes
 expect "--set без ="                      2 "" "КЛЮЧ=значение"       -- apply web --set SWAP_MB
 expect "--set с неизвестным ключом"       2 "" "неизвестный ключ"    -- apply web --set FOO=1
@@ -206,6 +208,22 @@ cp "$stg/keep.sh" "$stg/$last_mod"
 printf '\nexit 0\n' >> "$stg/$(grep -v '^[[:space:]]*\(#\|$\)' "$stg/MODULES" | head -1)"
 usfc_stage_loads "$stg/setup.sh" && bad "exit 0 в первом модуле принят" || ok "exit 0 посреди загрузки — отвергнута"
 rm -rf "$stg"
+
+echo ""
+echo "сухой прогон: hostnamectl наружу только читает"
+fb="$(mktemp -d)"
+printf '#!/bin/sh\necho "REAL $*"\n' > "$fb/hostnamectl"
+command chmod +x "$fb/hostnamectl"
+hn() { ( PATH="$fb:$PATH"; USFC_DRY_RUN=true; dry_run_enable; hostnamectl "$@" ) 2>&1; }
+for args in "" "status" "hostname" "--static" "--static hostname"; do
+    # shellcheck disable=SC2086  # слова аргументов разделяются намеренно
+    case "$(hn $args)" in *REAL*) ok "чтение пропущено: «${args}»" ;; *) bad "чтение перехвачено: «${args}»" ;; esac
+done
+for args in "set-hostname x" "hostname node-1" "--static set-hostname x" "--pretty Node"; do
+    # shellcheck disable=SC2086
+    case "$(hn $args)" in *REAL*) bad "запись ушла наружу: «${args}»" ;; *) ok "запись перехвачена: «${args}»" ;; esac
+done
+rm -rf "$fb"
 
 echo ""
 [ "$fail" -eq 0 ] && echo "командная строка: все проверки пройдены" || echo "командная строка: ЕСТЬ ОШИБКИ"

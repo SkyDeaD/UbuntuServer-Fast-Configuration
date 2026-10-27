@@ -140,6 +140,11 @@ run --help
 has "справка упоминает передачу вниз" "$OUT" "usfc"
 has "есть пример с командой apply"    "$OUT" "apply web"
 [ "$RC" -eq 0 ] && ok "код возврата 0" || bad "код возврата $RC"
+for args in "--help --lang en" "--lang en --help" "--lang=en -h"; do
+    # shellcheck disable=SC2086  # слова аргументов разделяются намеренно
+    run $args
+    has "справка по-английски: ${args}" "$OUT" "Usage: install.sh"
+done
 
 echo ""
 [ "$fail" -eq 0 ] && echo "аргументы установщика: все проверки пройдены" \

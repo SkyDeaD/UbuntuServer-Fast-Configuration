@@ -46,8 +46,8 @@ cli_write_aliases >/dev/null 2>&1
 has   "блок записан"            "# >>> vps-setup:cli >>>" "$TMP/.bashrc"
 has   "маркер версии на месте"  "$CLI_BLOCK_MARK"         "$TMP/.bashrc"
 has   "алиас htop→btop есть"    'alias htop="btop"'       "$TMP/.bashrc"
-has   "версия блока — v3"       "usfc:cli-block v3"       "$TMP/.bashrc"
-has   "функция ports в блоке"   "ports() {"               "$TMP/.bashrc"
+has   "версия блока — v4"       "usfc:cli-block v4"       "$TMP/.bashrc"
+has   "функция ports в блоке"   "function ports {"               "$TMP/.bashrc"
 has   "чужие строки целы"       "export EDITOR=vim"       "$TMP/.bashrc"
 
 # ── 2. повторный прогон ничего не дублирует ──────────────────────────────────
@@ -94,6 +94,12 @@ echo ""
 echo "функции блока"
 sed -n '/# >>> vps-setup:cli >>>/,/# <<< vps-setup:cli <<</p' "$TMP/.bashrc" > "$TMP/block.sh"
 bash -n "$TMP/block.sh" && ok "вырезанный блок проходит bash -n" || bad "блок не разбирается"
+# Алиас с тем же именем выше в .bashrc (частый сниппет) не должен ломать
+# разбор блока в интерактивной оболочке и не должен перебивать функцию
+printf "shopt -s expand_aliases\nalias ports='echo ALIAS'\nalias myip='echo ALIAS'\n" > "$TMP/aliased.sh"
+cat "$TMP/block.sh" >> "$TMP/aliased.sh"
+out="$(bash -c 'source "$1" 2>&1; ports 2>/dev/null | head -1' _ "$TMP/aliased.sh")"
+case "$out" in *"syntax error"*|*ALIAS*) bad "алиас ports сломал или перебил функцию: $out" ;; *) ok "алиас ports выше блока не мешает" ;; esac
 for fn in ports extract myip _usfc_need; do
     bash -c 'source "$1"; declare -F "$2" >/dev/null' _ "$TMP/block.sh" "$fn" \
         && ok "функция ${fn} определена" || bad "функции ${fn} нет"

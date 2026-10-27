@@ -77,6 +77,10 @@ for lang in ru en; do
         fi
     done
 
+    # без переменных локали вовсе — Unicode-рамка, а не ASCII
+    env -i PATH="$PATH" HOME="$TMP" TERM=xterm bash -u "$card" >"$TMP/out-noloc" 2>&1
+    grep -F '╭' "$TMP/out-noloc" >/dev/null && ok "без локали: Unicode-рамка" || bad "без локали: рамка ASCII"
+
     # язык зашит при установке: в английской карточке нет кириллицы
     if [ "$lang" = en ]; then
         if LC_ALL=C.UTF-8 grep -P '[\x{0400}-\x{04FF}]' "$TMP/out-en-C.UTF-8" >/dev/null 2>&1; then

@@ -37,7 +37,7 @@ with_no_service_start() {
 #
 # INT и TERM — отдельно и с exit: ловушка на сигнал без exit гасит сам
 # сигнал, и после Ctrl+C посреди apt install прогон шёл к следующему пункту
-trap 'cleanup_spinner; drop_policy_rc_d' EXIT
+trap 'cleanup_spinner; drop_policy_rc_d; cleanup_config_tmp' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

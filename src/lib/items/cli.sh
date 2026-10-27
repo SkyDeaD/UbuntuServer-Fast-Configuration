@@ -8,7 +8,7 @@ CLI_PKGS="bat fd-find ripgrep zoxide ncdu btop"
 # Версия блока алиасов в ~/.bashrc. Поднимать при КАЖДОМ изменении его
 # содержимого — по ней apply_cli понимает, что блок надо переписать
 # (v3: функции ports, dps, extract, myip)
-CLI_BLOCK_MARK="# usfc:cli-block v3"
+CLI_BLOCK_MARK="# usfc:cli-block v4"
 # eza приехал в Debian только с trixie. На bookworm его нет, и без этой ветки
 # пункт вечно показывал бы «не хватает: eza» — состояние, которое пользователь
 # не может исправить, потому что пакета попросту не существует
@@ -136,10 +136,17 @@ apply_cli() {
 # поэтому живёт в отдельной функции: так его можно вырезать и прогнать
 # `bash -n` (tests/test_cli_block.sh). Сообщения — по-английски: блок
 # исполняется в чужой оболочке и не знает про язык usfc.
+#
+# Форма `function имя {`, а не `имя() {`: если выше в .bashrc есть
+# `alias ports='netstat -tulanp'`, bash раскроет алиас в `имя() {` и получит
+# синтаксическую ошибку на каждом входе. После `function` слово алиасом не
+# раскрывается. unalias — чтобы функция, а не старый алиас, была тем, что
+# запускается по имени
 cli_block_functions() {
     cat <<'FUNCS'
+unalias ports dps extract myip 2>/dev/null
 # ports: слушающие TCP/UDP-порты. Без root ss не отдаёт имена чужих процессов
-ports() {
+function ports {
     command -v ss >/dev/null 2>&1 || { echo "ports: ss not found (install iproute2)" >&2; return 1; }
     ss -tulpnH 2>/dev/null | awk '
         BEGIN { printf "%-5s %-28s %s\n", "PROTO", "LOCAL", "PROCESS" }
@@ -156,11 +163,11 @@ ports() {
 }
 # dps: компактный docker ps; функция есть, только если docker стоял на старте оболочки
 if command -v docker >/dev/null 2>&1; then
-    dps() { docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' "$@"; }
+    function dps { docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}' "$@"; }
 fi
 # extract: распаковка по расширению
 _usfc_need() { command -v "$1" >/dev/null 2>&1 || { echo "extract: '$1' is not installed (needed for $2)" >&2; return 1; }; }
-extract() {
+function extract {
     local f
     [ $# -gt 0 ] || { echo "usage: extract <archive>..." >&2; return 2; }
     for f in "$@"; do
@@ -184,7 +191,7 @@ extract() {
     done
 }
 # myip: внешний адрес (один запрос, 3 с) и локальные адреса
-myip() {
+function myip {
     local ext
     ext="$(curl -fsS --max-time 3 https://icanhazip.com 2>/dev/null | tr -d '[:space:]')"
     echo "external: ${ext:-unavailable}"

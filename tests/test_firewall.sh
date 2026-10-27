@@ -207,5 +207,67 @@ cli "--from мусор — ошибка"        "2|"                            
 cli "--deny мусор — ошибка"        "2|"                                   firewall --deny http
 cli "--deny вне firewall — ошибка" "2|"                                   apply ufw --deny 80
 
+echo "дефолт вопроса про ping"
+saved_state="$(declare -f fw_ping_state)"
+# shellcheck disable=SC2034
+fw_ping_state() { REPLY_FW_PING="$FAKE_PING"; }
+for pair in on:Y off:N mixed:N unknown:Y; do
+    FAKE_PING="${pair%%:*}"
+    _ufw_ping_default
+    [ "$REPLY_T" = "${pair#*:}" ] && ok "ping ${FAKE_PING} → ${REPLY_T}" || bad "ping ${FAKE_PING}: «${REPLY_T}», ждали ${pair#*:}"
+done
+eval "$saved_state"
+
+echo "--from без --allow"
+saved_active="$(declare -f ufw_active)"
+saved_show="$(declare -f _ufw_show_listening)"
+saved_pkg="$(declare -f ensure_pkg)"
+ufw_active() { return 1; }
+_ufw_show_listening() { :; }
+ensure_pkg() { echo REACHED; return 1; }
+reset_bulk_answers
+# shellcheck disable=SC2034
+BULK_MODE=true
+# shellcheck disable=SC2034
+UFW_BULK=Y
+# shellcheck disable=SC2034
+UFW_FROM_BULK=10.0.0.5
+out="$(apply_ufw 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] && [[ "$out" != *REACHED* ]] && ok "--from без --allow — отказ до включения UFW" || bad "--from без --allow: код ${rc}"
+# shellcheck disable=SC2034
+UFW_SSH_ONLY_BULK=Y
+out="$(apply_ufw 2>&1)"
+[[ "$out" == *REACHED* ]] && ok "--from при ответе «только SSH» не мешает" || bad "«только SSH» с --from остановлен"
+reset_bulk_answers
+# shellcheck disable=SC2034
+BULK_MODE=false
+eval "$saved_active"
+eval "$saved_show"
+eval "$saved_pkg"
+
+echo "аудит: профиль OpenSSH — это правило для 22/tcp"
+saved_listen="$(declare -f fw_listening)"
+saved_active="$(declare -f ufw_active)"
+saved_audit="$(declare -f _audit_t)"
+saved_pingst="$(declare -f fw_ping_state)"
+saved_pub="$(declare -f fw_docker_published)"
+# shellcheck disable=SC2034
+fw_listening() { REPLY_FW_LISTEN=$'22/tcp sshd\n443/tcp nginx'; }
+ufw_active() { return 0; }
+ufw() { printf 'Status: active\n\nTo Action From\n-- ------ ----\nOpenSSH ALLOW Anywhere\n443/tcp ALLOW Anywhere\n'; }
+# shellcheck disable=SC2034
+fw_ping_state() { REPLY_FW_PING=on; }
+# shellcheck disable=SC2034
+fw_docker_published() { REPLY_FW_DOCKER=''; }
+_audit_t() { echo "$1 $2"; }
+out="$(audit_ports 2>&1)"
+[[ "$out" == *"ports.firewalled ok"* ]] && ok "22/tcp под профилем OpenSSH не считается «без правила»" || bad "аудит: $out"
+unset -f ufw
+eval "$saved_listen"
+eval "$saved_active"
+eval "$saved_audit"
+eval "$saved_pingst"
+eval "$saved_pub"
+
 if [ "$fail" -eq 0 ]; then echo "OK"; else echo "ЕСТЬ ОШИБКИ"; fi
 exit "$fail"

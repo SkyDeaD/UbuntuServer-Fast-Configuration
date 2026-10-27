@@ -325,17 +325,26 @@ load_config() {
 # Только https: файл ответов может нести токен, и отдавать его по
 # открытому каналу нельзя. Сам URL в лог не пишем — в нём бывает секрет
 REPLY_CONFIG_PATH=''
+USFC_CONFIG_TMP=''     # его удаляет и ловушка EXIT (services.sh): Ctrl+C до rm
 fetch_config() {
     local url="$1" tmp
     tmp="$(mktemp)" || return 1
+    USFC_CONFIG_TMP="$tmp"
     chmod 600 "$tmp"
     if ! curl -fsSL --proto '=https' --max-time 20 --retry 2 "$url" -o "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
+        cleanup_config_tmp
         log_error_t "Не удалось скачать файл ответов (нужен https и доступный адрес)" \
 "Could not download the answers file (it must be https and reachable)"
         return 1
     fi
     REPLY_CONFIG_PATH="$tmp"
+}
+
+# cleanup_config_tmp — удалить скачанный файл ответов. В нём бывает токен,
+# и после Ctrl+C он не должен остаться в /tmp
+cleanup_config_tmp() {
+    [ -n "$USFC_CONFIG_TMP" ] && rm -f "$USFC_CONFIG_TMP"
+    USFC_CONFIG_TMP=''
 }
 
 # Имя профиля не должно совпадать с id пункта. Совпадение было: профиль

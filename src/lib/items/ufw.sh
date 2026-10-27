@@ -98,10 +98,12 @@ _ufw_ask_ports() {
 
 # Ping и Docker в пакете меняются только по явному ответу. Дефолт вопроса —
 # текущее состояние: Enter ничего не меняет, а `--yes` не включает ответ на
-# ping обратно на сервере, где его выключили руками
+# ping обратно на сервере, где его выключили руками. «Частично» (before.rules
+# правили руками, например DROP только на echo-request) — тоже N: Y вернул бы
+# ACCEPT туда, где его кто-то сознательно убрал
 _ufw_ping_default() {
     fw_ping_state
-    REPLY_T=Y; [ "$REPLY_FW_PING" = off ] && REPLY_T=N
+    case "$REPLY_FW_PING" in off|mixed) REPLY_T=N ;; *) REPLY_T=Y ;; esac
 }
 _ufw_ask_ping() {
     _ufw_ping_default
@@ -188,6 +190,13 @@ apply_ufw() {
         return
     fi
     [ "$BULK_MODE" = true ] || _ufw_ask_ports
+    # --from без --allow сузил бы до одного адреса всё, что слушает сервер:
+    # сайт и VPN стали бы недоступны всем, кроме этого IP
+    if [ -n "$UFW_FROM_BULK" ] && [ -z "$UFW_ALLOW_BULK" ] && [ "$UFW_SSH_ONLY_BULK" != Y ]; then
+        log_error_t "UFW_FROM (--from) задан без списка портов (--allow) — не включаю UFW" \
+"UFW_FROM (--from) is set without a port list (--allow) — not enabling UFW"
+        return 1
+    fi
     _ufw_proposed || { log_error "$REPLY_FW_ERR"; return 1; }
     local -a ports=()
     [ -n "$REPLY_FW_PORTS" ] && read -ra ports <<< "$REPLY_FW_PORTS"

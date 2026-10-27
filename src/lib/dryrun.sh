@@ -42,6 +42,23 @@ write_file() {
     cat > "$1"
 }
 
+# write_file_atomic <путь> — как write_file, но через временный файл рядом
+# и mv. Для файлов, без которых система не загрузится (fstab): `cat >`
+# сначала обрезает файл, и на забитом диске запись падает с ENOSPC, оставив
+# пустой fstab. Симлинк mv заменил бы файлом — его пишем как обычно
+write_file_atomic() {
+    if [ "$USFC_DRY_RUN" = true ] || [ -L "$1" ] || [ ! -e "$1" ]; then
+        write_file "$1"; return
+    fi
+    local tmp
+    tmp="$(mktemp "${1}.usfc.XXXXXX")" || return 1
+    if ! cat > "$tmp" || ! chmod --reference="$1" "$tmp" || ! chown --reference="$1" "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    backup_file "$1"
+    mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
 # remove_file <путь> — удалить системный файл: снимок, потом rm. Сам rm в
 # сухом прогоне не подменяется (он в основном чистит временные файлы), поэтому
 # удаление системных файлов идёт только через эту функцию
@@ -155,12 +172,18 @@ dry_run_enable() {
     }
 
     # Пункт hostname (5.0): имя, часовой пояс, NTP. Без аргументов и status/
-    # show/list-* — только чтение
+    # show/list-* — только чтение. У hostnamectl наружу — только вызовы из
+    # одних этих слов: `hostnamectl hostname ИМЯ` (systemd ≥ 249) и
+    # `--static set-hostname X` имя меняют, хотя начинаются так же
     hostnamectl() {
-        case "${1:-}" in
-            ''|status|hostname|--static|--transient|--pretty) command hostnamectl "$@" ;;
-            *) _dry_say "hostnamectl $*" ;;
-        esac
+        local a
+        for a in "$@"; do
+            case "$a" in
+                status|hostname|--static|--transient|--pretty) ;;
+                *) _dry_say "hostnamectl $*"; return 0 ;;
+            esac
+        done
+        command hostnamectl "$@"
     }
     timedatectl() {
         case "${1:-}" in

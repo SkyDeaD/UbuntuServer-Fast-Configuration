@@ -700,6 +700,16 @@ ssh_port_change() {
         return 0
     fi
     if [ "${#old[@]}" -eq "${#cur[@]}" ]; then phase=open; else phase=close; fi
+    # Без терминала шаг 2 — только если шаг 1 сделал usfc (два Port в нашем
+    # drop-in, последний — этот). sshd, который уже слушает оба порта по
+    # чужой настройке, или повтор провижининга — это ещё не подтверждение,
+    # что вход снаружи работает: делаем шаг 1, закроет следующий запуск
+    local already=false
+    if [ "$phase" = close ] && [ "$BULK_MODE" = true ]; then
+        if ! ssh_port_pending || [ "$REPLY_SSH_PORT_TO" != "$new" ]; then
+            phase=open; already=true
+        fi
+    fi
 
     if [ ! -f "${SSHD_CONFIG_DIR}/sshd_config" ]; then
         log_error_t "Нет ${SSHD_CONFIG_DIR}/sshd_config — openssh-server не установлен?" \
@@ -719,7 +729,7 @@ ssh_port_change() {
         printf '      %s\n' "${REPLY_SSH_LISTEN_PORTED[@]}"
         return 1
     fi
-    if [ "$phase" = open ] && ssh_port_listening "$new"; then
+    if [ "$phase" = open ] && [ "$already" = false ] && ssh_port_listening "$new"; then
         log_error_t "Порт ${new} уже занят другим процессом (ss -tlnp 'sport = :${new}') — выбери другой" \
 "Port ${new} is already taken by another process (ss -tlnp 'sport = :${new}') — pick another one"
         return 1

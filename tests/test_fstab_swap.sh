@@ -121,6 +121,18 @@ check "строка /dev/mapper узнаётся, дубль не дописыв
     "$TMP/dev/mapper/vg-swap_1 none swap sw,pri=10 0 0"
 
 echo ""
+echo "fstab пишется через временный файл и mv"
+printf '/swapfile none swap sw 0 0\n' > "$USFC_FSTAB"
+chmod 640 "$USFC_FSTAB"
+ino_before="$(stat -c %i "$USFC_FSTAB")"
+fstab_set_swap_pri /swapfile 10
+[ "$(stat -c %a "$USFC_FSTAB")" = 640 ] && ok "права fstab сохранены" || bad "права: $(stat -c %a "$USFC_FSTAB")"
+[ "$(stat -c %i "$USFC_FSTAB")" != "$ino_before" ] && ok "файл заменён целиком (новый inode)" || bad "fstab обрезан и переписан на месте"
+leftover="$(find "$TMP" -maxdepth 1 -name 'fstab.usfc.*' | wc -l)"
+[ "$leftover" = 0 ] && ok "временных файлов не осталось" || bad "осталось временных: $leftover"
+chmod 644 "$USFC_FSTAB"
+
+echo ""
 echo "чтение приоритета для статуса"
 printf '/swapfile none swap sw,pri=10 0 0\n' > "$USFC_FSTAB"
 fstab_swap_pri /swapfile
@@ -147,6 +159,31 @@ case "$got" in *"PRIORITY=100"*) ok "PRIORITY дописан" ;; *) bad "PRIORIT
 case "$got" in *"# usfc: PERCENT is used instead: SIZE=256"*) ok "SIZE закомментирован" ;; *) bad "SIZE: $got" ;; esac
 case "$got" in *"CUSTOM=keep"*"# my note"*|*"# my note"*"CUSTOM=keep"*) ok "чужие строки целы" ;; *) bad "чужое пропало: $got" ;; esac
 [ "$(grep -c '^PERCENT=' <<< "$got")" = 1 ] && ok "PERCENT ровно один" || bad "PERCENT несколько раз"
+
+# Повтор ключа ниже: при source побеждает последний, поэтому лишние
+# активные строки должны закомментироваться, а комментарий-образец — остаться
+cat() { if [ "${1:-}" = /etc/default/zramswap ]; then command cat "$ZCONF"; else command cat "$@"; fi; }
+printf '#PERCENT=50\nALGO=zstd\nPERCENT=30\n# tail\nPERCENT=20\n' > "$ZCONF"
+zramswap_write_conf 75
+unset -f cat
+got="$(command cat "$ZCONF")"
+[ "$(grep -c '^PERCENT=' <<< "$got")" = 1 ] && ok "повторы PERCENT: активный один" || bad "повторы PERCENT: $got"
+[ "$(grep '^PERCENT=' <<< "$got")" = PERCENT=75 ] && ok "повторы PERCENT: значение наше" || bad "повторы PERCENT: $got"
+case "$got" in "#PERCENT=50"*) ok "комментарий-образец не тронут" ;; *) bad "образец: $got" ;; esac
+case "$got" in *"# usfc: PERCENT is set above: PERCENT=20"*) ok "лишний PERCENT закомментирован" ;; *) bad "лишний: $got" ;; esac
+case "$got" in *"ALGO=lz4"*) ok "активный ALGO заменён" ;; *) bad "ALGO: $got" ;; esac
+
+echo ""
+echo "перенастройка zram: проверка памяти перед swapoff"
+swapon() { printf '/dev/zram0 partition 2G %s 100\n' "$FAKE_USED"; }
+FAKE_USED=1.5G
+MEMINFO_AVAIL=800
+awk() { if [ "${2:-}" = /proc/meminfo ]; then echo "$MEMINFO_AVAIL"; else command awk "$@"; fi; }
+zram_swapoff_fits >/dev/null 2>&1 && bad "1,5 ГБ в zram при 800 МБ свободных — разрешено" || ok "мало памяти — swapoff не делается"
+FAKE_USED=100M
+MEMINFO_AVAIL=2000
+zram_swapoff_fits >/dev/null 2>&1 && ok "памяти хватает — можно" || bad "памяти хватает, а отказ"
+unset -f swapon awk
 
 echo ""
 [ "$fail" -eq 0 ] && echo "приоритет свопа в fstab: все проверки пройдены" || echo "приоритет свопа в fstab: ЕСТЬ ОШИБКИ"

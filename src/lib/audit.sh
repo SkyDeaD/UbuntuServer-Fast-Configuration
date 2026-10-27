@@ -242,7 +242,10 @@ audit_ports() {
     for p in $open; do
         # «443/tcp», «443» (оба протокола) или диапазон с этим портом не ищем:
         # расхождение лишь подсказка, а не дыра
-        grep -E "^(${p}|${p%/*})[[:space:]]" <<< "$rules" >/dev/null || unlisted="${unlisted}${p} "
+        grep -E "^(${p}|${p%/*})[[:space:]]" <<< "$rules" >/dev/null && continue
+        # профиль OpenSSH (ufw allow OpenSSH) — это и есть 22/tcp
+        [ "$p" = 22/tcp ] && grep -E "^OpenSSH[[:space:]]" <<< "$rules" >/dev/null && continue
+        unlisted="${unlisted}${p} "
     done
     if [ -z "$unlisted" ]; then
         _audit_t ports.firewalled ok "Все открытые порты (${open% }) есть в правилах UFW" "Every open port (${open% }) has a UFW rule"
@@ -291,9 +294,11 @@ audit_ssh() {
         _audit_t ssh.kbd_interactive warn "Пароль принимается через keyboard-interactive" "Passwords are accepted via keyboard-interactive" "KbdInteractiveAuthentication no. Пункт $(item_number sshhardening)" "KbdInteractiveAuthentication no. Item $(item_number sshhardening)"
     fi
 
-    # Кто перебьёт наш drop-in, если его применить (или уже перебивает)
+    # Кто перебьёт наш drop-in, если его применить (или уже перебивает).
+    # Без Include sshd_config.d «конфликтом» оказывается любой ключ основного
+    # файла, но пункт сначала вставит Include в начало, и их не будет
     sshd_conflicts
-    if [ "${#REPLY_SSHD_CONFLICTS[@]}" -gt 0 ]; then
+    if [ "$REPLY_SSHD_INCLUDED" = true ] && [ "${#REPLY_SSHD_CONFLICTS[@]}" -gt 0 ]; then
         local first="${REPLY_SSHD_CONFLICTS[0]}" f n k v
         IFS=$'\t' read -r f n k v <<< "$first"
         _audit_t ssh.dropin_order warn "Чужой конфиг перебивает hardening: ${f}:${n} (${k} ${v})" "A foreign config overrides hardening: ${f}:${n} (${k} ${v})" "Пункт $(item_number sshhardening) найдёт и закомментирует" "Item $(item_number sshhardening) finds and comments it out"

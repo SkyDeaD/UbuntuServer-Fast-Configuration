@@ -155,5 +155,23 @@ ssh_selftest_end >/dev/null 2>&1
 [ -s "$AK" ] && ok "удаляется только строка, равная ключу целиком" || bad "удалена чужая строка с ключом внутри"
 
 echo ""
+echo "аудит: без Include конфликта drop-in'ов нет"
+printf 'PasswordAuthentication yes\nPermitRootLogin yes\n' > "$SSHD_CONFIG_DIR/sshd_config"
+saved_audit="$(declare -f _audit_t)"
+sshd() { printf 'passwordauthentication yes\npermitrootlogin yes\n'; }
+systemctl() { return 1; }
+_audit_t() { echo "$1 $2"; }
+out="$(audit_ssh 2>&1)"
+[[ "$out" == *"ssh.dropin_order"* ]] && bad "без Include аудит пишет «перебивает hardening»" || ok "без Include — нет ложного «перебивает hardening»"
+[[ "$out" == *"ssh.password_auth warn"* ]] && ok "вход по паролю по-прежнему замечен" || bad "аудит пропустил пароль: $out"
+printf 'Include %s/*.conf\n' "$D" > "$SSHD_CONFIG_DIR/sshd_config"
+printf 'PasswordAuthentication yes\n' > "$D/00-provider.conf"
+out="$(audit_ssh 2>&1)"
+[[ "$out" == *"ssh.dropin_order warn"* ]] && ok "с Include настоящий конфликт виден" || bad "конфликт с Include не замечен: $out"
+rm -f "$D/00-provider.conf"
+unset -f sshd systemctl
+eval "$saved_audit"
+
+echo ""
 [ "$fail" -eq 0 ] && echo "drop-in'ы sshd: все проверки пройдены" || echo "drop-in'ы sshd: ЕСТЬ ОШИБКИ"
 exit "$fail"

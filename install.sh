@@ -16,6 +16,17 @@ BRANCH="${USFC_BRANCH:-main}"
 # незнакомый аргумент, и `curl … | sudo bash -s -- --apply web` падал, не начав
 # установку: поставить с аргументами было нельзя в принципе — только поставить
 # без них, дождаться меню, выйти и запустить usfc заново.
+# Язык справки — по всем аргументам сразу: в цикле ниже на -h видны только
+# те, что после него, и `--lang en -h` давал русскую справку
+HELP_LANG="${USFC_LANG:-ru}"
+_prev=''
+for _a in "$@"; do
+    case "$_a" in --lang=en) HELP_LANG=en ;; --lang=ru) HELP_LANG=ru ;; esac
+    [ "$_prev" = --lang ] && case "$_a" in en|ru) HELP_LANG="$_a" ;; esac
+    _prev="$_a"
+done
+unset _a _prev
+
 REST=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -24,7 +35,7 @@ while [ "$#" -gt 0 ]; do
             BRANCH="$2"; shift 2 ;;
         --branch=*) BRANCH="${1#*=}"; shift ;;
         -h|--help)
-            if [ "${USFC_LANG:-}" = en ] || printf '%s\n' "$@" | grep -x -- '--lang=en' >/dev/null; then
+            if [ "$HELP_LANG" = en ]; then
                 echo "Usage: install.sh [--branch <branch>] [usfc command and options...]"
                 echo ""
                 echo "  --branch <branch>  install from that branch (main by default)"

@@ -165,19 +165,56 @@ zram_uses_generator() {
 zramswap_write_conf() {
     local pct="$1" f=/etc/default/zramswap content
     content="$(cat "$f" 2>/dev/null)"
+    # Два прохода: сперва узнать, у каких ключей есть активная строка. Новое
+    # значение пишется в первую активную (а без неё — в первую закомментированную),
+    # остальные активные комментируются: при `source` побеждает последняя, и
+    # забытый ниже PERCENT=30 молча перебил бы наш
     content="$(printf '%s\n' "$content" | awk -v pct="$pct" '
         BEGIN { want["ALGO"] = "lz4"; want["PERCENT"] = pct; want["PRIORITY"] = "100" }
-        {
-            k = $0; sub(/^[[:space:]]*#?[[:space:]]*/, "", k)
-            key = k; sub(/=.*/, "", key)
-            if (k ~ /^[A-Z_]+=/ && (key in want) && !(key in done)) {
-                print key "=" want[key]; done[key] = 1; next
+        { line[NR] = $0 }
+        END {
+            for (i = 1; i <= NR; i++) {
+                k = line[i]; sub(/^[[:space:]]*/, "", k)
+                key = k; sub(/=.*/, "", key)
+                if (k ~ /^[A-Z_]+=/ && (key in want)) active[key] = 1
             }
-            if ($0 ~ /^[[:space:]]*SIZE=/) { print "# usfc: PERCENT is used instead: " $0; next }
-            if ($0 != "" || NR > 1) print
-        }
-        END { for (key in want) if (!(key in done)) print key "=" want[key] }')"
+            for (i = 1; i <= NR; i++) {
+                isact = (line[i] ~ /^[[:space:]]*[A-Z_]+=/)
+                k = line[i]; sub(/^[[:space:]]*#?[[:space:]]*/, "", k)
+                key = k; sub(/=.*/, "", key)
+                if (k ~ /^[A-Z_]+=/ && (key in want)) {
+                    if (key in done) {
+                        if (isact) print "# usfc: " key " is set above: " line[i]; else print line[i]
+                        continue
+                    }
+                    if ((key in active) && !isact) { print line[i]; continue }
+                    print key "=" want[key]; done[key] = 1; continue
+                }
+                if (line[i] ~ /^[[:space:]]*SIZE=/) { print "# usfc: PERCENT is used instead: " line[i]; continue }
+                if (line[i] != "" || i > 1) print line[i]
+            }
+            for (key in want) if (!(key in done)) print key "=" want[key]
+        }')"
     printf '%s\n' "$content" | write_file "$f"
+}
+
+# zram_swapoff_fits — можно ли сейчас снять /dev/zram0. Перенастройка
+# останавливает zram, и всё, что в нём лежит, распаковывается обратно в RAM.
+# Не влезет — OOM-killer, а на маленьком VPS и зависание. Порог тот же, что
+# у swap_set_pri и resize_swapfile
+zram_swapoff_fits() {
+    local used_mb avail_mb
+    used_mb="$(human_to_mb "$(swapon --show --noheadings --raw 2>/dev/null | awk '$1=="/dev/zram0" {print $4; exit}')")"
+    avail_mb="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$avail_mb" =~ ^[0-9]+$ ]] || avail_mb=0
+    if [ "$used_mb" -gt 0 ] && [ "$used_mb" -ge $(( avail_mb - 200 )) ]; then
+        log_warn_t "В zram занято ${used_mb} МБ, а свободной памяти ${avail_mb} МБ — перенастройка сейчас рискует уронить процессы, не трогаю" \
+"zram holds ${used_mb} MB and only ${avail_mb} MB of memory is free — reconfiguring now risks killing processes, leaving it alone"
+        log_info_t "Освободи память (или перезагрузись) и вернись в этот пункт" \
+"Free some memory (or reboot) and come back to this item"
+        return 1
+    fi
+    return 0
 }
 
 # zram_configure <процент> — настроить и поднять zram; 0 — zram работает
@@ -300,7 +337,8 @@ apply_zram() {
         else
             log_warn_t "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную" \
 "zram is active but its priority is ${zram_prio} (100 recommended) — looks hand-tuned"
-            if ask_bulk_yn ZRAM_RECONF_BULK "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N; then
+            if ask_bulk_yn ZRAM_RECONF_BULK "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N \
+                && zram_swapoff_fits; then
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75

@@ -232,6 +232,27 @@ ssh_port_change 2222 > "$TMP/log3" 2>&1; rc=$?; log3="$(cat "$TMP/log3")"
 [ "$rc" -eq 0 ] && [[ "$log3" == *2222* ]] && [ "$LISTEN" = 2222 ] && ok "повтор: «уже на порту», ничего не тронуто" || bad "повтор: rc=$rc, $log3"
 
 echo ""
+echo "без терминала: оба порта открыты руками — старый не закрывается сразу"
+reset_world
+printf 'Port 22\nPort 2222\nInclude %s/*.conf\n' "$D" > "$SSHD_CONFIG_DIR/sshd_config"
+_cfg_ports() {
+    ssh_dropin_scan
+    if [ "${#REPLY_SSH_DROPIN_PORTS[@]}" -gt 0 ]; then printf '%s' "${REPLY_SSH_DROPIN_PORTS[*]}"; else printf '22 2222'; fi
+}
+LISTEN='22 2222'
+refresh_sshd_config
+ssh_port_change 2222 >/dev/null 2>&1; rc=$?
+same "ручные 22+2222: код 0" "0" "$rc"
+same "ручные 22+2222: оба порта по-прежнему слушаются" "22 2222" "$LISTEN"
+same "ручные 22+2222: шаг 1 записал оба Port в наш drop-in" $'Port 22\nPort 2222' "$(grep '^Port' "$DROP")"
+ssh_port_change 2222 >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && [ "$LISTEN" = 2222 ] && ok "ручные 22+2222: повтор закрыл 22" || bad "повтор: rc=$rc, слушается «$LISTEN»"
+_cfg_ports() {
+    ssh_dropin_scan
+    if [ "${#REPLY_SSH_DROPIN_PORTS[@]}" -gt 0 ]; then printf '%s' "${REPLY_SSH_DROPIN_PORTS[*]}"; else printf '22'; fi
+}
+
+echo ""
 echo "в меню: старый порт закрывается только после «да»"
 # shellcheck disable=SC2034
 BULK_MODE=false

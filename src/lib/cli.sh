@@ -210,7 +210,9 @@ REPLY_CLI_VAL=''; REPLY_CLI_SHIFT=1
 _cli_value() {
     local opt="$1"
     case "$opt" in
-        *=*) REPLY_CLI_VAL="${opt#*=}"; REPLY_CLI_SHIFT=1 ;;
+        *=*) REPLY_CLI_VAL="${opt#*=}"; REPLY_CLI_SHIFT=1
+             # `--config=` — пустое значение; через пробел то же самое — ошибка
+             [ -n "$REPLY_CLI_VAL" ] || _cli_die "${opt%%=*} требует значение" "${opt%%=*} needs a value" ;;
         *)
             if [ "$#" -lt 2 ] || [ -z "$2" ] || { [[ "$2" == -* ]] && ! [[ "$2" =~ ^-[0-9]+$ ]]; }; then
                 _cli_die "${opt} требует значение" "${opt} needs a value"
@@ -372,7 +374,7 @@ apply_cli_answers() {
 "The answers file must come over https: it may hold tokens"; return 2 ;;
         esac
         load_config "$cfg" || bad=1
-        [ "$cfg" != "$USFC_CONFIG_FILE" ] && rm -f "$cfg"
+        cleanup_config_tmp
     fi
     for key in "${!USFC_FLAG_ANS[@]}"; do
         answer_set "$key" "${USFC_FLAG_ANS[$key]}" flag || bad=1
