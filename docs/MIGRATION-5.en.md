@@ -110,12 +110,14 @@ again".
 
 1. Open the menu: `sudo usfc`.
 2. Choose item **18 "SSH hardening"** and go through the questions.
-3. If usfc finds foreign lines that override the hardening, it shows them as
-   file, line, and value and offers to comment them out. Without your consent,
+3. If usfc finds foreign lines that override the hardening, it shows each one
+   as `file:line  key value` and offers to comment them out. Without your consent,
    the item is not applied.
 
 After the sshd restart, usfc checks all the keys through `sshd -T`. If they
-differ, it rolls back its file and names the file that won.
+differ, it rolls back its file and prints the keys that differ. Such a
+mismatch usually comes from a `Match` block in `sshd_config`, which isn't
+visible up front.
 
 ### Swap: priority in fstab
 
@@ -125,8 +127,11 @@ understood only the `<path> none swap sw` form. Lines with `defaults`,
 though the item reported "priority 10". After a reboot, swap came up with the
 default priority and could be used before zram.
 
-5.0 notices this: item **17 "ZRAM + swap + earlyoom"** shows "! swap priority
-not in fstab". Choose it and it fixes the line without turning off zram.
+5.0 notices this. Until the server reboots, item **17 "ZRAM + swap +
+earlyoom"** shows "! swap priority not in fstab"; after a reboot, it shows
+"! partially configured". Choose the item and it fixes the line without
+turning off zram. Details are in
+[TROUBLESHOOTING.en.md](TROUBLESHOOTING.en.md#swap-without-a-priority).
 
 ### Blocks in .bashrc
 

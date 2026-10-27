@@ -72,7 +72,9 @@ code `0`.
 
 ## Common options
 
-These work with any command and with no command.
+These work with any command and with no command. The exception is
+`--dry-run`: only the menu, `apply`, and `firewall` have it; with another
+command it's an error with exit code `2`.
 
 | Option | What it does |
 |---|---|
@@ -113,10 +115,22 @@ Behavior worth knowing:
 - **Items that are already applied are skipped.** In the menu, choosing an
   item with `⇄` again means "turn it off", and without this rule rerunning
   from cloud-init would turn off what you asked to turn on. The exception is an
-  item with new settings given explicitly: `ufw` with `--allow`, `--ping`/`--no-ping`,
-  or `--docker-firewall`, `unattended` with `--reboot-time` or
-  `--reboot-with-users`, and `sshhardening` with `--ssh-port`. Such an item is
-  applied again and only adds the new settings.
+  item with new settings given explicitly. Such an item is applied again with
+  the new answers:
+
+  | Item | Flags that make it apply again |
+  |---|---|
+  | `ufw` | `--allow`, `--ping`/`--no-ping`, `--docker-firewall` |
+  | `unattended` | `--reboot-time`, `--reboot-with-users` |
+  | `sshhardening` | `--ssh-port` |
+  | `hostname` | `--hostname`, `--timezone` |
+  | `journald` | `--journal-max` |
+  | `cli` | `--starship`, `--starship-prod` |
+  | `notify` | `--tg-chat`, `--notify`, `TG_TOKEN` in the answers file |
+  | `motd` | `--motd-clean` |
+  | `docker` | `--lazydocker` |
+  | `zram` | `--zram-reconfigure`, `--swap` |
+
 - **`newuser` is always skipped**: it needs a name and a password.
 - **`sshhardening` without `--ssh-port` is skipped** with a message: locking
   yourself out of the server because of someone else's answers file is not a
@@ -126,6 +140,9 @@ Behavior worth knowing:
   or an explicit port list (`--allow`, `UFW_ALLOW`): whoever lists the ports
   knows that everything else will be closed. UFW that is already enabled needs
   no consent.
+- **`--from` works only together with `--allow`.** Without a port list, the
+  `ufw` item doesn't enable UFW and says so: you can't open ports "only for an
+  address" without naming the ports.
 - **A flag for an item that is not in the list is an error** with exit code
   `2`: `--allow is set, but item ufw is not in the list`. The same key in an
   answers file is not an error: all nodes usually share one file.
@@ -162,8 +179,8 @@ policy, the rules, and the state of ping and Docker.
 | `-y`, `--yes` | don't ask for confirmation to enable UFW |
 
 Write ports separated by commas: `443` (that's TCP), `51820/udp`,
-`1000:2000/tcp`. The server's SSH port is allowed first and never closed, not
-even by `--deny`.
+`1000:2000/tcp`. When UFW gets enabled, the server's SSH port is allowed first,
+before `ufw enable`. Not even `--deny` can close it.
 
 How it works:
 
@@ -315,8 +332,8 @@ You can answer every question an item asks in the menu ahead of time: with an
 and the file beats the item's default.
 
 Yes/no flags have a "no" pair: `--sysctl` is yes, `--no-sysctl` is no. In the
-answers file, write "yes" as `Y`, `yes`, `true`, `on`, `1`, or `да`, and "no" as
-`N`, `no`, `false`, `off`, `0`, or `нет`. Any other value is an error, not a
+answers file, write "yes" as `Y`, `yes`, `true`, `on`, `1`, `да`, or `д`, and "no" as
+`N`, `no`, `false`, `off`, `0`, `нет`, or `н`. Any other value is an error, not a
 quiet "no".
 
 | Flag | Key | Item | Value | What it sets |
@@ -334,7 +351,7 @@ quiet "no".
 | `--certbot-tls`, `--no-certbot-tls` | `CERTBOT_TLS` | certbot | yes/no | TLS stub files in `/etc/letsencrypt` |
 | `--ufw`, `--no-ufw` | `UFW` | ufw | yes/no | enable UFW |
 | `--allow` | `UFW_ALLOW` | ufw | ports | open ports: `443,51820/udp,1000:2000/tcp`. In the file, separate with spaces or commas |
-| `--from` | `UFW_FROM` | ufw | IP or subnet | open ports only for this address |
+| `--from` | `UFW_FROM` | ufw | IP or subnet | open ports only for this address. Only together with `--allow` |
 | `--ping`, `--no-ping` | `UFW_PING` | ufw | yes/no | answer ping; `--no-ping` means don't answer |
 | `--docker-firewall`, `--no-docker-firewall` | `UFW_DOCKER` | ufw | yes/no | make Docker container ports obey UFW |
 | `--hostname` | `HOSTNAME` | hostname | name | server name: `node-1.example.com` |
@@ -347,7 +364,7 @@ quiet "no".
 | `--reboot-time` | `REBOOT_TIME` | unattended | `HH:MM` or `off` | reboot at this time after updates; `off` means never |
 | `--reboot-with-users`, `--no-reboot-with-users` | `REBOOT_WITH_USERS` | unattended | yes/no | reboot even if someone is logged in |
 | — | `TG_TOKEN` | notify | token | Telegram bot token from @BotFather. A secret: no flag |
-| `--tg-chat` | `TG_CHAT` | notify | chat_id or `@channel` | where to send: `123456`, `-100…`, `@channel` |
+| `--tg-chat` | `TG_CHAT` | notify | chat_id or `@channel` | where to send: `123456`, `-100…`, `@channel`. A negative id works after a space: `--tg-chat -1001234567890` |
 | `--notify` | `NOTIFY_EVENTS` | notify | `ssh,ban,reboot` | which events to send, any subset |
 
 Secrets (`CF_TOKEN`, `TG_TOKEN`) have no flags: any user can see the command
@@ -370,8 +387,8 @@ ssh -p 2222 user@server                        # step 2: check from another mach
 sudo usfc apply sshhardening --ssh-port 2222   # step 3: 22 is closed
 ```
 
-In the menu, step 3 is the question "Did the login on port 2222 work?" in the
-same item.
+In the menu, step 3 is the question "Did the login on port 2222 work? (yes
+closes the old port)" in the same item.
 
 ## Answers file
 

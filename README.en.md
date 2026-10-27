@@ -63,7 +63,7 @@ On the very first run it asks a single question — "what is this server for?" �
 
 Inside the menu: a number (`5`), several at once (`1 3 5` or `1,3,5`), a range (`1-5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped and why. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`) — per-item help and rollback, `H` — alias reference, `D` — audit, `U` — remove `usfc` itself.
 
-Items marked with `⇄` switch off by picking them again: the script sees the setting is applied and offers the opposite action. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
+Items marked with `⇄` switch off by picking them again: the script sees the setting is applied and offers the opposite action. For items with settings, `unattended` and `notify`, picking them again first asks "set it up again?", and only "no" turns the item off. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
 
 ### One command, no menu
 

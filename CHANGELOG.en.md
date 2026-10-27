@@ -54,7 +54,8 @@ already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
 - **Reboot window** for unattended-upgrades: `--reboot-time 04:00`,
   `--reboot-with-users`, in its own file `52usfc-reboot`.
 - **CLI block:** three starship presets (`minimal`, `git`, `powerline`, no
-  Nerd Font needed), functions `ports`, `dps`, `extract`, `myip`.
+  Nerd Font needed), functions `ports`, `dps`, `extract`, `myip`. A user
+  alias with the same name doesn't break the block.
 - **lazydocker**, optional in the Docker item — from the GitHub release with
   its sha256 verified.
 - **Passwordless sudo** for a key-only user — asked, default yes: with a
@@ -76,7 +77,7 @@ already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
   `10-hardening.conf` (the old one is removed on apply). Foreign lines that
   would override ours are found up front and commented out with your consent.
   After the restart every key is checked through `sshd -T`; on a mismatch the
-  change is rolled back and the winning file is named. Added
+  change is rolled back and the mismatched keys are listed. Added
   `KbdInteractiveAuthentication no`; `AllowUsers` only after a separate
   question.
 - **fail2ban** writes its own `/etc/fail2ban/jail.d/usfc-sshd.local` with
@@ -99,15 +100,25 @@ already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
 - **Snapshots** remember files that did not exist, and `restore` removes them.
   The first copy of a file per run is kept, not the last.
 - `/etc/default/zramswap` is edited in place; with `systemd-zram-generator`
-  present, zram-tools is not installed on top.
+  present, zram-tools is not installed on top. Reconfiguring zram doesn't turn
+  swap off if what's in use there doesn't fit into free memory.
+- **`apply` again with new answers.** An item that is already applied is no
+  longer skipped silently when new settings are given for it: `--hostname`,
+  `--journal-max`, `--starship`, `--tg-chat`, `--swap`, and others. The full
+  list is in [docs/CLI.en.md](docs/CLI.en.md#usfc-apply).
+- **Choosing `unattended` or `notify` again in the menu** asks "set it up
+  again?" and turns the item off only on "no".
+- `/etc/fstab` is written atomically: a temporary file and `mv`, keeping the
+  mode and owner.
 
 ### Fixed
 
 - **The swap priority was lost in fstab.** `sed` understood one form of the
   line and silently skipped `defaults`, `sw,nofail`, `pri=5`, `UUID=` and
   `LABEL=`, and mangled `swap swap` into `sw,pri=10ap`, while the item printed
-  "priority 10". Now the line is parsed by fields, the result is verified, and
-  the item status shows `!` when fstab has no priority.
+  "priority 10". Now the line is parsed by fields (on LVM too, where `swapon`
+  shows `/dev/dm-N`), the result is verified, and the item status shows `!`
+  when fstab has no priority.
 - **btop: "~/.config could not be created".** `~/.config` was created as root;
   now every level belongs to the user, and an already broken one is repaired.
 - `restore ..` could point at `/var`: the label is now checked against its

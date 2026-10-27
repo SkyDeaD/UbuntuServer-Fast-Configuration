@@ -74,10 +74,13 @@ on the `I` screen in the menu.
    ```
 
 3. Apply item **18 "SSH hardening"** again: `sudo usfc`. It finds the
-   conflicting lines, shows them with file, line, and value, and offers to
+   conflicting lines, shows each one as `file:line  key value`, and offers to
    comment them out with a snapshot.
 
-`usfc audit` reports such a file as the `ssh.dropin_order` finding.
+`usfc audit` reports such a file as the `ssh.dropin_order` finding if
+`sshd_config` includes the `sshd_config.d/` directory with an `Include` line.
+Without `Include`, sshd doesn't read files from that directory, so there's no
+conflict.
 
 If a `10-hardening.conf` from 4.x is left on the server, the item shows "! old
 10-hardening.conf — apply the item again". Applying the item replaces it with
@@ -96,15 +99,22 @@ Common causes:
 - **sshd doesn't listen on every address.** The item prints "sshd does not
   listen on every address (ListenAddress) — the self-test needs 127.0.0.1". Add
   `ListenAddress 127.0.0.1` or remove the restriction, then apply the item again.
-- **Another file overrides the keys.** The item names the winning file; see the
-  [previous section](#password-login-still-works-after-ssh-hardening).
+- **Something not visible up front overrides the keys.** The item finds
+  conflicts in plain lines before it changes anything; see the
+  [previous section](#password-login-still-works-after-ssh-hardening). If the
+  mismatch shows up only after the restart, the item prints "the effective
+  config differs from ours" with the list of keys and rolls back. Most often
+  it's a `Match` block in `sshd_config`: check it by hand, for example
+  `sudo sshd -T -C user=NAME,host=localhost,addr=127.0.0.1`, where `NAME` is
+  your user.
 - **No regular user.** The item can't be applied as plain root: it also closes
   root login. Create a user with item **1**.
 
 ## SSH port move is not finished
 
 The item status is "! port: move 22 → 2222 not finished". This is the first
-step of the move: sshd listens on both ports and UFW allows both.
+step of the move: sshd listens on both ports, and if UFW is enabled, it allows
+both.
 
 1. Check login on the new port from your own machine:
 
@@ -130,7 +140,8 @@ port overrides Port", remove the port from the `ListenAddress` lines in
 ## Swap without a priority
 
 **Symptom.** `swapon --show` shows a priority of `-2` (or anything but `10`) for
-the swap file, and the on-disk swap is used before zram.
+the swap file, and the on-disk swap is used before zram. Or the priority is
+`10` now but resets after a reboot.
 
 1. Check:
 
@@ -141,10 +152,19 @@ the swap file, and the on-disk swap is used before zram.
 
    The fourth field of the swap line should contain `pri=10`.
 
-2. Open the menu and choose item **17 "ZRAM + swap + earlyoom"**. With this
-   problem, it shows "! swap priority not in fstab" and fixes the line without
-   turning off zram. The item understands lines with `defaults`, `sw,nofail`,
-   `pri=N`, `UUID=`, and `LABEL=`.
+2. Open the menu and look at the status of item **17 "ZRAM + swap +
+   earlyoom"**:
+
+   | Swap state | Item status |
+   |---|---|
+   | priority isn't `10` now, zram works | "! partially configured" |
+   | priority isn't `10` now, no zram | "○ not configured" |
+   | priority is `10` now, missing from fstab | "! swap priority not in fstab" |
+
+3. Choose the item. If the priority isn't `10` now, answer "yes" to "Set the
+   priority of … to 10 (in fstab and right now)?". If only fstab is missing
+   it, the item adds `pri=10` on its own. zram stays on. The item understands
+   lines with `defaults`, `sw,nofail`, `pri=N`, `UUID=`, and `LABEL=`.
 
 It won't turn swap off to fix it if what's in use there doesn't fit into free
 memory, and the item says so plainly.
