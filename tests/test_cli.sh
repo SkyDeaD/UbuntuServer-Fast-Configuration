@@ -189,9 +189,9 @@ ex="$(
         '9000/tcp   ALLOW   10.0.0.0/8' '443 (v6)   ALLOW   Anywhere (v6)'; }
     # shellcheck disable=SC2034
     CF_TOKEN_BULK=секретный-токен-123
-    export_cmd 2>&1
+    export_cmd 2>"$TMP/export-err"   # в файл уходит только stdout, как у `usfc export > файл`
 )"
-[[ "$ex" != *"секретный-токен-123"* ]] && [[ "$ex" == *"# CF_TOKEN="* ]] \
+! grep -F "секретный-токен-123" "$TMP/export-err" >/dev/null && [[ "$ex" != *"секретный-токен-123"* ]] && [[ "$ex" == *"# CF_TOKEN="* ]] \
     && ok "токен Cloudflare не выгружается, ключ закомментирован" || bad "токен в выводе export"
 [[ "$ex" == *$'\nITEMS=certbot,ufw\n'* ]] && ok "ITEMS — применённые пункты в порядке меню" || bad "ITEMS: $(grep '^ITEMS' <<< "$ex")"
 [[ "$ex" == *'UFW_ALLOW="443/tcp 51820/udp"'* ]] && ok "порты без SSH, v6-дублей и правил «для адреса»" || bad "UFW_ALLOW: $(grep '^UFW_ALLOW' <<< "$ex")"

@@ -360,7 +360,7 @@ EOF
 }
 
 fw_docker_on() {
-    [ -f "$UFW_DIR/after.rules" ] && grep -qxF "$FW_DOCKER_BEGIN" "$UFW_DIR/after.rules"
+    [ -f "$UFW_DIR/after.rules" ] && grep -qxF "$FW_DOCKER_BEGIN" "$UFW_DIR/after.rules" 2>/dev/null
 }
 
 # Docker с nftables-бэкендом: DOCKER-USER нет, схема не сработает
