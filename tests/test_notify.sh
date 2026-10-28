@@ -208,7 +208,7 @@ status_notify >"$TMP/o"; rc=$?
 { [ "$rc" -ne 0 ] && grep -F '!' "$TMP/o" >/dev/null; } && ok "конфиг без частей → !" || bad "!: $(cat "$TMP/o")"
 grep -F "$TOKEN" "$TMP/o" >/dev/null && bad "токен в статусе"
 for f in "$NOTIFY_BIN" "$NOTIFY_SSH_BIN" "$NOTIFY_REBOOT_BIN"; do : > "$f"; chmod +x "$f"; done
-printf '%s\n%s\n' "$NOTIFY_PAM_MARK" x > "$NOTIFY_PAM"
+printf '%s\n%s\n' "$NOTIFY_PAM_MARK" "$(notify_pam_line "$NOTIFY_SSH_BIN")" > "$NOTIFY_PAM"
 : > "$NOTIFY_ACTION"; : > "$NOTIFY_JAIL"
 : > "$NOTIFY_UNIT_DIR/$NOTIFY_TIMER_NAME"; : > "$NOTIFY_UNIT_DIR/timers.target.wants/$NOTIFY_TIMER_NAME"
 status_notify >"$TMP/o"; rc=$?
@@ -216,6 +216,21 @@ status_notify >"$TMP/o"; rc=$?
 rm -f "$NOTIFY_JAIL"
 status_notify >"$TMP/o"; rc=$?
 { [ "$rc" -ne 0 ] && grep -F 'ban' "$TMP/o" >/dev/null; } && ok "нет jail → ! нет: ban" || bad "ban: $(cat "$TMP/o")"
+: > "$NOTIFY_JAIL"
+
+# метка осталась, строку pam_exec удалили руками → ssh не «установлен»
+printf '%s\n' "$NOTIFY_PAM_MARK" > "$NOTIFY_PAM"
+_notify_part_ok ssh && bad "метка без строки pam_exec считается установленной" || ok "метка без строки → ssh не установлен"
+status_notify >"$TMP/o"; rc=$?
+{ [ "$rc" -ne 0 ] && grep -F 'ssh' "$TMP/o" >/dev/null; } && ok "статус не ✓ без строки pam_exec" || bad "статус: $(cat "$TMP/o")"
+# закомментированная строка не считается
+printf '%s\n#%s\n' "$NOTIFY_PAM_MARK" "$(notify_pam_line "$NOTIFY_SSH_BIN")" > "$NOTIFY_PAM"
+_notify_part_ok ssh && bad "закомментированная строка засчитана" || ok "закомментированная строка не считается"
+# повторное применение чинит: дописывает только строку, метку не дублирует
+printf '%s\n' "$NOTIFY_PAM_MARK" > "$NOTIFY_PAM"
+notify_pam_add "$NOTIFY_PAM" "$NOTIFY_SSH_BIN"
+_notify_part_ok ssh && ok "notify_pam_add вернул строку при уцелевшей метке" || bad "строка не добавлена"
+[ "$(grep -cFx "$NOTIFY_PAM_MARK" "$NOTIFY_PAM")" -eq 1 ] && ok "метка не задублирована" || bad "метка продублирована"
 
 echo ""
 echo "настоящий curl: форма --config - против локального сервера"

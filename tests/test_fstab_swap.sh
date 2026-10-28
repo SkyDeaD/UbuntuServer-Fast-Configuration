@@ -174,6 +174,50 @@ case "$got" in *"# usfc: PERCENT is set above: PERCENT=20"*) ok "лишний PE
 case "$got" in *"ALGO=lz4"*) ok "активный ALGO заменён" ;; *) bad "ALGO: $got" ;; esac
 
 echo ""
+echo "systemd-zram-generator: правка на месте"
+ZRAM_GENERATOR_CONF="$TMP/zram-generator.conf"
+write_file() { command cat > "$1"; }   # выше write_file подменён под ZCONF
+printf '# моя заметка\n[zram0]\nzram-size = min(ram, 2048)\nhost-memory-limit = 4096\nswap-priority = 50\n\n[zram1]\nzram-size = 512\nmount-point = /var/compressed\nfs-type = ext2\n' > "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 60
+got="$(command cat "$ZRAM_GENERATOR_CONF")"
+want=$'# моя заметка\n[zram0]\nzram-size = ram * 60 / 100\nhost-memory-limit = 4096\nswap-priority = 100\ncompression-algorithm = lz4\n\n[zram1]\nzram-size = 512\nmount-point = /var/compressed\nfs-type = ext2'
+[ "$got" = "$want" ] && ok "[zram0] обновлён, [zram1] и чужие опции целы" || { bad "generator: $got"; }
+zram_generator_write_conf 60
+[ "$(command cat "$ZRAM_GENERATOR_CONF")" = "$want" ] && ok "повтор идемпотентен" || bad "повтор изменил файл"
+printf '[zram1]\nzram-size = 512\n' > "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 75
+got="$(command cat "$ZRAM_GENERATOR_CONF")"
+want=$'[zram1]\nzram-size = 512\n\n[zram0]\nzram-size = ram * 75 / 100\ncompression-algorithm = lz4\nswap-priority = 100'
+[ "$got" = "$want" ] && ok "нет [zram0] — секция дописана, [zram1] цела" || bad "без секции: $got"
+rm -f "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 75
+[ "$(command cat "$ZRAM_GENERATOR_CONF")" = $'[zram0]\nzram-size = ram * 75 / 100\ncompression-algorithm = lz4\nswap-priority = 100' ] \
+    && ok "нет файла — создан с [zram0]" || bad "новый файл: $(command cat "$ZRAM_GENERATOR_CONF")"
+
+echo ""
+echo "два дисковых свопа: все приводятся к приоритету 10"
+write_file_atomic() { command cat > "$1"; }
+ask_yn_t() { return 0; }
+printf '%s\n' "$ROOT" '/swap.img none swap sw,pri=10 0 0' 'UUID=1111-aaaa none swap sw 0 0' > "$USFC_FSTAB"
+SW_STATE='/swap.img file 1G 0B 10
+/dev/vda2 partition 2G 0B -2'
+swapon() {
+    case "${1:-}" in
+        --show) printf '/dev/zram0 partition 1G 0B 100\n%s\n' "$SW_STATE" ;;
+    esac
+    return 0
+}
+swap_set_pri() { fstab_set_swap_pri "$1" "$2" && SW_STATE="${SW_STATE//\/dev\/vda2 partition 2G 0B -2//dev/vda2 partition 2G 0B 10}"; }
+read_swap_state
+zram_fix_swap_prios "$SWAP_PATH" "$SWAP_PRIO" >/dev/null 2>&1
+fstab_swap_pri /dev/vda2; is_v="$REPLY_FSTAB_PRI"
+fstab_swap_pri /swap.img; is_s="$REPLY_FSTAB_PRI"
+[ "$is_v" = 10 ] && [ "$is_s" = 10 ] && ok "pri=10 в fstab у обоих свопов" || bad "fstab: vda2=$is_v swap.img=$is_s"
+STATUS_OUT="$(status_zram 2>&1)"; STATUS_RC=$?
+[ "$STATUS_RC" -eq 0 ] && ok "status_zram зелёный после apply" || bad "status_zram: rc=$STATUS_RC $STATUS_OUT"
+unset -f swapon swap_set_pri ask_yn_t write_file_atomic
+
+echo ""
 echo "перенастройка zram: проверка памяти перед swapoff"
 swapon() { printf '/dev/zram0 partition 2G %s 100\n' "$FAKE_USED"; }
 FAKE_USED=1.5G

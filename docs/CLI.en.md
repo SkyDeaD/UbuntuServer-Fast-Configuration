@@ -70,6 +70,12 @@ script that comes from a pipe. With no command and no terminal, the installer
 does not open the menu: it reports that usfc is installed and exits with
 code `0`.
 
+The installer treats the first word that is neither an option nor an
+option's value as the command: in `apply web --hostname list` the command is
+`apply`, while `--hostname list` without a command means the menu, so with no
+terminal nothing runs. Global options also work before the command
+(`-- --lang en apply web`), but putting them after it is safer.
+
 ## Common options
 
 These work with any command and with no command. The exception is
@@ -106,7 +112,7 @@ of priority.
 | `<what>` | what to apply: a profile, `all`, or item ids or numbers. See [What to pass to apply](#what-to-pass-to-apply). You can omit it if the answers file has `ITEMS=` |
 | `--dry-run` | show what would be done without changing anything. The exit code is `0` even if items "did not apply": in a dry run they are not supposed to |
 | `-y`, `--yes` | answer "yes" even where a question defaults to "no". The exception is the Docker restart (`--docker-restart`): it restarts containers, and `--yes` does not turn it on |
-| `--config <file\|https://…>` | take answers from an [answers file](#answers-file). A URL must be `https://` |
+| `--config <file\|https://…>` | take answers from an [answers file](#answers-file). A URL must be `https://`; the scheme is case-insensitive (`HTTPS://` is https too), and `http://` is rejected in any case |
 | `--set KEY=value` | set any answers-file key right on the command line. You can repeat it |
 | answer flags | `--swap 2048`, `--ufw`, `--allow 443`, and others, see the [table](#answers-to-item-questions) |
 
@@ -179,8 +185,11 @@ policy, the rules, and the state of ping and Docker.
 | `-y`, `--yes` | don't ask for confirmation to enable UFW |
 
 Write ports separated by commas: `443` (that's TCP), `51820/udp`,
-`1000:2000/tcp`. When UFW gets enabled, the server's SSH port is allowed first,
-before `ufw enable`. Not even `--deny` can close it.
+`1000:2000/tcp`. When UFW gets enabled, the server's SSH ports are allowed
+first, before `ufw enable`: every port sshd is configured to listen on (two of
+them during a port move). If none of them is listening but sshd listens on
+another port, that port is allowed too. If SSH isn't listening anywhere, UFW
+is not enabled. Not even `--deny` can close an SSH port.
 
 How it works:
 
@@ -282,7 +291,7 @@ usfc help [command]
 ```
 
 General help, or detailed help for one command: `usfc help apply`. Same as `-h`
-and `--help`.
+and `--help`. It takes one topic: `usfc help apply firewall` exits with code `2`.
 
 ### `usfc version`
 
@@ -331,7 +340,8 @@ You can answer every question an item asks in the menu ahead of time: with an
 `apply` flag, an answers-file key, or `--set KEY=value`. A flag beats the file,
 and the file beats the item's default.
 
-Yes/no flags have a "no" pair: `--sysctl` is yes, `--no-sysctl` is no. In the
+Yes/no flags have a "no" pair: `--sysctl` is yes, `--no-sysctl` is no.
+They take no value after `=`: `--sysctl=yes` exits with code `2` and a hint. In the
 answers file, write "yes" as `Y`, `yes`, `true`, `on`, `1`, `да`, or `д`, and "no" as
 `N`, `no`, `false`, `off`, `0`, `нет`, or `н`. Any other value is an error, not a
 quiet "no".

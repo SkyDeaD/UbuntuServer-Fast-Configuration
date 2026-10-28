@@ -279,7 +279,13 @@ parse_args() {
                     USFC_FLAG_ANS[$REPLY_ANS_KEY]="$REPLY_CLI_VAL"
                 elif _answer_row flag "$opt" && [ "$opt" = "$a" ]; then
                     USFC_FLAG_ANS[$REPLY_ANS_KEY]=Y
-                elif [[ "$a" == --no-* ]] && _answer_row flag "--${a#--no-}" && [ "$REPLY_ANS_TYPE" = yn ]; then
+                elif _answer_row flag "$opt"; then
+                    # `--ufw=Y`: yn-флаг значения не берёт, а «неизвестная опция» сбила бы с толку
+                    _cli_die "${opt} не принимает значение: пишите ${opt} или --no-${opt#--}" \
+"${opt} takes no value: write ${opt} or --no-${opt#--}"
+                elif [[ "$opt" == --no-* ]] && _answer_row flag "--${opt#--no-}" && [ "$REPLY_ANS_TYPE" = yn ]; then
+                    [ "$opt" = "$a" ] || _cli_die "${opt} не принимает значение: пишите ${opt} или --${opt#--no-}" \
+"${opt} takes no value: write ${opt} or --${opt#--no-}"
                     USFC_FLAG_ANS[$REPLY_ANS_KEY]=N
                 else
                     _cli_die "неизвестная опция ${a}" "unknown option ${a}"
@@ -302,7 +308,8 @@ parse_args() {
                         apply)   USFC_APPLY_SPEC="${USFC_APPLY_SPEC}${USFC_APPLY_SPEC:+,}${a}" ;;
                         restore) [ -z "$USFC_RESTORE_STAMP" ] || _cli_die "restore: метка одна" "restore: only one stamp"
                                  USFC_RESTORE_STAMP="$a" ;;
-                        help)    USFC_HELP_TOPIC="$a" ;;
+                        help)    [ -z "$USFC_HELP_TOPIC" ] || _cli_die "help: лишний аргумент «${a}»" "help: unexpected argument \"${a}\""
+                                 USFC_HELP_TOPIC="$a" ;;
                         firewall)
                             # usfc firewall ping off · usfc firewall docker on
                             if [ -z "$FW_CMD_ACTION" ]; then
@@ -368,6 +375,12 @@ apply_cli_answers() {
     local key bad=0 id
     if [ -n "$USFC_CONFIG_FILE" ]; then
         local cfg="$USFC_CONFIG_FILE"
+        # схема URL регистронезависима (RFC 3986): HTTPS://… — это https.
+        # Приводим к нижнему регистру только схему, остальное (путь, токен) не трогаем
+        case "$cfg" in
+            [Hh][Tt][Tt][Pp][Ss]://*) cfg="https://${cfg:8}" ;;
+            [Hh][Tt][Tt][Pp]://*)     cfg="http://${cfg:7}" ;;
+        esac
         case "$cfg" in
             https://*) fetch_config "$cfg" || return 2; cfg="$REPLY_CONFIG_PATH" ;;
             http://*)  log_error_t "Файл ответов только по https: в нём бывают токены" \
@@ -514,7 +527,8 @@ usfc firewall [опции] — файрвол UFW: порты, ping, Docker
 Опции: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
 --no-docker-firewall, --config, --set, --dry-run, -y/--yes.
 
-SSH-порт (${SSH_PORT}) разрешается первым и не закрывается никогда. Включение
+SSH-порты (все, что слушает sshd) разрешаются первыми и не закрываются никогда;
+если SSH не слушает нигде, UFW не включается. Включение
 выключенного UFW у терминала спрашивает подтверждение; --yes — не спрашивать.
 Ping выключается правкой /etc/ufw/before.rules (ACCEPT → DROP в блоках ICMP);
 в IPv6 — только echo-request: остальной ICMPv6 нужен самому IPv6.
@@ -643,7 +657,8 @@ Ports: 443 (tcp), 51820/udp, 1000:2000/tcp — comma-separated.
 Options: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
 --no-docker-firewall, --config, --set, --dry-run, -y/--yes.
 
-The SSH port (${SSH_PORT}) is allowed first and is never closed. Enabling UFW
+The SSH ports (all that sshd listens on) are allowed first and are never closed;
+if SSH listens nowhere, UFW is not enabled. Enabling UFW
 that is off asks for confirmation at a terminal; --yes skips it.
 Ping is turned off by editing /etc/ufw/before.rules (ACCEPT → DROP in the ICMP
 sections); for IPv6 only echo-request: the rest of ICMPv6 is needed by IPv6 itself.

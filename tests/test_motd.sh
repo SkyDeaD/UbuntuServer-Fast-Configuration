@@ -16,6 +16,12 @@ export USFC_SOURCE_ONLY=1
 # shellcheck disable=SC1090,SC1091
 source "${1:-src/setup.sh}"
 
+# shellcheck disable=SC2034  # читается в write_file / log_*
+USFC_DRY_RUN=false
+# shellcheck disable=SC2034
+USFC_NO_COLOR=true
+backup_file() { :; }    # снимки проверяет test_backup.sh
+
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -102,6 +108,42 @@ else
     ms=$(( (end - start) / 5000000 ))
     [ "$ms" -le "$MAX_MS" ] && ok "в среднем ${ms} мс (порог ${MAX_MS})" || bad "в среднем ${ms} мс > ${MAX_MS}"
 fi
+
+echo ""
+echo "выключение и возврат стандартного приветствия (во временном каталоге)"
+MOTD_DIR="$TMP/motd.d"; MOTD_FILE="$MOTD_DIR/01-usfc"
+MOTD_STATE="$TMP/usfc/motd-disabled"; MOTD_ORIG="$TMP/usfc/motd.orig"; MOTD_STATIC="$TMP/motd"
+mkdir -p "$MOTD_DIR" "$TMP/pkg"
+printf '#!/bin/sh\n' > "$TMP/pkg/landscape.wrapper"; chmod 755 "$TMP/pkg/landscape.wrapper"
+printf '#!/bin/sh\n' > "$MOTD_DIR/00-header"; chmod 755 "$MOTD_DIR/00-header"
+ln -s "$TMP/pkg/landscape.wrapper" "$MOTD_DIR/50-landscape-sysinfo"
+printf 'старое приветствие\n' > "$MOTD_STATIC"
+motd_scan
+_motd_silence
+[ -x "$TMP/pkg/landscape.wrapper" ] && ok "цель симлинка сохранила +x" || bad "у файла пакета снят +x"
+[ ! -e "$MOTD_DIR/50-landscape-sysinfo" ] && [ ! -L "$MOTD_DIR/50-landscape-sysinfo" ] && ok "сама ссылка убрана" || bad "ссылка на месте"
+[ ! -x "$MOTD_DIR/00-header" ] && ok "обычному скрипту снят +x" || bad "00-header всё ещё исполняемый"
+grep -F "L	$TMP/pkg/landscape.wrapper	$MOTD_DIR/50-landscape-sysinfo" "$MOTD_STATE" >/dev/null && ok "ссылка записана в состояние" || bad "в состоянии нет ссылки"
+
+: > "$MOTD_FILE"
+ask_yn_t() { return 1; }
+disable_motd >/dev/null 2>&1
+[ -e "$MOTD_FILE" ] && ok "ответ «нет» — карточка на месте" || bad "карточка удалена без подтверждения"
+ask_yn_t() { return 0; }
+disable_motd >/dev/null 2>&1
+[ ! -e "$MOTD_FILE" ] && ok "ответ «да» — карточка удалена" || bad "карточка не удалена"
+{ [ -L "$MOTD_DIR/50-landscape-sysinfo" ] && [ "$(readlink "$MOTD_DIR/50-landscape-sysinfo")" = "$TMP/pkg/landscape.wrapper" ]; } \
+    && ok "disable вернул ссылку на прежнюю цель" || bad "ссылка не вернулась"
+[ -x "$MOTD_DIR/00-header" ] && ok "disable вернул +x обычному скрипту" || bad "+x не возвращён"
+grep -F 'старое приветствие' "$MOTD_STATIC" >/dev/null && ok "/etc/motd возвращён" || bad "/etc/motd не возвращён"
+
+# устаревший motd.orig (откат оставил, /etc/motd потом изменили) обновляется
+rm -f "$MOTD_STATE"
+printf 'УСТАРЕВШЕЕ\n' > "$MOTD_ORIG"
+printf 'свежий motd\n' > "$MOTD_STATIC"
+motd_scan; _motd_silence
+grep -F 'свежий motd' "$MOTD_ORIG" >/dev/null && ok "устаревший motd.orig перезаписан" || bad "motd.orig остался старым: $(cat "$MOTD_ORIG")"
+unset -f ask_yn_t
 
 echo ""
 [ "$fail" -eq 0 ] && echo "карточка входа: все проверки пройдены" || echo "карточка входа: ЕСТЬ ОШИБКИ"

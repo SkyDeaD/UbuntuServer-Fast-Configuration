@@ -17,6 +17,7 @@ sudo tail -n 100 /var/log/usfc.log
 - [SSH hardening didn't apply or rolled itself back](#ssh-hardening-didnt-apply-or-rolled-itself-back)
 - [SSH port move is not finished](#ssh-port-move-is-not-finished)
 - [Swap without a priority](#swap-without-a-priority)
+- [UFW won't enable: "SSH is not listening on any of the ports"](#ufw-wont-enable-ssh-is-not-listening-on-any-of-the-ports)
 - [Docker ports are open even though UFW doesn't allow them](#docker-ports-are-open-even-though-ufw-doesnt-allow-them)
 - [Telegram alerts don't arrive](#telegram-alerts-dont-arrive)
 - [btop: "~/.config could not be created"](#btop-config-could-not-be-created)
@@ -168,6 +169,23 @@ the swap file, and the on-disk swap is used before zram. Or the priority is
 
 It won't turn swap off to fix it if what's in use there doesn't fit into free
 memory, and the item says so plainly.
+
+## UFW won't enable: "SSH is not listening on any of the ports"
+
+**Cause.** Before enabling UFW, usfc checks that sshd listens on at least one
+of the ports it is about to allow. If not, enabling is cancelled: otherwise
+the firewall would cut off new connections.
+
+**Fix.** Check where SSH actually listens:
+
+```bash
+sudo ss -tlnp | grep -E 'sshd|systemd'
+sudo sshd -T | grep -E '^(port|listenaddress) '
+```
+
+If sshd listens only on `127.0.0.1` or isn't running, fix that and retry.
+usfc ignores ports on `127.0.0.1` and `::1`: they can't be reached from
+outside.
 
 ## Docker ports are open even though UFW doesn't allow them
 

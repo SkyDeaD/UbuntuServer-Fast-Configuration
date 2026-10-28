@@ -251,17 +251,34 @@ _notify_file_has_line() {
     return 1
 }
 
+# _notify_pam_has_exec <файл> <обёртка> — есть живая (не закомментированная)
+# строка pam_exec.so с нашей обёрткой. Одной метки мало: строку могли удалить
+# руками, оставив метку, — статус тогда врал бы «✓», а уведомлений не было бы
+_notify_pam_has_exec() {
+    local nf_l
+    [ -r "$1" ] || return 1
+    while IFS= read -r nf_l || [ -n "$nf_l" ]; do
+        [[ "$nf_l" =~ ^[[:space:]]*# ]] && continue
+        [[ "$nf_l" == *pam_exec.so*"$2"* ]] && return 0
+    done < "$1"
+    return 1
+}
+
 # notify_pam_add <файл> [обёртка] — идемпотентно дописать маркер и строку.
 # Только session optional: сбой обёртки (нет файла, ненулевой код) на вход
 # не влияет — результат optional-модуля учитывается, лишь когда он в стеке один
 notify_pam_add() {
-    local nf_f="$1" nf_line
+    local nf_f="$1" nf_line nf_mark=false nf_exec=false
     nf_line="$(notify_pam_line "${2:-}")"
-    _notify_file_has_line "$nf_f" "$NOTIFY_PAM_MARK" && return 0
+    _notify_file_has_line "$nf_f" "$NOTIFY_PAM_MARK" && nf_mark=true
+    _notify_pam_has_exec "$nf_f" "${2:-$NOTIFY_SSH_BIN}" && nf_exec=true
+    [ "$nf_mark" = true ] && [ "$nf_exec" = true ] && return 0
     {
         # файл без завершающего перевода строки: иначе наша метка склеится с его последней строкой
         if [ -s "$nf_f" ] && [ -n "$(tail -c1 "$nf_f")" ]; then printf '\n'; fi
-        printf '%s\n%s\n' "$NOTIFY_PAM_MARK" "$nf_line"
+        # метка без строки (или строка без метки) — дописываем только недостающее
+        [ "$nf_mark" = true ] || printf '%s\n' "$NOTIFY_PAM_MARK"
+        [ "$nf_exec" = true ] || printf '%s\n' "$nf_line"
     } | append_file "$nf_f"
 }
 
@@ -282,7 +299,8 @@ notify_pam_remove() {
 # симлинк: status_ идёт на каждую отрисовку меню, systemctl там дорог
 _notify_part_ok() {
     case "$1" in
-        ssh)    [ -x "$NOTIFY_SSH_BIN" ] && _notify_file_has_line "$NOTIFY_PAM" "$NOTIFY_PAM_MARK" ;;
+        ssh)    [ -x "$NOTIFY_SSH_BIN" ] && _notify_file_has_line "$NOTIFY_PAM" "$NOTIFY_PAM_MARK" \
+                    && _notify_pam_has_exec "$NOTIFY_PAM" "$NOTIFY_SSH_BIN" ;;
         ban)    [ -f "$NOTIFY_ACTION" ] && [ -f "$NOTIFY_JAIL" ] ;;
         reboot) [ -x "$NOTIFY_REBOOT_BIN" ] && [ -f "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}" ] \
                     && [ -e "${NOTIFY_UNIT_DIR}/timers.target.wants/${NOTIFY_TIMER_NAME}" ] ;;

@@ -463,6 +463,12 @@ _ssh_snap_reset() {
     [ "$USFC_DRY_RUN" = true ] && return 0
     SSH_PORT_SNAP="$(mktemp -d)" || { SSH_PORT_SNAP=''; return 1; }
 }
+# убрать каталог снимков, не создавая нового (утечка mktemp -d иначе)
+_ssh_snap_drop() {
+    [ -n "$SSH_PORT_SNAP" ] && rm -rf "$SSH_PORT_SNAP"
+    SSH_PORT_SNAP=''; SSH_PORT_SNAP_FILES=()
+    return 0
+}
 _ssh_snap() {
     local f="$1" i
     [ -n "$SSH_PORT_SNAP" ] || return 0
@@ -481,6 +487,41 @@ _ssh_snap_restore() {
         if [ -f "${SSH_PORT_SNAP}/${i}" ]; then cp -p "${SSH_PORT_SNAP}/${i}" "$f"
         else rm -f "$f"; fi
     done
+}
+
+# ── Ctrl+C посреди переноса ──────────────────────────────────────────────────
+# Между закомментированной строкой Port и записью нашего drop-in в конфиге нет
+# ни одного Port — рестарт sshd в таком состоянии встал бы на 22, закрытый
+# файрволом. Поэтому на время критической секции INT/TERM откатывают перенос
+# (_ssh_port_rollback) и только потом выходят. Прежний trap запоминаем через
+# `trap -p` и возвращаем (services.sh и ssh_selftest_begin ставят свои)
+SSH_GUARD_TRAPS=''
+SSH_GUARD_ARGS=()
+_ssh_port_guard_on() {
+    SSH_GUARD_ARGS=("$@")
+    SSH_GUARD_TRAPS="$(trap -p INT TERM)"
+    trap '_ssh_port_guard_fire' INT TERM
+}
+_ssh_port_guard_off() {
+    trap - INT TERM
+    [ -n "$SSH_GUARD_TRAPS" ] && eval "$SSH_GUARD_TRAPS"
+    SSH_GUARD_TRAPS=''
+    return 0
+}
+_ssh_port_guard_fire() {
+    # второй Ctrl+C во время отката не должен его прервать
+    trap '' INT TERM
+    _ssh_port_rollback "${SSH_GUARD_ARGS[@]}"
+    _ssh_snap_drop
+    _ssh_port_guard_off
+    ssh_selftest_end
+    exit 130
+}
+# откат на обычном (не сигнальном) провале: откатить и снять охрану
+_ssh_port_fail() {
+    _ssh_port_rollback "$@"
+    _ssh_snap_drop
+    _ssh_port_guard_off
 }
 
 # _ssh_set_ports <порт...> — оставить sshd ровно эти порты: чужие Port
@@ -608,8 +649,9 @@ _ssh_port_open() {
         fi
     fi
     _ssh_snap_reset || return 1
+    _ssh_port_guard_on "$ufw_added" "$new" "${old[0]}"
     if ! _ssh_f2b_ports "$f2b_list" || ! _ssh_set_ports "${old[@]}" "$new" || ! _ssh_sshd_test; then
-        _ssh_port_rollback "$ufw_added" "$new" "${old[0]}"
+        _ssh_port_fail "$ufw_added" "$new" "${old[0]}"
         return 1
     fi
     ssh_restart
@@ -620,9 +662,11 @@ _ssh_port_open() {
             log_info_t "ssh.socket активен: порты держит systemd — см. systemctl cat ssh.socket" \
 "ssh.socket is active: systemd owns the ports — see systemctl cat ssh.socket"
         fi
-        _ssh_port_rollback "$ufw_added" "$new" "${old[0]}"
+        _ssh_port_fail "$ufw_added" "$new" "${old[0]}"
         return 1
     fi
+    _ssh_port_guard_off
+    _ssh_snap_drop
     refresh_sshd_config
     log_success_t "sshd слушает ${old[*]} и ${new}; вход по ключу на ${new} проверен с 127.0.0.1" \
 "sshd listens on ${old[*]} and ${new}; key login on ${new} verified from 127.0.0.1"
@@ -644,15 +688,19 @@ _ssh_port_close() {
         fi
     fi
     _ssh_snap_reset || return 1
+    _ssh_port_guard_on "$ufw_added" "$new" "${old[0]}"
     if ! _ssh_set_ports "$new" || ! _ssh_sshd_test; then
-        _ssh_port_rollback "$ufw_added" "$new" "${old[0]}"
+        _ssh_port_fail "$ufw_added" "$new" "${old[0]}"
         return 1
     fi
     ssh_restart
     if ! _ssh_login_ok "$new"; then
-        _ssh_port_rollback "$ufw_added" "$new" "${old[0]}"
+        _ssh_port_fail "$ufw_added" "$new" "${old[0]}"
         return 1
     fi
+    # Дальше откатывать нельзя: sshd уже на новом порту, а откат вернул бы
+    # старый, пока правила файрвола для него могут быть сняты наполовину
+    _ssh_port_guard_off
     # Файрвол — только после того, как sshd ушёл со старого порта и вход на
     # новый подтверждён. Уже открытые соединения UFW не рвёт (ESTABLISHED)
     if ufw_active; then
@@ -665,7 +713,7 @@ _ssh_port_close() {
         done
     fi
     _ssh_f2b_ports "$new"
-    _ssh_snap_reset
+    _ssh_snap_drop
     refresh_sshd_config
     log_success_t "SSH перенесён на порт ${new}, старый порт (${old[*]}) закрыт" \
 "SSH moved to port ${new}, the old port (${old[*]}) is closed"
@@ -909,18 +957,22 @@ apply_sshhardening() {
         return
     fi
 
-    # Файлы, которые мы тронули помимо своего drop-in: при откате они
-    # возвращаются из снимка (restore_touched ниже)
-    local -a touched=()
+    # Файлы, которые мы тронули помимо своего drop-in, откатываются из СВОЕГО
+    # снимка, сделанного прямо перед первой правкой. Снимок backup_file для
+    # этого не годится: он хранит первую запись за прогон (в меню — за всю
+    # сессию), и если до нас в той же сессии уже переносили порт, откат вернул
+    # бы sshd_config со старой строкой Port
+    _ssh_snap_drop      # снимок от прошлого шага (перенос порта) нам не нужен
+    hsnap() {
+        [ -n "$SSH_PORT_SNAP" ] || _ssh_snap_reset || return 1
+        _ssh_snap "$1"
+    }
     # Вернуть закомментированные чужие строки и sshd_config из снимка — на
     # любом выходе после их правки, включая ранние (нет ключа, самопроверка
     # не прошла): иначе правка дождалась бы ближайшего рестарта sshd без нас
     restore_touched() {
-        local f snap
-        for f in "${touched[@]}"; do
-            snap="${USFC_BACKUP_DIR}${f}"
-            [ -f "$snap" ] && cp -p "$snap" "$f"
-        done
+        _ssh_snap_restore
+        _ssh_snap_drop
     }
 
     # Конфликты ищем ДО всего остального, в том числе до сухого прогона:
@@ -950,8 +1002,8 @@ apply_sshhardening() {
         fi
         local main_cfg
         main_cfg="$(cat "${SSHD_CONFIG_DIR}/sshd_config")" || return 1
+        hsnap "${SSHD_CONFIG_DIR}/sshd_config" || return 1
         printf 'Include %s/sshd_config.d/*.conf\n%s\n' "$SSHD_CONFIG_DIR" "$main_cfg" | write_file "${SSHD_CONFIG_DIR}/sshd_config"
-        touched+=("${SSHD_CONFIG_DIR}/sshd_config")
         [ "$USFC_DRY_RUN" = true ] || sshd_conflicts
     fi
 
@@ -968,13 +1020,15 @@ apply_sshhardening() {
         if ! ask_yn_t "Закомментировать их (копия сохранится, вернуть — usfc restore)?" "Comment them out (a copy is kept, undo with usfc restore)?"; then
             log_info_t "Оставляю как есть — с ними hardening не подействует, поэтому не применяю" \
 "Leaving them alone — with them in place hardening would not take effect, so not applying"
+            _ssh_snap_drop
             return 1
         fi
         for file in "${!by_file[@]}"; do
+            hsnap "$file" || { restore_touched; return 1; }
             # shellcheck disable=SC2086  # номера строк — отдельные аргументы
             sshd_comment_lines "$file" ${by_file[$file]} || {
-                log_error_t "Не удалось изменить ${file}" "Could not modify ${file}"; return 1; }
-            touched+=("$file")
+                log_error_t "Не удалось изменить ${file}" "Could not modify ${file}"
+                restore_touched; return 1; }
         done
     fi
 
@@ -1082,8 +1136,8 @@ apply_sshhardening() {
     } | write_file "$USFC_SSHD_DROPIN"
     # старое имя: оставленный рядом файл продолжал бы действовать
     if [ -f "$USFC_SSHD_DROPIN_OLD" ]; then
+        hsnap "$USFC_SSHD_DROPIN_OLD"        # при откате вернётся из снимка
         remove_file "$USFC_SSHD_DROPIN_OLD"
-        touched+=("$USFC_SSHD_DROPIN_OLD")   # при откате вернётся из снимка
     fi
 
     rollback_dropin() {
@@ -1139,6 +1193,7 @@ apply_sshhardening() {
     log_info_t "Текущая сессия не разрывалась — рестарт sshd не убивает открытые соединения" \
 "Your current session was not dropped — restarting sshd does not kill open connections"
     ssh_selftest_end
+    _ssh_snap_drop
     if ! sudo_nopasswd_set "$TARGET_USER" \
        && ask_yn_t "Настроить passwordless sudo для ${TARGET_USER}?" "Set up passwordless sudo for ${TARGET_USER}?"; then
         sudo_nopasswd "$TARGET_USER"

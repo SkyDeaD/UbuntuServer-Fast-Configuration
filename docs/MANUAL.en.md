@@ -157,7 +157,7 @@ sysctl net.ipv4.tcp_congestion_control   # should say bbr
 ```
 
 In a container (LXC, OpenVZ) the kernel belongs to the host — this won't work
-there.
+there. In a container the usfc item writes nothing and says so.
 
 ## 4. Base packages
 
@@ -282,7 +282,10 @@ load, vCPUs, RAM and disk bars, swap, container count and warnings. The script
 makes no network calls: the update count comes from the
 `/var/lib/update-notifier/updates-available` cache. usfc records what it
 switched off in `/etc/usfc/motd-disabled`, so choosing the item again restores
-everything. You don't have to reproduce the card by hand — fastfetch (item 6)
+everything (the item asks for confirmation). usfc doesn't switch off symlinked
+scripts with `chmod` (on Ubuntu `50-landscape-sysinfo` points into
+`/usr/share`), so the package's file stays untouched: it removes the link
+itself and recreates it on restore. You don't have to reproduce the card by hand — fastfetch (item 6)
 does the job too.
 
 ## 8. tmux
@@ -451,6 +454,12 @@ sudo systemctl restart docker   # restarts ALL containers along with the daemon
 
 The setting only applies to containers created after the restart.
 
+If `daemon.json` already sets another `log-driver` (`syslog`, `gelf`,
+`journald`, and so on), the item leaves it alone and is skipped: the
+`max-size` and `max-file` limits don't suit those drivers. The `local` driver
+is kept and the limits are added to it. The item needs `python3` to edit the
+file.
+
 ## 13. systemd journal cap
 
 By default journald may take up to 10% of the disk (but not more than 4 GB).
@@ -606,7 +615,13 @@ sudo systemctl restart zramswap
 ```
 
 If `systemd-zram-generator` is already running on the server, don't install
-zram-tools on top: you'd end up with two zram devices.
+zram-tools on top: you'd end up with two zram devices. In that case the usfc
+item configures the generator: in `/etc/systemd/zram-generator.conf` it
+changes only `zram-size`, `compression-algorithm`, and `swap-priority` in the
+`[zram0]` section and leaves other sections and options alone.
+
+If there are several on-disk swaps (for example, `/swap.img` and a provider
+partition), each needs priority 10: the item fixes all of them.
 
 A backup swap file on disk (example — 1 GB). Priority 10 is lower than zram's,
 so it only gets used once zram is full:

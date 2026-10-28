@@ -110,12 +110,65 @@ fw_allow() {
     return "$rc"
 }
 
+# fw_is_ssh_port <порт/протокол> — SSH-порт ли это. Портов может быть
+# несколько: во время переноса sshd слушает и старый, и новый (SSHD_PORTS)
+fw_is_ssh_port() {
+    [ "${1#*/}" = tcp ] || return 1
+    [[ " ${SSHD_PORTS:-} ${SSH_PORT} " == *" ${1%/*} "* ]]
+}
+
+# fw_ssh_ports → REPLY_FW_SSH_PORTS (порты через пробел) и REPLY_FW_SSH_LISTEN.
+# Берутся все порты из SSHD_PORTS (SSH_PORT, если их нет). Если ни один из них
+# не слушается, но sshd слушает другой TCP-порт (процесс sshd, а при активном
+# ssh.socket — systemd), добавляется и он: так сервер не отрежет себя, когда
+# порт определился неверно. LISTEN=false — SSH не слушает нигде, где мы его
+# видим: включать UFW вслепую нельзя. Без ss определить нечего — LISTEN=true
+REPLY_FW_SSH_PORTS=''; REPLY_FW_SSH_LISTEN=true
+fw_ssh_ports() {
+    local p conf="${SSHD_PORTS:-$SSH_PORT}" seen='' extra='' sock=false
+    REPLY_FW_SSH_PORTS=''; REPLY_FW_SSH_LISTEN=true
+    for p in $conf; do
+        [[ " $REPLY_FW_SSH_PORTS " == *" $p "* ]] || REPLY_FW_SSH_PORTS="${REPLY_FW_SSH_PORTS}${REPLY_FW_SSH_PORTS:+ }${p}"
+    done
+    command -v ss >/dev/null 2>&1 || return 0
+    systemctl is-active ssh.socket >/dev/null 2>&1 && sock=true
+    # строки «порт процесс» для TCP-сокетов, доступных снаружи
+    local lines
+    lines="$(ss -tlnpH 2>/dev/null | awk '
+        { addr = $4; port = addr; sub(/.*:/, "", port)
+          host = addr; sub(/:[^:]*$/, "", host)
+          if (host ~ /^(127\.|\[::1\]|\[::ffff:127\.|\[fe80|fe80)/ || host ~ /%lo$/) next
+          proc = ""
+          if (match($0, /users:\(\("[^"]+"/)) proc = substr($0, RSTART + 9, RLENGTH - 10)
+          print port " " proc }')"
+    REPLY_FW_SSH_LISTEN=false
+    local port proc
+    while read -r port proc; do
+        [ -n "$port" ] || continue
+        seen="${seen} ${port} "
+        if [ "$proc" = sshd ] || { [ "$sock" = true ] && [ "$proc" = systemd ]; }; then
+            extra="${extra} ${port} "
+        fi
+    done <<< "$lines"
+    for p in $REPLY_FW_SSH_PORTS; do
+        [[ "$seen" == *" $p "* ]] && REPLY_FW_SSH_LISTEN=true
+    done
+    # дописываем найденное только когда настроенные порты молчат
+    if [ "$REPLY_FW_SSH_LISTEN" = false ]; then
+        for p in $extra; do
+            [[ " $REPLY_FW_SSH_PORTS " == *" $p "* ]] || REPLY_FW_SSH_PORTS="${REPLY_FW_SSH_PORTS} ${p}"
+            REPLY_FW_SSH_LISTEN=true
+        done
+    fi
+    return 0
+}
+
 # fw_deny <откуда|''> <порт/протокол…> — убрать разрешение. SSH-порт не
 # закрываем никогда: так отрезают себе доступ к серверу одной командой
 fw_deny() {
     local from="$1" p rc=0 out; shift
     for p in "$@"; do
-        if [ "${p%/*}" = "$SSH_PORT" ] && [ "${p#*/}" = tcp ]; then
+        if fw_is_ssh_port "$p"; then
             log_error_t "${p} — порт SSH, его не закрываю: оборвётся доступ к серверу" \
 "${p} is the SSH port, not closing it: it would cut off access to the server"
             rc=1; continue
@@ -144,12 +197,20 @@ fw_deny() {
 # потом enable. Политики раньше не задавались: на сервере с изменённым
 # /etc/default/ufw «включённый файрвол» мог ничего не закрывать
 fw_enable() {
-    local from="$1"; shift
-    if ! _fw_ufw allow "${SSH_PORT}/tcp"; then
-        log_error_t "Не удалось разрешить SSH-порт ${SSH_PORT} — UFW не включаю" \
-"Could not allow the SSH port ${SSH_PORT} — not enabling UFW"
+    local from="$1" sp; shift
+    fw_ssh_ports
+    if [ "$REPLY_FW_SSH_LISTEN" != true ] && [ "$USFC_DRY_RUN" != true ]; then
+        log_error_t "SSH не слушает ни на одном из портов (${REPLY_FW_SSH_PORTS}) — не могу надёжно определить SSH-порт, UFW не включаю: он отрезал бы подключения" \
+"SSH is not listening on any of the ports (${REPLY_FW_SSH_PORTS}) — cannot determine the SSH port reliably, not enabling UFW: it would cut off connections"
         return 1
     fi
+    for sp in $REPLY_FW_SSH_PORTS; do
+        if ! _fw_ufw allow "${sp}/tcp"; then
+            log_error_t "Не удалось разрешить SSH-порт ${sp} — UFW не включаю" \
+"Could not allow the SSH port ${sp} — not enabling UFW"
+            return 1
+        fi
+    done
     _fw_ufw default deny incoming && _fw_ufw default allow outgoing || return 1
     local rc=0
     [ "$#" -gt 0 ] && { fw_allow "$from" "$@" || rc=1; }

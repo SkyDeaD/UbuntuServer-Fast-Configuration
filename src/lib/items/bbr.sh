@@ -43,10 +43,13 @@ BBR_MODLOAD=/etc/modules-load.d/usfc-bbr.conf
 REPLY_BBR_KERNEL=''
 bbr_kernel_state() {
     local avail=''
+    # контейнер — ПЕРВЫМ: в LXC список доступных алгоритмов — ядра хозяина и
+    # содержит bbr, но sysctl net.core.default_qdisc из контейнера даёт EPERM,
+    # и пункт писал бы файлы впустую, а потом падал на sysctl -p
+    if systemd-detect-virt --container --quiet 2>/dev/null; then REPLY_BBR_KERNEL=container; return 0; fi
     avail="$(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null)"
     if [[ " ${avail} " == *" bbr "* ]]; then REPLY_BBR_KERNEL=ok; return 0; fi
     if modinfo tcp_bbr >/dev/null 2>&1; then REPLY_BBR_KERNEL=ok; return 0; fi
-    if systemd-detect-virt --container --quiet 2>/dev/null; then REPLY_BBR_KERNEL=container; return 0; fi
     if [ ! -d "${USFC_MODULES_DIR:-/lib/modules}/$(uname -r)" ]; then REPLY_BBR_KERNEL=stale; return 0; fi
     REPLY_BBR_KERNEL=absent
     return 0

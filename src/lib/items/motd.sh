@@ -46,11 +46,12 @@ usfc_item_rollback motd "sudo rm -f /etc/update-motd.d/01-usfc
      sudo chmod +x /etc/update-motd.d/00-header   # and so on for every listed file
      sudo cp /etc/usfc/motd.orig /etc/motd        # if /etc/motd was emptied"
 
-MOTD_FILE="/etc/update-motd.d/01-usfc"
-MOTD_DIR="/etc/update-motd.d"
-MOTD_STATE="/etc/usfc/motd-disabled"
-MOTD_ORIG="/etc/usfc/motd.orig"
-MOTD_STATIC="/etc/motd"
+# Пути переопределяются переменными: так тест работает во временном каталоге
+MOTD_DIR="${MOTD_DIR:-/etc/update-motd.d}"
+MOTD_FILE="${MOTD_FILE:-${MOTD_DIR}/01-usfc}"
+MOTD_STATE="${MOTD_STATE:-/etc/usfc/motd-disabled}"
+MOTD_ORIG="${MOTD_ORIG:-/etc/usfc/motd.orig}"
+MOTD_STATIC="${MOTD_STATIC:-/etc/motd}"
 
 status_motd() {
     if [ -f "$MOTD_FILE" ] && [ -x "$MOTD_FILE" ]; then
@@ -365,17 +366,33 @@ preask_motd() {
 # Снимок write_file хранит содержимое, но не права — поэтому режимы и список
 # пишем сами: по нему disable_motd вернёт ровно то, что выключили мы
 _motd_silence() {
-    local f mode state="" old=""
-    [ -f "$MOTD_STATE" ] && old="$(cat "$MOTD_STATE" 2>/dev/null)"
+    local f mode target state="" old="" had_m=false
+    if [ -f "$MOTD_STATE" ]; then
+        old="$(cat "$MOTD_STATE" 2>/dev/null)"
+        grep -x 'M' "$MOTD_STATE" >/dev/null 2>&1 && had_m=true
+    fi
     for f in "${MOTD_FOUND[@]+"${MOTD_FOUND[@]}"}"; do
+        if [ -L "$f" ]; then
+            # chmod пошёл бы по ссылке и снял +x с файла пакета вне /etc
+            # (Ubuntu: 50-landscape-sysinfo → /usr/share/landscape/…).
+            # Ссылку убираем сами, цель запоминаем: disable_motd пересоздаст
+            target="$(readlink "$f")" || continue
+            state+="L	${target}	${f}"$'\n'
+            remove_file "$f"
+            continue
+        fi
         mode="$(stat -L -c %a "$f" 2>/dev/null)" || continue
         state+="S	${mode}	${f}"$'\n'
         chmod a-x "$f"
     done
     if [ "$MOTD_HAS_STATIC" = true ]; then
         mkdir -p "$(dirname "$MOTD_ORIG")"
-        # оригинал не затираем при повторе: второй раз /etc/motd уже пуст
-        [ -e "$MOTD_ORIG" ] || write_file "$MOTD_ORIG" < "$MOTD_STATIC"
+        # оригинал не затираем при повторе (второй раз /etc/motd уже пуст), но
+        # без записи «M» в состоянии пункт сейчас не применён: motd.orig
+        # остался от прошлого отката и устарел — перезаписываем текущим /etc/motd
+        if [ "$had_m" = false ] || [ ! -e "$MOTD_ORIG" ]; then
+            write_file "$MOTD_ORIG" < "$MOTD_STATIC"
+        fi
         state+="M"$'\n'
         : | write_file "$MOTD_STATIC"
     fi
@@ -420,6 +437,7 @@ apply_motd() {
 
 disable_motd() {
     local kind mode path restored=0
+    ask_yn_t "Убрать карточку при входе?" "Remove the login card?" N || return 0
     remove_file "$MOTD_FILE"
     log_success_t "Карточка сервера удалена" "Server card removed"
     [ -f "$MOTD_STATE" ] || return 0
@@ -432,6 +450,11 @@ disable_motd() {
             S)
                 [ -e "$path" ] || continue
                 chmod "$mode" "$path" && restored=$((restored + 1))
+                ;;
+            L)
+                # mode здесь — цель ссылки; существующий путь не трогаем
+                [ -e "$path" ] || [ -L "$path" ] && continue
+                ln -s "$mode" "$path" && restored=$((restored + 1))
                 ;;
             M)
                 [ -f "$MOTD_ORIG" ] || continue

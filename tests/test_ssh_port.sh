@@ -284,6 +284,41 @@ same "добавленное правило UFW снято" "OpenSSH 22/tcp" "$(
 same "слушается снова только 22" "22" "$LISTEN"
 
 echo ""
+echo "Ctrl+C посреди переноса — откат до выхода"
+# Прерывание приходит после закомментированной строки Port, но до записи
+# нашего drop-in: без отката в конфиге не осталось бы ни одного Port
+reset_world
+before_cfg="$(cat "$SSHD_CONFIG_DIR/sshd_config")"; before_drop="$(cat "$DROP")"; before_f2b="$(cat "$FAIL2BAN_DROPIN")"
+saved_write="$(declare -f write_file)"
+trap_before="$(trap -p INT TERM)"
+(
+    me="$BASHPID"
+    write_file() {
+        if [ "$1" = "$DROP" ]; then cat >/dev/null; kill -INT "$me"; return 0; fi
+        cat > "$1"
+    }
+    ssh_port_change 2222 >/dev/null 2>&1
+    echo "дошли до конца: прерывание не сработало" >&2
+    exit 0
+); rc=$?
+eval "$saved_write"
+same "выход с кодом 130" "130" "$rc"
+same "sshd_config вернулся (Port на месте)" "$before_cfg" "$(cat "$SSHD_CONFIG_DIR/sshd_config")"
+same "drop-in вернулся" "$before_drop" "$(cat "$DROP")"
+same "fail2ban вернулся" "$before_f2b" "$(cat "$FAIL2BAN_DROPIN")"
+same "добавленное правило UFW снято" "OpenSSH 22/tcp" "$(ufw_rules_now)"
+same "trap родителя не тронут" "$trap_before" "$(trap -p INT TERM)"
+same "каталог снимков убран" "" "$SSH_PORT_SNAP"
+
+echo ""
+echo "каталог снимков не течёт после успешного шага 2"
+reset_world
+ssh_port_change 2222 >/dev/null 2>&1
+ssh_port_change 2222 >/dev/null 2>&1
+same "после шага 2 каталога снимков нет" "" "$SSH_PORT_SNAP"
+reset_world
+
+echo ""
 echo "проверки до изменений"
 reset_world
 LISTEN='22 8080'

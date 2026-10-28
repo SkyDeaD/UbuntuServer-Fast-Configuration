@@ -156,6 +156,28 @@ usfc_stage_loads() {
     [ "$out" = OK ]
 }
 
+# usfc_install_target <файл> — где файл установки лежит на диске
+usfc_install_target() {
+    case "$1" in
+        setup.sh) printf '%s' "$SCRIPT_PATH" ;;
+        *)        printf '%s' "${USFC_ROOT}/$1" ;;
+    esac
+}
+
+# usfc_rollback_install <old_lib> <old_files> <live_lib> — вернуть установку
+# как была: lib, setup.sh, MODULES и VERSION. Файлы возвращаются cp, а не mv:
+# именно переименование могло упасть, и откат не должен зависеть от него.
+# Файла, которого раньше не было, не будет и после
+usfc_rollback_install() {
+    local old_lib="$1" old_files="$2" live_lib="$3" f dest
+    rm -rf "$live_lib"
+    [ -d "$old_lib" ] && mv "$old_lib" "$live_lib"
+    for f in setup.sh MODULES VERSION; do
+        dest="$(usfc_install_target "$f")"
+        if [ -f "${old_files}/${f}" ]; then cp -p "${old_files}/${f}" "$dest"; else rm -f "$dest"; fi
+    done
+}
+
 # install_update <новая версия> — 0 если установили и можно перезапускаться
 install_update() {
     local new_version="$1"
@@ -229,29 +251,45 @@ install_update() {
     # а между ними нет ни сети, ни проверок — окно, в котором установка
     # смешанная, схлопнуто до нескольких системных вызовов.
     local old_lib="${USFC_ROOT}/lib.old.$$"
+    # Прежние setup.sh, MODULES и VERSION — рядом, как old_lib: если замена
+    # оборвётся посреди, возвращаются все четыре вещи, а не один lib. Иначе
+    # новый setup.sh остался бы с чужим MODULES — смешанная установка
+    local old_files="${USFC_ROOT}/files.old.$$" f
+    rm -rf "$old_files"
+    if ! mkdir -p "$old_files"; then
+        log_error_t "Не удалось создать ${old_files} — остаюсь на ${VERSION}" \
+"Could not create ${old_files} — staying on ${VERSION}"
+        rm -rf "$stage"; return 1
+    fi
+    for f in setup.sh MODULES VERSION; do
+        if [ -f "$(usfc_install_target "$f")" ] && ! cp -p "$(usfc_install_target "$f")" "${old_files}/${f}"; then
+            log_error_t "Не удалось сохранить ${f} — остаюсь на ${VERSION}" \
+"Could not back up ${f} — staying on ${VERSION}"
+            rm -rf "$stage" "$old_files"; return 1
+        fi
+    done
     if [ -d "$live_lib" ] && ! mv "$live_lib" "$old_lib"; then
         log_error_t "Не удалось освободить ${live_lib} — остаюсь на ${VERSION}" \
 "Could not move ${live_lib} aside — staying on ${VERSION}"
-        rm -rf "$stage"; return 1
+        rm -rf "$stage" "$old_files"; return 1
     fi
-    # Старый lib удаляется только после полного успеха. Если не встал сам
-    # lib — возвращаем прежний на место; после него установка смешанной
-    # быть уже не может: остальное — три файла в одном каталоге
+    # Старый lib удаляется только после полного успеха. Любой сбой ниже —
+    # откат всего: lib, setup.sh, MODULES, VERSION
     if ! mv "${stage}/lib" "$live_lib"; then
-        [ -d "$old_lib" ] && mv "$old_lib" "$live_lib"
+        usfc_rollback_install "$old_lib" "$old_files" "$live_lib"
         log_error_t "Не удалось поставить новые модули — вернул ${VERSION}" \
 "Could not put the new modules in place — restored ${VERSION}"
-        rm -rf "$stage"; return 1
+        rm -rf "$stage" "$old_files"; return 1
     fi
     if ! mv "${stage}/setup.sh" "$SCRIPT_PATH" || ! mv "${stage}/MODULES" "${USFC_ROOT}/MODULES" \
        || ! mv "${stage}/VERSION" "${USFC_ROOT}/VERSION"; then
-        rm -rf "$live_lib"; [ -d "$old_lib" ] && mv "$old_lib" "$live_lib"
-        log_error_t "Обновление прервано на замене файлов — модули ${VERSION} возвращены; если usfc не запускается, переустановите: curl -fsSL ${USFC_INSTALL_URL} | sudo bash" \
-"The update stopped while replacing files — ${VERSION} modules restored; if usfc fails to start, reinstall: curl -fsSL ${USFC_INSTALL_URL} | sudo bash"
-        rm -rf "$stage"; return 1
+        usfc_rollback_install "$old_lib" "$old_files" "$live_lib"
+        log_error_t "Обновление прервано на замене файлов — ${VERSION} возвращена целиком (модули, setup.sh, MODULES, VERSION); если usfc не запускается, переустановите: curl -fsSL ${USFC_INSTALL_URL} | sudo bash" \
+"The update stopped while replacing files — ${VERSION} restored in full (modules, setup.sh, MODULES, VERSION); if usfc fails to start, reinstall: curl -fsSL ${USFC_INSTALL_URL} | sudo bash"
+        rm -rf "$stage" "$old_files"; return 1
     fi
     chmod +x "$SCRIPT_PATH"
-    rm -rf "$stage" "$old_lib"
+    rm -rf "$stage" "$old_lib" "$old_files"
     return 0
 }
 

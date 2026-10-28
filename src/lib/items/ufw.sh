@@ -75,7 +75,7 @@ _ufw_proposed() {
     local p proc list=''
     while read -r p proc; do
         [ -n "$p" ] || continue
-        [ "$p" = "${SSH_PORT}/tcp" ] && continue
+        fw_is_ssh_port "$p" && continue
         list="${list} ${p}"
     done <<< "$REPLY_FW_LISTEN"
     fw_parse_ports "$list"

@@ -264,6 +264,7 @@ jobs:
           # Токен не попадает в argv (ps), PAM-обёртка выходит сразу и с 0
           # даже при зависшей сети, правка pam.d обратима байт-в-байт
           bash tests/test_notify.sh src/setup.sh
+          bash tests/test_items_misc.sh src/setup.sh
 
       - name: Справочник флагов сходится с кодом
         run: |

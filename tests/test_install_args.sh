@@ -42,8 +42,17 @@ if [ -t 0 ]; then echo "SETUP-STDIN: терминал"; else echo "SETUP-STDIN: 
 STUB
 chmod +x "$TMP/fixture/setup.sh"
 echo "9.9.9" > "$TMP/fixture/VERSION"
-printf 'lib/fake.sh\n' > "$TMP/fixture/MODULES"
+printf 'lib/fake.sh\nlib/profiles.sh\n' > "$TMP/fixture/MODULES"
 echo '# заглушка модуля' > "$TMP/fixture/lib/fake.sh"
+# мини-таблица ответов: install.sh берёт из неё список флагов со значением
+cat > "$TMP/fixture/lib/profiles.sh" <<'PROF'
+USFC_ANSWER_KEYS=(
+    "HOSTNAME|HOSTNAME_BULK|host|--hostname|hostname|имя|name"
+    "TIMEZONE|TIMEZONE_BULK|tz|--timezone|hostname|пояс|zone"
+    "UFW|UFW_BULK|yn|--ufw|ufw|включить|enable"
+    "TG_CHAT|TG_CHAT_BULK|chat|--tg-chat|notify|кому|to"
+)
+PROF
 
 # ── шим curl: отдаёт файл из фикстуры вместо сети ────────────────────────────
 mkdir -p "$TMP/bin"
@@ -124,6 +133,56 @@ else
     has   "сказано, что меню не открывается" "$OUT" "Терминала нет"
     hasnt "setup.sh не запускался"           "$OUT" "SETUP-ARGS"
 fi
+
+# ── 4в. значение флага — не команда ──────────────────────────────────────────
+# Раньше имя команды искалось среди всех аргументов: `--hostname list` считалось
+# командой list, и меню без терминала не отсекалось
+echo ""
+echo "значение флага не принимается за команду"
+run apply basepkgs --hostname list --yes
+has   "команда после apply, значение list внутри" "$OUT" "SETUP-ARGS: apply basepkgs --hostname list --yes"
+hasnt "меню не открывалось" "$OUT" "Терминала нет"
+run --lang en apply web
+has   "общий флаг до команды" "$OUT" "SETUP-ARGS: --lang en apply web"
+run --hostname node-1 apply web
+has   "флаг ответа со значением до команды" "$OUT" "SETUP-ARGS: --hostname node-1 apply web"
+run --ufw list
+has   "yn-флаг не берёт значение: list — команда" "$OUT" "SETUP-ARGS: --ufw list"
+run --tg-chat -1001234567890 audit
+has   "отрицательное значение пропущено, audit — команда" "$OUT" "SETUP-ARGS: --tg-chat -1001234567890 audit"
+if { : </dev/tty; } 2>/dev/null; then
+    echo "  ⚠ терминал доступен — проверку пропускаю (нужен запуск без tty)"
+else
+    run --hostname list
+    has   "--hostname list без команды — это меню" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался" "$OUT" "SETUP-ARGS"
+    run --timezone help --lang en
+    has   "--timezone help без команды — это меню" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался (help)" "$OUT" "SETUP-ARGS"
+    run --config list
+    has   "--config list без команды — это меню" "$OUT" "Терминала нет"
+fi
+
+# ── 4г. сбой при раскладке файлов возвращает старую установку целиком ────────
+echo ""
+echo "сбой раскладки: старые файлы возвращены"
+cat > "$TMP/bin/mv" <<'MVSHIM'
+#!/bin/bash
+# падает только на переносе в каталог установки, чтобы не ломать fetch
+if [ -n "${USFC_TEST_FAILMV:-}" ] && [ "${*: -1}" = "$USFC_TEST_FAILMV" ]; then exit 1; fi
+exec /bin/mv "$@"
+MVSHIM
+chmod +x "$TMP/bin/mv"
+rm -rf "$TMP/opt"; mkdir -p "$TMP/opt/lib"
+echo OLD-SETUP > "$TMP/opt/setup.sh"; echo OLD-MODULES > "$TMP/opt/MODULES"
+echo 1.0.0 > "$TMP/opt/VERSION"; echo OLD-LIB > "$TMP/opt/lib/a.sh"
+: > "$TMP/urls"; export USFC_TEST_URLS="$TMP/urls"
+OUT="$(USFC_TEST_FAILMV="$TMP/opt/MODULES" USFC_INSTALL_DIR="$TMP/opt" bash "$INSTALLER" apply web 2>&1)"; RC=$?
+[ "$RC" -eq 1 ] && ok "установка завершилась ошибкой" || bad "код возврата $RC"
+state="$(cat "$TMP/opt/setup.sh") $(cat "$TMP/opt/MODULES") $(cat "$TMP/opt/VERSION") $(cat "$TMP/opt/lib/a.sh" 2>/dev/null)"
+[ "$state" = "OLD-SETUP OLD-MODULES 1.0.0 OLD-LIB" ] && ok "setup.sh, MODULES, VERSION и lib прежние" || bad "состояние: «$state»"
+[ -n "$(find "$TMP/opt" -maxdepth 1 -name '*.old*')" ] && bad "остались *.old" || ok "служебных *.old не осталось"
+rm -f "$TMP/bin/mv"
 
 # ── 5. установка реально разложила файлы ─────────────────────────────────────
 echo ""

@@ -133,6 +133,34 @@ already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
   was glued to the last line of `authorized_keys` without a newline.
 - Ctrl+C did not stop a run.
 - `cloudflare.ini` was emptied before its snapshot.
+- **UFW could cut off SSH during a port move.** Enabling UFW allowed one SSH
+  port; now it allows every port sshd listens on, and if SSH listens nowhere,
+  UFW is not enabled. `--deny` protects all SSH ports.
+- **Ctrl+C in the middle of an SSH port move** could leave the config without
+  a `Port` line. Now an interrupt rolls the move back. The SSH hardening
+  rollback uses its own snapshot instead of the session's first one, which
+  could hold an old `Port`.
+- The updater and the installer, when they fail halfway, restore the old
+  `lib`, `setup.sh`, `MODULES`, and `VERSION` together, not just `lib`.
+- `install.sh` took a flag's value for a command (`--hostname list`).
+- `--ufw=Y` gave "unknown option" and now gives a clear hint;
+  `usfc help apply firewall` is an error instead of help for the last topic;
+  `HTTPS://` in `--config` is accepted in any case.
+- zram: `zram-generator.conf` is edited in place and other sections are kept;
+  priority 10 goes to every on-disk swap, not just the last one.
+- motd: symlinked scripts no longer strip `+x` from a package file outside
+  `/etc`; turning the card off asks for confirmation; a stale `motd.orig` is
+  overwritten.
+- dockerlog: another `log-driver` is no longer overwritten with `json-file`,
+  and a failed `daemon.json` write or a missing `python3` no longer looks like
+  success.
+- bbr in a container writes no files and doesn't fail on `sysctl -p`.
+- hostname: `preserve_hostname` for cloud-init is written even when the name
+  already matches.
+- notify: the SSH alert status checks the `pam_exec` line itself, not just
+  the marker.
+- The journald status no longer runs `journalctl --disk-usage` on every menu
+  frame.
 
 ### Removed
 

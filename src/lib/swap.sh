@@ -47,12 +47,16 @@ read_swap_state() {
     ZRAM_ACTIVE=false; ZRAM_PRIO=""
     SWAP_ACTIVE=false; SWAP_PRIO=""; SWAP_PATH=""
     SWAP_TYPE=""; SWAP_SIZE_MB=0; SWAP_USED_MB=0
+    # Все дисковые свопы, а не только последний: на VPS бывает /swap.img
+    # от образа плюс раздел провайдера, и приоритет надо вести у каждого
+    SWAP_PATHS=(); SWAP_PRIOS=()
     local n t s u p
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) ZRAM_ACTIVE=true; ZRAM_PRIO="$p" ;;
             *)
                 SWAP_ACTIVE=true; SWAP_PRIO="$p"; SWAP_PATH="$n"; SWAP_TYPE="$t"
+                SWAP_PATHS+=("$n"); SWAP_PRIOS+=("$p")
                 SWAP_SIZE_MB="$(human_to_mb "$s")"
                 SWAP_USED_MB="$(human_to_mb "$u")"
                 ;;

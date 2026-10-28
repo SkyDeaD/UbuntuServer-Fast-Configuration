@@ -200,10 +200,13 @@ _hn_write_hosts() {
 # к следующей перезагрузке пропадёт. Отдельная беда — manage_etc_hosts:
 # true/localhost: модуль update_etc_hosts на каждой загрузке переписывает
 # /etc/hosts по имени из метаданных и затирает нашу строку
+# Пути переопределяются переменными (тест работает во временном каталоге)
+HN_CLOUD_ETC="${HN_CLOUD_ETC:-/etc/cloud}"
+HN_CLOUD_LIB="${HN_CLOUD_LIB:-/var/lib/cloud}"
 _hn_cloud_init() {
-    [ -f /etc/cloud/cloud.cfg ] || return 0
+    [ -f "${HN_CLOUD_ETC}/cloud.cfg" ] || return 0
     local tmp rc=0 mgmt=''
-    mgmt="$(cat /etc/cloud/cloud.cfg /etc/cloud/cloud.cfg.d/*.cfg /var/lib/cloud/instance/cloud-config.txt 2>/dev/null \
+    mgmt="$(cat "${HN_CLOUD_ETC}/cloud.cfg" "${HN_CLOUD_ETC}"/cloud.cfg.d/*.cfg "${HN_CLOUD_LIB}/instance/cloud-config.txt" 2>/dev/null \
         | grep -E '^[[:space:]]*manage_etc_hosts:[[:space:]]*(true|yes|on|1|localhost|template)' | grep -v '^[[:space:]]*#')"
     tmp="$(mktemp)" || return 1
     {
@@ -214,14 +217,14 @@ _hn_cloud_init() {
             echo "manage_etc_hosts: false"
         fi
     } > "$tmp"
-    if ! cmp -s "$tmp" /etc/cloud/cloud.cfg.d/99-usfc-hostname.cfg 2>/dev/null; then
-        mkdir -p /etc/cloud/cloud.cfg.d
-        write_file /etc/cloud/cloud.cfg.d/99-usfc-hostname.cfg < "$tmp" || rc=1
+    if ! cmp -s "$tmp" "${HN_CLOUD_ETC}/cloud.cfg.d/99-usfc-hostname.cfg" 2>/dev/null; then
+        mkdir -p "${HN_CLOUD_ETC}/cloud.cfg.d"
+        write_file "${HN_CLOUD_ETC}/cloud.cfg.d/99-usfc-hostname.cfg" < "$tmp" || rc=1
         [ "$rc" -eq 0 ] && log_success_t "cloud-init: имя не будет сбрасываться при перезагрузке (preserve_hostname)" \
 "cloud-init: the name will survive reboots (preserve_hostname)"
     fi
     rm -f "$tmp"
-    if [ -n "$mgmt" ] && grep -qE 'manage_etc_hosts' /var/lib/cloud/instance/cloud-config.txt 2>/dev/null; then
+    if [ -n "$mgmt" ] && grep -qE 'manage_etc_hosts' "${HN_CLOUD_LIB}/instance/cloud-config.txt" 2>/dev/null; then
         log_warn_t "manage_etc_hosts включён в user-data провайдера — он сильнее нашего файла; если после перезагрузки в /etc/hosts пропадёт строка 127.0.1.1, выключи его в панели провайдера" \
 "manage_etc_hosts is set in the provider's user-data, which outranks our file; if the 127.0.1.1 line vanishes from /etc/hosts after a reboot, turn it off in the provider panel"
     fi
@@ -249,7 +252,10 @@ _hn_apply_name() {
         log_info_t "Имя уже ${want}" "The name is already ${want}"
     fi
     _hn_write_hosts "$want" || { log_error_t "Не удалось обновить /etc/hosts" "Could not update /etc/hosts"; return 1; }
-    [ "$want" != "$cur" ] && { _hn_cloud_init || return 1; }
+    # всегда, а не только при смене имени: если имя уже задано руками, cloud-init
+    # без preserve_hostname вернёт имя из метаданных после перезагрузки
+    # (функция идемпотентна: файл переписывается, только если содержимое иное)
+    _hn_cloud_init || return 1
     return 0
 }
 

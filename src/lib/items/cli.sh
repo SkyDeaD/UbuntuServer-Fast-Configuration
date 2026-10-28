@@ -253,7 +253,7 @@ cli_write_aliases() {
         cli_block_functions
         echo "# <<< vps-setup:cli <<<"
     } | append_file "$BASHRC"
-    chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$BASHRC"
+    chown -h "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$BASHRC"
     log_success_t "Алиасы и функции добавлены в .bashrc" \
 "Aliases and functions added to .bashrc"
 }
@@ -483,6 +483,12 @@ cli_write_starship() {
 "${cfg} already exists and was not made by usfc — not overwriting it. Remove the file or add a first line \"# usfc:starship\" to hand it over to usfc"
         return 0
     fi
+    if [ -L "$cfg" ] && [ ! -e "$cfg" ]; then
+        # запись через висячую ссылку создала бы файл по чужому пути
+        log_warn_t "${cfg} — висячая ссылка, не пишу через неё. Убери ссылку и повтори" \
+"${cfg} is a dangling symlink — not writing through it. Remove the link and retry"
+        return 0
+    fi
     cli_ask_starship_preset; preset="$CLI_STARSHIP_PRESET"
     # Роль «боевой» без явного ответа в пакете — НЕТ: --yes не должен молча
     # красить каждый сервер в красный (ask_bulk_yn под --yes отвечает «да»)
@@ -504,7 +510,7 @@ cli_write_starship() {
     write_file "$cfg" < "$tmp"
     rm -f "$tmp"
     gid="$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
-    chown "${TARGET_USER}:${gid}" "$cfg"
+    chown -h "${TARGET_USER}:${gid}" "$cfg"
     if [ "$prod" = Y ]; then
         log_success_t "starship: пресет ${preset}, боевой сервер (хост красным) → ${cfg}" \
 "starship: preset ${preset}, production server (red host) → ${cfg}"

@@ -217,14 +217,66 @@ zram_swapoff_fits() {
     return 0
 }
 
+# Путь вынесен в переменную ради tests/test_fstab_swap.sh; в работе всегда умолчание
+ZRAM_GENERATOR_CONF="${ZRAM_GENERATOR_CONF:-/etc/systemd/zram-generator.conf}"
+
+# zram_generator_write_conf <процент> — поправить конфиг генератора на месте.
+# Раньше файл писался целиком, и пропадали чужие секции ([zram1] и др.) и
+# опции. Теперь меняются только три наших ключа секции [zram0]; повтор ключа
+# внутри секции комментируется, нет ключа — дописывается в конец секции,
+# нет секции — дописывается секция
+zram_generator_write_conf() {
+    local pct="$1" f="$ZRAM_GENERATOR_CONF" cur=''
+    # Файл читается целиком до записи: чтение и запись в один путь через
+    # конвейер гоняются друг с другом
+    [ -f "$f" ] && cur="$(command cat "$f")"
+    printf '%s' "$cur" | awk -v pct="$pct" '
+        BEGIN { nk = 3
+                key[1] = "zram-size";             val[1] = "ram * " pct " / 100"
+                key[2] = "compression-algorithm"; val[2] = "lz4"
+                key[3] = "swap-priority";         val[3] = "100" }
+        function flush(   i) {
+            for (i = 1; i <= nk; i++) if (!(key[i] in done)) print key[i] " = " val[i]
+            if (held != "") printf "%s", held
+            held = ""; delete done
+        }
+        /^[[:space:]]*\[.*\]/ {
+            name = $0; sub(/^[[:space:]]*\[/, "", name); sub(/\].*/, "", name)
+            if (insec) flush(); else if (held != "") { printf "%s", held; held = "" }
+            insec = (name == "zram0"); if (insec) seen = 1
+            print; next
+        }
+        !insec { print; next }
+        /^[[:space:]]*$/ { held = held $0 "\n"; next }
+        {
+            if (held != "") { printf "%s", held; held = "" }
+            k = $0
+            if (k ~ /^[[:space:]]*[A-Za-z-]+[[:space:]]*=/) {
+                sub(/^[[:space:]]*/, "", k); sub(/[[:space:]]*=.*/, "", k)
+                for (i = 1; i <= nk; i++) if (k == key[i]) {
+                    if (key[i] in done) print "# usfc: duplicate: " $0
+                    else { print key[i] " = " val[i]; done[key[i]] = 1 }
+                    next
+                }
+            }
+            print
+        }
+        END {
+            if (insec) flush()
+            else if (!seen) {
+                if (NR > 0) print ""
+                print "[zram0]"; flush()
+            }
+        }' | write_file "$f"
+}
+
 # zram_configure <процент> — настроить и поднять zram; 0 — zram работает
 zram_configure() {
     local pct="$1"
     if zram_uses_generator; then
         log_info_t "zram управляется systemd-zram-generator — настраиваю его, zram-tools не ставлю" \
 "zram is managed by systemd-zram-generator — configuring it instead of installing zram-tools"
-        printf '[zram0]\nzram-size = ram * %s / 100\ncompression-algorithm = lz4\nswap-priority = 100\n' "$pct" \
-            | write_file /etc/systemd/zram-generator.conf
+        zram_generator_write_conf "$pct"
         systemctl daemon-reload
         systemctl restart systemd-zram-setup@zram0.service 2>/dev/null
     else
@@ -294,6 +346,47 @@ preask_zram() {
             SYSCTL_BULK=N
         fi
     fi
+}
+
+# zram_fix_swap_prios <путь_основного_свопа> <его_приоритет> — довести приоритет 10 у ВСЕХ
+# активных дисковых свопов (SWAP_PATHS из read_swap_state) и в fstab, и сейчас.
+# REPLY_SWAP_LAST_PRIO — приоритет свопа, который read_swap_state считает
+# основным (по нему apply_zram решает, предлагать ли менять размер)
+REPLY_SWAP_LAST_PRIO=''
+zram_fix_swap_prios() {
+    # Дисковых свопов может быть несколько (/swap.img и раздел провайдера):
+    # статус требует приоритет 10 у каждого, поэтому и чиним каждый
+    local sw_i sw_path sw_cur
+    REPLY_SWAP_LAST_PRIO="$2"
+    for (( sw_i = 0; sw_i < ${#SWAP_PATHS[@]}; sw_i++ )); do
+        sw_path="${SWAP_PATHS[sw_i]}"; sw_cur="${SWAP_PRIOS[sw_i]}"
+        if [ "$sw_cur" != "10" ]; then
+            log_warn_t "Своп на диске (${sw_path}) активен, но приоритет ${sw_cur} (рекомендуется 10)" \
+"On-disk swap (${sw_path}) is active but its priority is ${sw_cur} (10 recommended)"
+            if ask_yn_t "Исправить приоритет ${sw_path} на 10 (в fstab и сейчас)?" "Set the priority of ${sw_path} to 10 (in fstab and right now)?"; then
+                if swap_set_pri "$sw_path" 10; then
+                    log_success_t "Приоритет исправлен" \
+"Priority fixed"
+                    [ "$sw_path" = "$1" ] && REPLY_SWAP_LAST_PRIO=10
+                fi
+            fi
+        else
+            # Рабочий приоритет 10 ещё не значит, что он переживёт перезагрузку:
+            # его могли выставить `swapon -p` руками. Смотрим и в fstab
+            fstab_swap_pri "$sw_path"
+            if [ "$REPLY_FSTAB_PRI" != "10" ]; then
+                log_warn_t "${sw_path}: сейчас приоритет 10, но в ${USFC_FSTAB} он не записан — после перезагрузки сбросится" \
+"${sw_path}: priority is 10 right now, but ${USFC_FSTAB} does not record it — a reboot would reset it"
+                if fstab_set_swap_pri "$sw_path" 10; then
+                    log_success_t "Приоритет 10 записан в ${USFC_FSTAB}" \
+"Priority 10 written to ${USFC_FSTAB}"
+                else
+                    log_error_t "Не удалось записать приоритет в ${USFC_FSTAB}" \
+"Could not write the priority to ${USFC_FSTAB}"
+                fi
+            fi
+        fi
+    done
 }
 
 status_zram() {
@@ -371,32 +464,8 @@ apply_zram() {
         # Сначала приоритет, потом размер. Раньше это были две разные ветки, и
         # заранее заданный в пакетном режиме размер терялся, если приоритет
         # был не 10: до вопроса о размере дело просто не доходило
-        if [ "$swap_prio" != "10" ]; then
-            log_warn_t "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)" \
-"On-disk swap (${swap_path}) is active but its priority is ${swap_prio} (10 recommended)"
-            if ask_yn_t "Исправить приоритет ${swap_path} на 10 (в fstab и сейчас)?" "Set the priority of ${swap_path} to 10 (in fstab and right now)?"; then
-                if swap_set_pri "$swap_path" 10; then
-                    log_success_t "Приоритет исправлен" \
-"Priority fixed"
-                    swap_prio=10
-                fi
-            fi
-        else
-            # Рабочий приоритет 10 ещё не значит, что он переживёт перезагрузку:
-            # его могли выставить `swapon -p` руками. Смотрим и в fstab
-            fstab_swap_pri "$swap_path"
-            if [ "$REPLY_FSTAB_PRI" != "10" ]; then
-                log_warn_t "Сейчас приоритет 10, но в ${USFC_FSTAB} он не записан — после перезагрузки сбросится" \
-"Priority is 10 right now, but ${USFC_FSTAB} does not record it — a reboot would reset it"
-                if fstab_set_swap_pri "$swap_path" 10; then
-                    log_success_t "Приоритет 10 записан в ${USFC_FSTAB}" \
-"Priority 10 written to ${USFC_FSTAB}"
-                else
-                    log_error_t "Не удалось записать приоритет в ${USFC_FSTAB}" \
-"Could not write the priority to ${USFC_FSTAB}"
-                fi
-            fi
-        fi
+        zram_fix_swap_prios "$swap_path" "$swap_prio"
+        swap_prio="$REPLY_SWAP_LAST_PRIO"
 
         if [ "$swap_prio" = "10" ]; then
             local sw_suggest

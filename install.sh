@@ -147,19 +147,36 @@ echo "  Все ${#MODULES[@]} на месте и проверены."
 # ── Установка на место ───────────────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
 OLD_LIB=""
+# Прежние setup.sh, MODULES и VERSION сохраняются рядом с old lib: при сбое
+# возвращаются все четыре вещи, иначе новый setup.sh остался бы с чужим lib
+OLD_FILES="${INSTALL_DIR}/files.old.$$"
+rm -rf "$OLD_FILES"
+mkdir -p "$OLD_FILES" || { echo "  Не удалось создать ${OLD_FILES}" >&2; exit 1; }
+for f in setup.sh MODULES VERSION; do
+    if [ -f "${INSTALL_DIR}/${f}" ] && ! cp -p "${INSTALL_DIR}/${f}" "${OLD_FILES}/${f}"; then
+        echo "  Не удалось сохранить ${f}" >&2; rm -rf "$OLD_FILES"; exit 1
+    fi
+done
 if [ -d "${INSTALL_DIR}/lib" ]; then
     OLD_LIB="${INSTALL_DIR}/lib.old.$$"
-    mv "${INSTALL_DIR}/lib" "$OLD_LIB" || { echo "  Не удалось освободить ${INSTALL_DIR}/lib" >&2; exit 1; }
+    mv "${INSTALL_DIR}/lib" "$OLD_LIB" || { echo "  Не удалось освободить ${INSTALL_DIR}/lib" >&2; rm -rf "$OLD_FILES"; exit 1; }
 fi
-# старый lib удаляется только после полного успеха, иначе возвращается
+# старое удаляется только после полного успеха, иначе возвращается всё
 if ! { mv "${STAGE}/lib" "${INSTALL_DIR}/lib" && mv "${STAGE}/setup.sh" "${INSTALL_DIR}/setup.sh" \
        && mv "${STAGE}/VERSION" "${INSTALL_DIR}/VERSION" && mv "${STAGE}/MODULES" "${INSTALL_DIR}/MODULES"; }; then
     echo "  Не удалось разложить файлы в ${INSTALL_DIR}" >&2
-    if [ -n "$OLD_LIB" ]; then rm -rf "${INSTALL_DIR:?}/lib"; mv "$OLD_LIB" "${INSTALL_DIR}/lib"; fi
+    rm -rf "${INSTALL_DIR:?}/lib"
+    [ -n "$OLD_LIB" ] && mv "$OLD_LIB" "${INSTALL_DIR}/lib"
+    # cp, а не mv: сбоить мог именно mv. Файла, которого не было, не будет и после
+    for f in setup.sh MODULES VERSION; do
+        if [ -f "${OLD_FILES}/${f}" ]; then cp -p "${OLD_FILES}/${f}" "${INSTALL_DIR}/${f}"; else rm -f "${INSTALL_DIR:?}/${f}"; fi
+    done
+    rm -rf "$OLD_FILES"
     exit 1
 fi
 chmod +x "${INSTALL_DIR}/setup.sh"
 [ -n "$OLD_LIB" ] && rm -rf "$OLD_LIB"
+rm -rf "$OLD_FILES"
 
 ln -sf "${INSTALL_DIR}/setup.sh" /usr/local/bin/usfc
 
@@ -188,14 +205,28 @@ echo ""
 # «Есть аргументы» — это есть КОМАНДА (apply, audit…). Одни модификаторы
 # (`--lang en`, `--verbose`) означают меню, и раньше оно открывалось без
 # терминала — то есть зависало или падало на первом вопросе.
-# Команду узнаём по имени, а не «по слову без дефиса»: у `--lang en`
-# значение тоже без дефиса. Список повторяет USFC_COMMANDS из lib/cli.sh,
-# кроме help/version — им терминал тоже не нужен, они в списке
+# Команда — первое слово, не являющееся опцией и не являющееся значением
+# опции. Раньше имя искалось среди ВСЕХ аргументов, и значение флага
+# (`--hostname list`, `--timezone help`) принималось за команду. Любое первое
+# слово считаем командой (неверную назовёт сам usfc кодом 2 — в cloud-init это
+# лучше тихого «терминала нет»). Значения берут --lang, --config, --set, --deny
+# и все не-yn флаги ответов: их список читаем из таблицы только что
+# установленной версии (lib/profiles.sh), чтобы не держать второй список здесь
+VALUE_OPTS=" --lang --config --set --deny "
+if [ -f "${INSTALL_DIR}/lib/profiles.sh" ]; then
+    while IFS='|' read -r _k _v _ty _fl _; do
+        [ -n "$_fl" ] && [ "$_ty" != yn ] && VALUE_OPTS="${VALUE_OPTS}${_fl} "
+    done < <(sed -n 's/^    "\([A-Z_]*|[A-Za-z_]*|[a-z]*|.*\)"[[:space:]]*$/\1/p' "${INSTALL_DIR}/lib/profiles.sh")
+fi
 HAS_CMD=false
+_skip=false
 for a in "${REST[@]+"${REST[@]}"}"; do
+    if [ "$_skip" = true ]; then _skip=false; continue; fi
     case "$a" in
-        apply|audit|list|backups|restore|firewall|export|help|version|-h|--help|-V|--version)
-            HAS_CMD=true; break ;;
+        -V|--version) HAS_CMD=true; break ;;
+        -*=*) ;;
+        -*) case "$VALUE_OPTS" in *" ${a} "*) _skip=true ;; esac ;;
+        *) HAS_CMD=true; break ;;
     esac
 done
 if [ "$HAS_CMD" = true ]; then

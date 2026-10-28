@@ -269,5 +269,51 @@ eval "$saved_audit"
 eval "$saved_pingst"
 eval "$saved_pub"
 
+echo "fw_enable / fw_deny: все SSH-порты"
+saved_ufw="$(declare -f _fw_ufw)"
+UCALLS="$TMP/ucalls"
+_fw_ufw() { printf '%s\n' "$*" >> "$UCALLS"; }
+systemctl() { return 1; }
+# ss -tlnpH: State Recv-Q Send-Q Local Peer Process
+ss() {
+    printf '%s\n' "$FAKE_SS"
+}
+# shellcheck disable=SC2034  # читаются в fw_enable/fw_deny
+SSH_PORT=22
+# shellcheck disable=SC2034
+SSHD_PORTS="22 2222"
+FAKE_SS='LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=1,fd=3))
+LISTEN 0 128 0.0.0.0:2222 0.0.0.0:* users:(("sshd",pid=1,fd=4))'
+: > "$UCALLS"
+fw_enable '' 443/tcp >/dev/null 2>&1; rc=$?
+got="$(command cat "$UCALLS")"
+[ "$rc" -eq 0 ] && [[ "$got" == *"allow 22/tcp"* && "$got" == *"allow 2222/tcp"* && "$got" == *"--force enable"* ]] \
+    && ok "перенос порта: разрешены 22 и 2222" || bad "fw_enable 22+2222: rc=${rc} ${got//$'\n'/ | }"
+SSHD_PORTS="22"
+FAKE_SS='LISTEN 0 128 0.0.0.0:2200 0.0.0.0:* users:(("sshd",pid=1,fd=3))
+LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("nginx",pid=2,fd=3))'
+: > "$UCALLS"
+fw_enable '' >/dev/null 2>&1; rc=$?
+got="$(command cat "$UCALLS")"
+[ "$rc" -eq 0 ] && [[ "$got" == *"allow 2200/tcp"* && "$got" != *"8080"* ]] \
+    && ok "порт из конфига не слушается, sshd слушает 2200 → добавлен только он" || bad "fw_enable 2200: rc=${rc} ${got//$'\n'/ | }"
+FAKE_SS='LISTEN 0 128 0.0.0.0:8080 0.0.0.0:* users:(("nginx",pid=2,fd=3))'
+: > "$UCALLS"
+fw_enable '' >/dev/null 2>&1; rc=$?
+got="$(command cat "$UCALLS")"
+[ "$rc" -ne 0 ] && [[ "$got" != *"enable"* ]] && ok "SSH нигде не слушает — UFW не включается" || bad "fw_enable без SSH: rc=${rc} ${got//$'\n'/ | }"
+unset -f ss systemctl
+eval "$saved_ufw"
+
+SSHD_PORTS="22 2222"
+ufw() { echo "UFW CALLED: $*" >> "$UCALLS"; }
+: > "$UCALLS"
+fw_deny '' 2222/tcp 22/tcp >/dev/null 2>&1; rc=$?
+out="$(command cat "$UCALLS")"
+[ "$rc" -ne 0 ] && [[ "$out" != *"UFW CALLED"* ]] && ok "fw_deny не снимает ни 22, ни 2222" || bad "fw_deny: rc=${rc} ${out//$'\n'/ | }"
+unset -f ufw
+# shellcheck disable=SC2034
+SSHD_PORTS='22'
+
 if [ "$fail" -eq 0 ]; then echo "OK"; else echo "ЕСТЬ ОШИБКИ"; fi
 exit "$fail"

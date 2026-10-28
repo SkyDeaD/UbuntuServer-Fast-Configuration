@@ -172,6 +172,62 @@ rm -f "$D/00-provider.conf"
 unset -f sshd systemctl
 eval "$saved_audit"
 
+# ── 9. откат hardening берёт СВОЙ снимок, а не первый за прогон ─────────────
+# backup_file хранит первую запись за прогон (в меню — за сессию). Если до
+# hardening в той же сессии уже переносили порт, снимок прогона содержит
+# старую строку Port; откат hardening не должен её возвращать.
+# apply_sshhardening гоняем на заглушках до первого провала самопроверки
+echo ""
+echo "откат hardening: снимок перед правкой, а не снимок прогона"
+SELFTEST_BEGIN_CALLS=0
+ask_yn_t() { case "$1" in "Настроить SSH hardening"*|"Закомментировать"*) return 0 ;; *) return 1 ;; esac; }
+# shellcheck disable=SC2034  # читается в apply_sshhardening
+ensure_ssh_dir() { REPLY_AUTHKEYS="$TMP/ak9"; return 0; }
+# shellcheck disable=SC2034
+_ssh_key_users() { REPLY_SSH_KEY_USERS=(); }
+ssh_selftest_begin() { SELFTEST_BEGIN_CALLS=$((SELFTEST_BEGIN_CALLS + 1)); return 0; }
+ssh_selftest() { return 1; }          # «вход по ключу не проходит» → ранний откат
+ssh_selftest_end() { return 0; }
+sshd() { return 0; }
+# shellcheck disable=SC2034  # читаются внутри apply_sshhardening
+TARGET_USER=testuser
+# shellcheck disable=SC2034
+BULK_MODE=false
+# shellcheck disable=SC2034
+USFC_DRY_RUN=false
+SSHCFG="$SSHD_CONFIG_DIR/sshd_config"
+rm -f "$D"/*.conf "$USFC_SSHD_DROPIN"
+
+# снимок прогона: sshd_config ещё со старым портом
+mkdir -p "$USFC_BACKUP_DIR${SSHD_CONFIG_DIR}"
+printf 'Port 22\nPasswordAuthentication yes\nInclude %s/*.conf\n' "$D" > "$USFC_BACKUP_DIR${SSHCFG}"
+# …затем порт перенесли: файл изменился уже после снимка прогона
+printf 'Port 2222\nPasswordAuthentication yes\nInclude %s/*.conf\n' "$D" > "$SSHCFG"
+before_cfg="$(cat "$SSHCFG")"
+printf '%s\n' "$REAL" > "$TMP/ak9"
+apply_sshhardening >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "самопроверка провалилась — код 1" || bad "код $rc вместо 1"
+[ "$SELFTEST_BEGIN_CALLS" -eq 1 ] && ok "дошли до самопроверки (правка конфига была)" || bad "самопроверка не вызывалась"
+if [ "$(cat "$SSHCFG")" = "$before_cfg" ]; then ok "sshd_config вернулся к состоянию ПЕРЕД hardening (Port 2222)"; else
+    bad "sshd_config после отката: $(tr '\n' '|' < "$SSHCFG")"; fi
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "наш drop-in не создан" || bad "drop-in остался после отката"
+[ -z "$SSH_PORT_SNAP" ] && ok "каталог снимков убран" || bad "каталог снимков не удалён: $SSH_PORT_SNAP"
+
+# authorized_keys из одних комментариев: прерываемся ДО самопроверки и
+# до отключения пароля (ключи считаем, а не размер файла), конфиг на месте
+echo ""
+echo "hardening: в authorized_keys нет ключей — пароль не выключается"
+SELFTEST_BEGIN_CALLS=0
+printf '# только комментарий\n\n' > "$TMP/ak9"
+printf 'PasswordAuthentication yes\nInclude %s/*.conf\n' "$D" > "$SSHCFG"
+before_cfg="$(cat "$SSHCFG")"
+apply_sshhardening >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "код 1" || bad "код $rc вместо 1"
+[ "$SELFTEST_BEGIN_CALLS" -eq 0 ] && ok "самопроверка не запускалась" || bad "дошли до самопроверки без ключей"
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "drop-in с PasswordAuthentication no не записан" || bad "drop-in записан при пустом authorized_keys"
+[ "$(cat "$SSHCFG")" = "$before_cfg" ] && ok "sshd_config возвращён" || bad "sshd_config остался изменённым: $(tr '\n' '|' < "$SSHCFG")"
+unset -f ask_yn_t ensure_ssh_dir _ssh_key_users ssh_selftest_begin ssh_selftest ssh_selftest_end sshd
+
 echo ""
 [ "$fail" -eq 0 ] && echo "drop-in'ы sshd: все проверки пройдены" || echo "drop-in'ы sshd: ЕСТЬ ОШИБКИ"
 exit "$fail"

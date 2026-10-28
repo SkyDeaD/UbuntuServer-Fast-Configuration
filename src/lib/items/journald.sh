@@ -57,13 +57,12 @@ status_journald() {
     if [ -f "$JOURNALD_DROPIN" ]; then
         cap="$(sed -nE 's/^[[:space:]]*SystemMaxUse=([^[:space:]]+).*/\1/p' "$JOURNALD_DROPIN" | tail -n1)"
     fi
-    _jd_usage
-    local used=''
-    [ -n "$REPLY_JD_USED" ] && used=" · ${REPLY_JD_USED}"
+    # journalctl --disk-usage (до 5 с) тут не зовём: статус пересчитывается
+    # после каждого действия меню; занятое место показывает apply
     if [ -n "$cap" ]; then
-        st "$GREEN" "✓ лимит ${cap}${used}" "✓ cap ${cap}${used}"; return 0
+        st "$GREEN" "✓ лимит ${cap}" "✓ cap ${cap}"; return 0
     fi
-    st "$DIM" "○ не задан${used}" "○ not set${used}"; return 1
+    st "$DIM" "○ не задан" "○ not set"; return 1
 }
 
 # Реальный рестарт и сжатие возможны только под systemd: в контейнере
