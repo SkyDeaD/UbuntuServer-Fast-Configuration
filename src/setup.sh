@@ -88,7 +88,14 @@ usfc_read_manifest() {
     local line
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
-        USFC_MODULES+=("$line")
+        # Строка манифеста становится путём на диске: `../x` вышла бы за
+        # пределы установки. Допустим только lib/….sh из безопасных символов
+        case "$line" in
+            *..*|*[!A-Za-z0-9_./-]*) ;;
+            lib/*.sh) USFC_MODULES+=("$line"); continue ;;
+        esac
+        echo "usfc: в манифесте недопустимая строка «${line}»" >&2   # i18n-ok: до загрузки t()
+        USFC_MODULES=(); return 1
     done < "${1}"
 }
 
@@ -132,7 +139,8 @@ if [ ! -f "$USFC_MANIFEST" ]; then
     unset _tmp_manifest
 fi
 
-usfc_read_manifest "$USFC_MANIFEST"
+usfc_read_manifest "$USFC_MANIFEST" || {
+    echo "  Переустановите: curl -fsSL ${USFC_INSTALL_URL} | sudo bash" >&2; exit 1; }
 
 # Чего не хватает на диске
 _usfc_missing=()

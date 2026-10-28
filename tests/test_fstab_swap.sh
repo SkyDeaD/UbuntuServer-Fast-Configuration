@@ -1,0 +1,234 @@
+#!/usr/bin/env bash
+# Приоритет свопа в /etc/fstab: «иногда не пишется».
+#
+# Жалоба была ровно на это. До 5.0 приоритет ставил sed, понимавший одну форму
+# строки — `<путь> none swap sw …`. `defaults`, `sw,nofail`, уже стоящий
+# `pri=5`, точка монтирования `swap`, UUID=/LABEL= у разделов молча не
+# менялись, а `swap swap` портился в `sw,pri=10ap`. Пункт при этом печатал
+# «приоритет 10», и после перезагрузки своп поднимался с -2.
+#
+# Проверяем разбор по полям на таблице входов: что стало с fstab, нет ли
+# дублей, и что повторный прогон ничего не меняет. Плюс правка
+# /etc/default/zramswap на месте вместо перезаписи. Файлы настоящие, во
+# временном каталоге; подменён только blkid.
+set -uo pipefail
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+export USFC_FSTAB="$TMP/fstab"
+export USFC_SOURCE_ONLY=1
+# shellcheck disable=SC1090,SC1091
+source "${1:-src/setup.sh}"
+# shellcheck disable=SC2034  # читается в write_file
+USFC_DRY_RUN=false
+backup_file() { :; }        # снимки проверяет test_backup.sh, здесь они мешают
+
+# UUID есть у раздела и у swap-файла (mkswap пишет его и в файл)
+blkid() {
+    local dev="${*: -1}" what=""
+    case "$*" in *UUID*) what=uuid ;; *LABEL*) what=label ;; esac
+    case "$dev:$what" in
+        /dev/vda2:uuid)  echo "1111-aaaa" ;;
+        /dev/vda2:label) echo "SWAP" ;;
+        /swapfile:uuid)  echo "2222-bbbb" ;;
+    esac
+}
+
+fail=0
+ok()  { printf '  ✓ %s\n' "$1"; }
+bad() { printf '  ✗ %s\n' "$1"; fail=1; }
+
+# case <имя> <путь> <вход> <ожидаемый выход>
+check() {
+    local name="$1" path="$2" input="$3" want="$4" got
+    printf '%s\n' "$input" > "$USFC_FSTAB"
+    fstab_set_swap_pri "$path" 10 >/dev/null 2>&1
+    got="$(cat "$USFC_FSTAB")"
+    if [ "$got" = "$want" ]; then ok "$name"; else
+        bad "$name"; printf '      ждали: %s\n      вышло: %s\n' "${want//$'\n'/ | }" "${got//$'\n'/ | }"; fi
+    # повторный прогон — без изменений
+    fstab_set_swap_pri "$path" 10 >/dev/null 2>&1
+    [ "$(cat "$USFC_FSTAB")" = "$want" ] || bad "$name: повторный прогон изменил fstab"
+}
+
+ROOT='UUID=0000 / ext4 defaults 0 1'
+
+echo "формы строк для swap-файла"
+check "sw → sw,pri=10" /swapfile \
+    "$ROOT"$'\n''/swapfile none swap sw 0 0' \
+    "$ROOT"$'\n''/swapfile none swap sw,pri=10 0 0'
+check "defaults → defaults,pri=10" /swapfile \
+    "$ROOT"$'\n''/swapfile none swap defaults 0 0' \
+    "$ROOT"$'\n''/swapfile none swap defaults,pri=10 0 0'
+check "sw,nofail сохраняет nofail" /swapfile \
+    '/swapfile none swap sw,nofail 0 0' \
+    '/swapfile none swap sw,nofail,pri=10 0 0'
+check "pri=5 заменяется, а не дублируется" /swapfile \
+    '/swapfile none swap sw,pri=5 0 0' \
+    '/swapfile none swap sw,pri=10 0 0'
+check "pri=-2 посередине опций" /swapfile \
+    '/swapfile none swap pri=-2,discard 0 0' \
+    '/swapfile none swap discard,pri=10 0 0'
+check "точка монтирования swap (sed превращал в sw,pri=10ap)" /swapfile \
+    '/swapfile swap swap swap 0 0' \
+    '/swapfile swap swap swap,pri=10 0 0'
+check "табы и ведущие пробелы" /swapfile \
+    $'  /swapfile\tnone\tswap\tsw\t0\t0' \
+    '/swapfile none swap sw,pri=10 0 0'
+check "без полей dump/pass" /swapfile \
+    '/swapfile none swap sw' \
+    '/swapfile none swap sw,pri=10 0 0'
+
+echo ""
+echo "строки нет и дубли"
+check "строки нет — добавляется" /swapfile \
+    "$ROOT" \
+    "$ROOT"$'\n''/swapfile none swap sw,pri=10 0 0'
+check "дубль комментируется (своп смонтировался бы дважды)" /swapfile \
+    '/swapfile none swap sw 0 0'$'\n''/swapfile none swap defaults 0 0' \
+    '/swapfile none swap sw,pri=10 0 0'$'\n''# usfc: duplicate swap entry: /swapfile none swap defaults 0 0'
+check "комментарий с тем же путём не трогается" /swapfile \
+    '# /swapfile none swap sw 0 0'$'\n''/swapfile none swap sw 0 0' \
+    '# /swapfile none swap sw 0 0'$'\n''/swapfile none swap sw,pri=10 0 0'
+check "чужой своп не трогается" /swapfile \
+    '/swap.img none swap sw 0 0' \
+    '/swap.img none swap sw 0 0'$'\n''/swapfile none swap sw,pri=10 0 0'
+check "не-swap строка с тем же путём не трогается" /swapfile \
+    '/swapfile /mnt/x ext4 defaults 0 0' \
+    '/swapfile /mnt/x ext4 defaults 0 0'$'\n''/swapfile none swap sw,pri=10 0 0'
+
+echo ""
+echo "разделы по UUID= и LABEL="
+check "UUID= раздела" /dev/vda2 \
+    'UUID=1111-aaaa none swap sw 0 0' \
+    'UUID=1111-aaaa none swap sw,pri=10 0 0'
+check "LABEL= раздела" /dev/vda2 \
+    'LABEL=SWAP none swap defaults 0 0' \
+    'LABEL=SWAP none swap defaults,pri=10 0 0'
+check "by-uuid путь" /dev/vda2 \
+    '/dev/disk/by-uuid/1111-aaaa none swap sw 0 0' \
+    '/dev/disk/by-uuid/1111-aaaa none swap sw,pri=10 0 0'
+check "UUID= и путь на одно устройство — второй дубль" /dev/vda2 \
+    'UUID=1111-aaaa none swap sw 0 0'$'\n''/dev/vda2 none swap sw 0 0' \
+    'UUID=1111-aaaa none swap sw,pri=10 0 0'$'\n''# usfc: duplicate swap entry: /dev/vda2 none swap sw 0 0'
+
+echo ""
+echo "LVM: swapon видит /dev/dm-1, в fstab — /dev/mapper/…"
+mkdir -p "$TMP/dev/mapper"
+: > "$TMP/dev/dm-1"
+ln -s ../dm-1 "$TMP/dev/mapper/vg-swap_1"
+check "строка /dev/mapper узнаётся, дубль не дописывается" "$TMP/dev/dm-1" \
+    "$TMP/dev/mapper/vg-swap_1 none swap sw 0 0" \
+    "$TMP/dev/mapper/vg-swap_1 none swap sw,pri=10 0 0"
+
+echo ""
+echo "fstab пишется через временный файл и mv"
+printf '/swapfile none swap sw 0 0\n' > "$USFC_FSTAB"
+chmod 640 "$USFC_FSTAB"
+ino_before="$(stat -c %i "$USFC_FSTAB")"
+fstab_set_swap_pri /swapfile 10
+[ "$(stat -c %a "$USFC_FSTAB")" = 640 ] && ok "права fstab сохранены" || bad "права: $(stat -c %a "$USFC_FSTAB")"
+[ "$(stat -c %i "$USFC_FSTAB")" != "$ino_before" ] && ok "файл заменён целиком (новый inode)" || bad "fstab обрезан и переписан на месте"
+leftover="$(find "$TMP" -maxdepth 1 -name 'fstab.usfc.*' | wc -l)"
+[ "$leftover" = 0 ] && ok "временных файлов не осталось" || bad "осталось временных: $leftover"
+chmod 644 "$USFC_FSTAB"
+
+echo ""
+echo "чтение приоритета для статуса"
+printf '/swapfile none swap sw,pri=10 0 0\n' > "$USFC_FSTAB"
+fstab_swap_pri /swapfile
+[ "$REPLY_FSTAB_PRI" = 10 ] && ok "pri=10 прочитан" || bad "прочитано «$REPLY_FSTAB_PRI»"
+printf '/swapfile none swap sw 0 0\n' > "$USFC_FSTAB"
+fstab_swap_pri /swapfile
+[ -z "$REPLY_FSTAB_PRI" ] && ok "pri нет — пусто" || bad "прочитано «$REPLY_FSTAB_PRI»"
+printf 'UUID=1111-aaaa none swap sw,pri=-2 0 0\n' > "$USFC_FSTAB"
+fstab_swap_pri /dev/vda2
+[ "$REPLY_FSTAB_PRI" = -2 ] && ok "отрицательный pri раздела по UUID" || bad "прочитано «$REPLY_FSTAB_PRI»"
+
+echo ""
+echo "/etc/default/zramswap правится на месте"
+ZCONF="$TMP/zramswap"
+write_file() { cat > "$ZCONF"; }
+cat() { if [ "${1:-}" = /etc/default/zramswap ]; then command cat "$ZCONF"; else command cat "$@"; fi; }
+printf '# Compression algorithm\n#ALGO=lz4\n# my note\nSIZE=256\nPERCENT=50\nCUSTOM=keep\n' > "$ZCONF"
+zramswap_write_conf 75
+unset -f cat
+got="$(command cat "$ZCONF")"
+case "$got" in *"PERCENT=75"*) ok "PERCENT обновлён" ;; *) bad "PERCENT: $got" ;; esac
+case "$got" in *"ALGO=lz4"*) ok "ALGO раскомментирован" ;; *) bad "ALGO: $got" ;; esac
+case "$got" in *"PRIORITY=100"*) ok "PRIORITY дописан" ;; *) bad "PRIORITY: $got" ;; esac
+case "$got" in *"# usfc: PERCENT is used instead: SIZE=256"*) ok "SIZE закомментирован" ;; *) bad "SIZE: $got" ;; esac
+case "$got" in *"CUSTOM=keep"*"# my note"*|*"# my note"*"CUSTOM=keep"*) ok "чужие строки целы" ;; *) bad "чужое пропало: $got" ;; esac
+[ "$(grep -c '^PERCENT=' <<< "$got")" = 1 ] && ok "PERCENT ровно один" || bad "PERCENT несколько раз"
+
+# Повтор ключа ниже: при source побеждает последний, поэтому лишние
+# активные строки должны закомментироваться, а комментарий-образец — остаться
+cat() { if [ "${1:-}" = /etc/default/zramswap ]; then command cat "$ZCONF"; else command cat "$@"; fi; }
+printf '#PERCENT=50\nALGO=zstd\nPERCENT=30\n# tail\nPERCENT=20\n' > "$ZCONF"
+zramswap_write_conf 75
+unset -f cat
+got="$(command cat "$ZCONF")"
+[ "$(grep -c '^PERCENT=' <<< "$got")" = 1 ] && ok "повторы PERCENT: активный один" || bad "повторы PERCENT: $got"
+[ "$(grep '^PERCENT=' <<< "$got")" = PERCENT=75 ] && ok "повторы PERCENT: значение наше" || bad "повторы PERCENT: $got"
+case "$got" in "#PERCENT=50"*) ok "комментарий-образец не тронут" ;; *) bad "образец: $got" ;; esac
+case "$got" in *"# usfc: PERCENT is set above: PERCENT=20"*) ok "лишний PERCENT закомментирован" ;; *) bad "лишний: $got" ;; esac
+case "$got" in *"ALGO=lz4"*) ok "активный ALGO заменён" ;; *) bad "ALGO: $got" ;; esac
+
+echo ""
+echo "systemd-zram-generator: правка на месте"
+ZRAM_GENERATOR_CONF="$TMP/zram-generator.conf"
+write_file() { command cat > "$1"; }   # выше write_file подменён под ZCONF
+printf '# моя заметка\n[zram0]\nzram-size = min(ram, 2048)\nhost-memory-limit = 4096\nswap-priority = 50\n\n[zram1]\nzram-size = 512\nmount-point = /var/compressed\nfs-type = ext2\n' > "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 60
+got="$(command cat "$ZRAM_GENERATOR_CONF")"
+want=$'# моя заметка\n[zram0]\nzram-size = ram * 60 / 100\nhost-memory-limit = 4096\nswap-priority = 100\ncompression-algorithm = lz4\n\n[zram1]\nzram-size = 512\nmount-point = /var/compressed\nfs-type = ext2'
+[ "$got" = "$want" ] && ok "[zram0] обновлён, [zram1] и чужие опции целы" || { bad "generator: $got"; }
+zram_generator_write_conf 60
+[ "$(command cat "$ZRAM_GENERATOR_CONF")" = "$want" ] && ok "повтор идемпотентен" || bad "повтор изменил файл"
+printf '[zram1]\nzram-size = 512\n' > "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 75
+got="$(command cat "$ZRAM_GENERATOR_CONF")"
+want=$'[zram1]\nzram-size = 512\n\n[zram0]\nzram-size = ram * 75 / 100\ncompression-algorithm = lz4\nswap-priority = 100'
+[ "$got" = "$want" ] && ok "нет [zram0] — секция дописана, [zram1] цела" || bad "без секции: $got"
+rm -f "$ZRAM_GENERATOR_CONF"
+zram_generator_write_conf 75
+[ "$(command cat "$ZRAM_GENERATOR_CONF")" = $'[zram0]\nzram-size = ram * 75 / 100\ncompression-algorithm = lz4\nswap-priority = 100' ] \
+    && ok "нет файла — создан с [zram0]" || bad "новый файл: $(command cat "$ZRAM_GENERATOR_CONF")"
+
+echo ""
+echo "два дисковых свопа: все приводятся к приоритету 10"
+write_file_atomic() { command cat > "$1"; }
+ask_yn_t() { return 0; }
+printf '%s\n' "$ROOT" '/swap.img none swap sw,pri=10 0 0' 'UUID=1111-aaaa none swap sw 0 0' > "$USFC_FSTAB"
+SW_STATE='/swap.img file 1G 0B 10
+/dev/vda2 partition 2G 0B -2'
+swapon() {
+    case "${1:-}" in
+        --show) printf '/dev/zram0 partition 1G 0B 100\n%s\n' "$SW_STATE" ;;
+    esac
+    return 0
+}
+swap_set_pri() { fstab_set_swap_pri "$1" "$2" && SW_STATE="${SW_STATE//\/dev\/vda2 partition 2G 0B -2//dev/vda2 partition 2G 0B 10}"; }
+read_swap_state
+zram_fix_swap_prios "$SWAP_PATH" "$SWAP_PRIO" >/dev/null 2>&1
+fstab_swap_pri /dev/vda2; is_v="$REPLY_FSTAB_PRI"
+fstab_swap_pri /swap.img; is_s="$REPLY_FSTAB_PRI"
+[ "$is_v" = 10 ] && [ "$is_s" = 10 ] && ok "pri=10 в fstab у обоих свопов" || bad "fstab: vda2=$is_v swap.img=$is_s"
+STATUS_OUT="$(status_zram 2>&1)"; STATUS_RC=$?
+[ "$STATUS_RC" -eq 0 ] && ok "status_zram зелёный после apply" || bad "status_zram: rc=$STATUS_RC $STATUS_OUT"
+unset -f swapon swap_set_pri ask_yn_t write_file_atomic
+
+echo ""
+echo "перенастройка zram: проверка памяти перед swapoff"
+swapon() { printf '/dev/zram0 partition 2G %s 100\n' "$FAKE_USED"; }
+FAKE_USED=1.5G
+MEMINFO_AVAIL=800
+awk() { if [ "${2:-}" = /proc/meminfo ]; then echo "$MEMINFO_AVAIL"; else command awk "$@"; fi; }
+zram_swapoff_fits >/dev/null 2>&1 && bad "1,5 ГБ в zram при 800 МБ свободных — разрешено" || ok "мало памяти — swapoff не делается"
+FAKE_USED=100M
+MEMINFO_AVAIL=2000
+zram_swapoff_fits >/dev/null 2>&1 && ok "памяти хватает — можно" || bad "памяти хватает, а отказ"
+unset -f swapon awk
+
+echo ""
+[ "$fail" -eq 0 ] && echo "приоритет свопа в fstab: все проверки пройдены" || echo "приоритет свопа в fstab: ЕСТЬ ОШИБКИ"
+exit "$fail"

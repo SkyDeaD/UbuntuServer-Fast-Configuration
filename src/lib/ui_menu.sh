@@ -2,6 +2,9 @@
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
 
+# Сообщение для следующей отрисовки меню (ошибка ввода); show_menu его гасит
+MENU_NOTICE=''
+
 show_menu() {
     refresh_term_width
     refresh_statuses
@@ -93,93 +96,50 @@ show_menu() {
     # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
     # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
     local legend_w=$((inner_w - 4)) line
-    local lbl_choice lbl_sections lbl_commands lbl_blank legend1 legend2 legend2b legend2c legend3 legend4
-    t "Выбор:" "Choose:";     pad_title "$REPLY_T" 10; lbl_choice="$REPLY_PAD"
-    t "Разделы:" "Sections:"; pad_title "$REPLY_T" 10; lbl_sections="$REPLY_PAD"
-    t "Команды:" "Keys:";     pad_title "$REPLY_T" 10; lbl_commands="$REPLY_PAD"
-    pad_title ""         10; lbl_blank="$REPLY_PAD"
-    t "— один или несколько пунктов сразу" "— one item or several at once"
-    legend1="${BOLD}${lbl_choice}${NC}${CYAN}${BOLD}5${NC} / ${CYAN}${BOLD}1 3 5${NC} / ${CYAN}${BOLD}1,3,5${NC} ${REPLY_T}"
-    # Две короткие строки вместо одной длинной: прежняя не влезала даже в
-    # 120 колонок и обрезалась на «предложит откл...», да ещё и обещала то,
-    # чего нет — отключать умеют не все пункты «защиты» (см. метку ⇄ в таблице)
-    t "буквы разделов можно сочетать: B,S" "section letters can be combined: B,S"
-    legend2="${lbl_blank}${DIM}${REPLY_T}${NC}"
-    # Метка стоит не только у «защиты», и раньше это читалось как «остальное
-    # не откатывается». Откатывается всё, просто у остальных пунктов это
-    # apt purge — команды лежат на экране I, куда строка теперь и отправляет
-    t "— выключается повторным выбором; удалить остальное — экран" \
-      "— toggles off when picked again; how to remove the rest — screen"
-    legend2b="${lbl_blank}${CYAN}⇄${NC}${DIM} ${REPLY_T} ${NC}${CYAN}${BOLD}I${NC}"
-    # Предпросмотр живёт в блоке «Выбор», а не среди команд: он требует номера
-    # пункта, и там ему место по смыслу. Плюс сетка «Команды» рассчитана на пять
-    # ячеек — шестая на узком терминале молча обрезалась бы, а рамка при этом
-    # осталась бы ровной, то есть тест ширин этого не заметил бы
-    t "— предпросмотр: что пункт сделал бы, ничего не меняя" \
-      "— preview: what the item would do, changing nothing"
-    legend2c="${lbl_blank}${CYAN}${BOLD}V 5${NC}${DIM} ${REPLY_T}${NC}"
-
-    # Разделы:/Команды: — сеткой в равные колонки вместо инлайн-списка через
-    # три пробела, чтобы пункты стояли ровно друг под другом, а не вразнобой.
-    # Делим на 5, а не на 4: разделов теперь четыре (C/B/S/P) плюс хвостовое «A всё»
-    # Делим на 6: четыре раздела (C/B/S/P) плюс хвостовое «A всё», а в строке
-    # команд теперь пять пунктов вместо четырёх — добавилась справка I
-    # Ширина ячейки считается ПО СОДЕРЖИМОМУ, а не константой. Раньше здесь
-    # стояло (legend_w-10)/6, и на русском это давало 10 — ровно столько,
-    # сколько занимает самое длинное «S сервисы». По-английски «P security»
-    # занимает те же 10, но без остатка на пробел, и ячейки слипались:
-    # «S servicesP securityA all». Считаем максимум и добавляем разделитель.
-    local item_w=0 _lbl g1 g2 g3 g4 g5
-    for _lbl in "C $(section_label система; printf '%s' "$REPLY_T")" \
-                "B $(section_label база;    printf '%s' "$REPLY_T")" \
-                "S $(section_label сервисы; printf '%s' "$REPLY_T")" \
-                "P $(section_label защита;  printf '%s' "$REPLY_T")" \
-                "I $(t "справка" "help";    printf '%s' "$REPLY_T")" \
-                "H $(t "алиасы" "aliases";  printf '%s' "$REPLY_T")" \
-                "D $(t "аудит" "audit";     printf '%s' "$REPLY_T")" \
-                "U $(t "удалить" "remove";  printf '%s' "$REPLY_T")" \
-                "L $(t "язык" "language";   printf '%s' "$REPLY_T")"; do
-        visible_len "$_lbl"
-        [ "$REPLY_LEN" -gt "$item_w" ] && item_w="$REPLY_LEN"
+    # Три строки одной грамматики «метка  клавиша слово · …» вместо шести.
+    # Ячейки идут по естественной ширине через два пробела, а не сеткой:
+    # сетка требовала заранее мерить все подписи, и это стоило девяти форков
+    # $(…) на каждый кадр. Строки рассчитаны на 74 символа (терминал 78);
+    # на более узком их аккуратно обрежет truncate_colored ниже.
+    local l_choice l_sec l_more lbl_w=0 _l
+    t "Выбор" "Choose";     l_choice="$REPLY_T"
+    t "Разделы" "Sections"; l_sec="$REPLY_T"
+    t "Ещё" "More";         l_more="$REPLY_T"
+    for _l in "$l_choice" "$l_sec" "$l_more"; do
+        visible_len "$_l"; [ "$REPLY_LEN" -gt "$lbl_w" ] && lbl_w="$REPLY_LEN"
     done
-    # +1 — ровно один пробел-разделитель. Не +2: на русском самое длинное
-    # «C система» занимает 9, и +1 даёт прежние 10 символов, то есть вывод
-    # по-русски не меняется ни на знак.
-    #
-    # Зажимать ширину сверху под legend_w НЕЛЬЗЯ: на 58 колонках это ужимало
-    # ячейку ниже содержимого, и вместо аккуратной обрезки строки получалось
-    # «C системаB база» — слипшиеся ячейки. Длинную строку и так обрежет
-    # truncate_colored ниже, как это было всегда.
-    item_w=$((item_w + 1))
-    # На широком терминале ячейки растягиваются, как и раньше: прежняя формула
-    # (legend_w-10)/6 давала 14 при 100 колонках и 17 при 120, и строка
-    # выглядела сеткой, а не кучкой слева. Берём наибольшее из двух — так
-    # русский вывод совпадает с прежним на любой ширине, а английский
-    # не слипается там, где содержимое шире пропорции.
-    local _prop=$(( (legend_w - 10) / 6 ))
-    [ "$_prop" -gt "$item_w" ] && item_w="$_prop"
-    [ "$item_w" -lt 8 ] && item_w=8
-    section_label система; grid_cell "${YELLOW}${BOLD}C${NC} ${YELLOW}${REPLY_T}${NC}" "$item_w"; g1="$REPLY_CELL"
-    section_label база;    grid_cell "${CYAN}${BOLD}B${NC} ${CYAN}${REPLY_T}${NC}" "$item_w"; g2="$REPLY_CELL"
-    section_label сервисы; grid_cell "${BLUE}${BOLD}S${NC} ${BLUE}${REPLY_T}${NC}" "$item_w"; g3="$REPLY_CELL"
-    section_label защита;  grid_cell "${MAGENTA}${BOLD}P${NC} ${MAGENTA}${REPLY_T}${NC}" "$item_w"; g4="$REPLY_CELL"
-    t "всё" "all"
-    legend3="${BOLD}${lbl_sections}${NC}${g1}${g2}${g3}${g4}${BOLD}A${NC} ${REPLY_T}"
-    # Отдельного «R откат» здесь больше нет: R и I открывают один и тот же
-    # экран, и две клавиши в строке выглядели как два разных места.
-    # Саму клавишу R скрипт по-прежнему принимает — она у людей в пальцах
-    # A под аудит не годится: она уже занята под «применить всё». Берём D
-    # (диагностика) — и раскладка становится симметричной строке разделов:
-    # четыре ячейки плюс хвост
-    t "справка" "help";   grid_cell "${CYAN}${BOLD}I${NC} ${REPLY_T}" "$item_w"; g1="$REPLY_CELL"
-    t "алиасы" "aliases"; grid_cell "${CYAN}${BOLD}H${NC} ${REPLY_T}" "$item_w"; g2="$REPLY_CELL"
-    t "аудит" "audit";    grid_cell "${CYAN}${BOLD}D${NC} ${REPLY_T}" "$item_w"; g3="$REPLY_CELL"
-    t "удалить" "remove"; grid_cell "${CYAN}${BOLD}U${NC} ${REPLY_T}" "$item_w"; g4="$REPLY_CELL"
-    t "язык" "language";  grid_cell "${CYAN}${BOLD}L${NC} ${REPLY_T}" "$item_w"; g5="$REPLY_CELL"
-    t "выход" "quit"
-    legend4="${BOLD}${lbl_commands}${NC}${g1}${g2}${g3}${g4}${g5}${CYAN}${BOLD}Q${NC} ${REPLY_T}"
+    lbl_w=$((lbl_w + 2))
+    pad_title "$l_choice" "$lbl_w"; l_choice="$REPLY_PAD"
+    pad_title "$l_sec" "$lbl_w";    l_sec="$REPLY_PAD"
+    pad_title "$l_more" "$lbl_w";   l_more="$REPLY_PAD"
+
+    local k="${CYAN}${BOLD}" dot=" ${DIM}·${NC} " legend1 legend2 legend3 w_all w_prev
+    t "всё" "all";                w_all="$REPLY_T"
+    t "предпросмотр" "preview";   w_prev="$REPLY_T"
+    legend1="${BOLD}${l_choice}${NC}${k}5${NC}${dot}${k}1 3 5${NC}${dot}${k}1-5${NC}${dot}${k}B,S${NC}${dot}${k}A${NC} ${w_all}${dot}${k}V 5${NC} ${w_prev}"
+
+    # Буквы разделов — в цвете раздела, как подзаголовки в таблице. Метка ⇄
+    # в конце строки объясняет столбик в таблице: что повторный выбор такого
+    # пункта его выключает. Как убрать остальное — на экране I.
+    legend2="${BOLD}${l_sec}${NC}"
+    section_label система; legend2+="${YELLOW}${BOLD}C${NC} ${YELLOW}${REPLY_T}${NC}  "
+    section_label база;    legend2+="${CYAN}${BOLD}B${NC} ${CYAN}${REPLY_T}${NC}  "
+    section_label сервисы; legend2+="${BLUE}${BOLD}S${NC} ${BLUE}${REPLY_T}${NC}  "
+    section_label защита;  legend2+="${MAGENTA}${BOLD}P${NC} ${MAGENTA}${REPLY_T}${NC}  "
+    t "повтор выключает" "pick again to undo"; legend2+="${CYAN}⇄${NC} ${DIM}${REPLY_T}${NC}"
+
+    # R принимается как синоним I (была отдельным экраном отката), но в строку
+    # не выводится: две клавиши на один экран читались как два разных места
+    legend3="${BOLD}${l_more}${NC}"
+    t "справка" "help";    legend3+="${k}I${NC} ${REPLY_T}  "
+    t "алиасы" "aliases";  legend3+="${k}H${NC} ${REPLY_T}  "
+    t "аудит" "audit";     legend3+="${k}D${NC} ${REPLY_T}  "
+    t "удалить" "remove";  legend3+="${k}U${NC} ${REPLY_T}  "
+    t "язык" "language";   legend3+="${k}L${NC} ${REPLY_T}  "
+    t "выход" "quit";      legend3+="${k}Q${NC} ${REPLY_T}"
+
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
-    for line in "$legend1" "$legend2" "$legend2b" "$legend2c" "$legend3" "$legend4"; do
+    for line in "$legend1" "$legend2" "$legend3"; do
         local ltrunc lpad
         truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
         visible_len "$ltrunc"
@@ -188,6 +148,12 @@ show_menu() {
         printf "  ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" "$ltrunc" "$lpad" ""
     done
     box_line "$DIM" '╰' '┴' '╯' "$legend_w"
+    # Ошибка ввода из прошлого круга — над приглашением, пока её видно.
+    # Раньше она печаталась перед перерисовкой и через sleep 1 исчезала
+    if [ -n "$MENU_NOTICE" ]; then
+        echo -e "  ${RED}✗${NC} ${MENU_NOTICE}"
+        MENU_NOTICE=''
+    fi
     echo ""
 }
 
@@ -230,7 +196,23 @@ process_item() {
     [ -n "$pos" ] && [ -n "$total" ] && prefix="${DIM}[${pos}/${total}]${NC} "
     echo ""
     local rc=0
-    if item_supports_disable "$id" && item_applied "$id"; then
+    ITEM_SKIP_REASON=''; ITEM_DONE=false
+    # Пункт с явными новыми настройками (ufw с портами, unattended со
+    # временем перезагрузки) — не переключатель, а «применить ещё раз»:
+    # тот же отсев, что в filter_pending, иначе прогон ВЫКЛЮЧИЛ бы пункт
+    local mode=apply
+    if item_supports_disable "$id" && item_applied "$id" \
+       && ! _item_has_new_answers "$id"; then
+        mode=disable
+        # Пункт с настройками (окно перезагрузки, получатель уведомлений):
+        # повторный выбор — прежде всего «поменять», а не сразу «выключить»
+        if item_supports_reconf "$id" && [ "$BULK_MODE" != true ]; then
+            echo ""
+            ask_yn_t "«${title}» уже настроен. Настроить заново? (нет — выключить)" \
+"\"${title}\" is already set up. Set it up again? (no — turn it off)" Y && mode=apply
+        fi
+    fi
+    if [ "$mode" = disable ]; then
         # У nginx и Docker disable_* — переключатель (см. комментарий там же),
         # и «Отключить» в шапке врало бы, когда сервис уже стоит и его поднимут
         local verb
@@ -251,30 +233,57 @@ process_item() {
     return "$rc"
 }
 
-# ── Итоговая сводка пакетного прогона ─────────────────────────────────────────
+# ── Итог пункта и сводка пакетного прогона ────────────────────────────────────
 # Результат берём из РЕАЛЬНОГО состояния системы, а не из самоотчёта функций:
 # многие apply_* возвращают 0 и когда пользователь просто отказался.
+#
+# item_result <номер> <код> → REPLY_RESULT (цветная метка), REPLY_RESULT_KIND
+# (ok|fail|skip). Одна классификация на сводку и на итог одиночного пункта —
+# две копии разошлись бы на первой же правке.
+REPLY_RESULT=''
+REPLY_RESULT_KIND=''
+item_result() {
+    local id="${ITEM_IDS[$(($1 - 1))]}" rc="$2"
+    if [ "$rc" -ne 0 ]; then
+        t "✗ ошибка" "✗ failed"; REPLY_RESULT="${RED}${REPLY_T}${NC}"; REPLY_RESULT_KIND=fail
+    elif [ "$ITEM_DONE" = true ] || "status_${id}" >/dev/null 2>&1; then
+        t "✓ готово" "✓ done"; REPLY_RESULT="${GREEN}${REPLY_T}${NC}"; REPLY_RESULT_KIND=ok
+    else
+        t "— пропущено" "— skipped"; REPLY_RESULT="${DIM}${REPLY_T}${NC}"; REPLY_RESULT_KIND=skip
+    fi
+}
+
+# item_result_line <номер> <код> <секунды> — одна строка после одиночного
+# пункта: чем кончилось и, если не применилось, почему или где лог
+item_result_line() {
+    local title="${ITEM_TITLES[$(($1 - 1))]}"
+    item_result "$1" "$2"
+    echo ""
+    case "$REPLY_RESULT_KIND" in
+        ok)   echo -e "  ${REPLY_RESULT}${GREEN}: ${title}${NC} ${DIM}— ${3}s${NC}" ;;
+        fail) t "лог" "log"
+              echo -e "  ${REPLY_RESULT}${RED}: ${title}${NC} ${DIM}— ${REPLY_T}: ${USFC_LOG}${NC}" ;;
+        skip) echo -e "  ${REPLY_RESULT}${DIM}: ${title}${ITEM_SKIP_REASON:+ — ${ITEM_SKIP_REASON}}${NC}" ;;
+    esac
+}
+
 SUMMARY_TITLES=()
 SUMMARY_RESULTS=()
 SUMMARY_TIMES=()
+SUMMARY_WHY=()
 SUMMARY_FAILED=()
 
-summary_reset() { SUMMARY_TITLES=(); SUMMARY_RESULTS=(); SUMMARY_TIMES=(); SUMMARY_FAILED=(); }
+summary_reset() { SUMMARY_TITLES=(); SUMMARY_RESULTS=(); SUMMARY_TIMES=(); SUMMARY_WHY=(); SUMMARY_FAILED=(); }
 
 summary_record() {
-    local idx="$1" rc="$2" secs="$3"
-    local id="${ITEM_IDS[$((idx-1))]}" title="${ITEM_TITLES[$((idx-1))]}" result
-    if [ "$rc" -ne 0 ]; then
-        t "✗ ошибка" "✗ failed"; result="${RED}${REPLY_T}${NC}"
-        SUMMARY_FAILED+=("$title")
-    elif "status_${id}" >/dev/null 2>&1; then
-        t "✓ готово" "✓ done"; result="${GREEN}${REPLY_T}${NC}"
-    else
-        t "— пропущено" "— skipped"; result="${DIM}${REPLY_T}${NC}"
-    fi
+    local idx="$1" rc="$2" secs="$3" title="${ITEM_TITLES[$(($1 - 1))]}" why=''
+    item_result "$idx" "$rc"
+    [ "$REPLY_RESULT_KIND" = fail ] && SUMMARY_FAILED+=("$title")
+    [ "$REPLY_RESULT_KIND" = skip ] && why="$ITEM_SKIP_REASON"
     SUMMARY_TITLES+=("$title")
-    SUMMARY_RESULTS+=("$result")
+    SUMMARY_RESULTS+=("$REPLY_RESULT")
     SUMMARY_TIMES+=("${secs}s")
+    SUMMARY_WHY+=("$why")
 }
 
 show_summary() {
@@ -283,17 +292,38 @@ show_summary() {
     echo ""
     t "Итоги прогона" "Run summary"
     echo -e "  ${BOLD}${REPLY_T}${NC}"
-    local name_w=26 res_w=14 time_w=6 i t r pad
-    box_line "$DIM" '╭' '┬' '╮' "$name_w" "$res_w" "$time_w"
+    local name_w=26 res_w=14 time_w=6 why_w=0 i t r w pad any_why=false
+    for w in "${SUMMARY_WHY[@]}"; do [ -n "$w" ] && any_why=true && break; done
+    # Колонка «почему» — только если есть что в неё писать и она влезает:
+    # три колонки занимают 26+14+6 и 10 символов рамки, четвёртая — ещё 3.
+    # Не влезла — причины идут строками под таблицей
+    if [ "$any_why" = true ]; then
+        why_w=$(( TERM_W - name_w - res_w - time_w - 13 ))
+        [ "$why_w" -lt 12 ] && why_w=0
+    fi
+    local -a cols=("$name_w" "$res_w" "$time_w")
+    [ "$why_w" -gt 0 ] && cols+=("$why_w")
+    box_line "$DIM" '╭' '┬' '╮' "${cols[@]}"
     for i in "${!SUMMARY_TITLES[@]}"; do
         truncate_colored "${SUMMARY_TITLES[$i]}" "$name_w"; t="$REPLY_TRUNC"
         pad_title "$t" "$name_w"; t="$REPLY_PAD"
         truncate_colored "${SUMMARY_RESULTS[$i]}" "$res_w"; r="$REPLY_TRUNC"
         visible_len "$r"; pad=$((res_w - REPLY_LEN)); [ "$pad" -lt 0 ] && pad=0
-        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}\n" \
+        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}" \
             "$t" "$r" "$pad" "" "${SUMMARY_TIMES[$i]}"
+        if [ "$why_w" -gt 0 ]; then
+            truncate_colored "${SUMMARY_WHY[$i]}" "$why_w"; w="$REPLY_TRUNC"
+            visible_len "$w"; pad=$((why_w - REPLY_LEN)); [ "$pad" -lt 0 ] && pad=0
+            printf " ${DIM}%s%*s${NC} ${DIM}│${NC}" "$w" "$pad" ""
+        fi
+        printf '\n'
     done
-    box_line "$DIM" '╰' '┴' '╯' "$name_w" "$res_w" "$time_w"
+    box_line "$DIM" '╰' '┴' '╯' "${cols[@]}"
+    if [ "$any_why" = true ] && [ "$why_w" -eq 0 ]; then
+        for i in "${!SUMMARY_WHY[@]}"; do
+            [ -n "${SUMMARY_WHY[$i]}" ] && echo -e "  ${DIM}— ${SUMMARY_TITLES[$i]}: ${SUMMARY_WHY[$i]}${NC}"
+        done
+    fi
     if [ "${#SUMMARY_FAILED[@]}" -gt 0 ]; then
         echo ""
         for t in "${SUMMARY_FAILED[@]}"; do

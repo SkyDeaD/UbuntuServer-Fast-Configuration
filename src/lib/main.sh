@@ -2,7 +2,7 @@
 # Модуль usfc: подключается из setup.sh, отдельно не запускается.
 # Порядок загрузки — в src/MODULES.
 # run_items <номера...> — прогнать пачку пунктов без вопросов по ходу.
-# Вынесено из меню, потому что ровно то же нужно неинтерактивному --apply:
+# Вынесено из меню, потому что ровно то же нужно неинтерактивному `usfc apply`:
 # два экземпляра этого цикла разъехались бы при первой же правке сводки.
 run_items() {
     [ "$#" -eq 0 ] && return 0
@@ -20,20 +20,6 @@ run_items() {
     show_summary
 }
 
-# Заготовленные ответы живут ровно один прогон: иначе следующий пакетный
-# запуск молча унаследовал бы токен и проценты от предыдущего
-reset_bulk_answers() {
-    ZRAM_BULK_PERCENT=""
-    SWAP_BULK_MB=""
-    SYSCTL_BULK=""
-    # shellcheck disable=SC2034  # читаются в apply_nginx/apply_docker
-    NGINX_AUTOSTART=""
-    # shellcheck disable=SC2034
-    DOCKER_AUTOSTART=""
-    CERTBOT_CF_BULK=""
-    CF_TOKEN_BULK=""
-}
-
 # Неинтерактивный прогон: cloud-init, Ansible, скрипт развёртывания.
 #
 # Коды возврата сделаны пригодными для CI, а не «0 или что-то»:
@@ -41,7 +27,29 @@ reset_bulk_answers() {
 #   1 — часть пунктов не удалась
 #   2 — не разобрали, что применять (опечатка в профиле или id)
 run_noninteractive() {
+    # Файл ответов, потом флаги поверх: флаг сильнее файла, файл — дефолта
+    apply_cli_answers || return 2
+    [ -n "$USFC_APPLY_SPEC" ] || { log_error_t "Не задано, что применять: ни в командной строке, ни ITEMS= в файле ответов" \
+"Nothing to apply: neither on the command line nor as ITEMS= in the answers file"; return 2; }
     resolve_items "$USFC_APPLY_SPEC" || return 2
+    local -a resolved_ids=()
+    local k
+    for k in "${REPLY_ITEM_NUMS[@]}"; do resolved_ids+=("${ITEM_IDS[$((k - 1))]}"); done
+    check_cli_answer_items "${resolved_ids[@]}" || return 2
+
+    # UFW в списке без явного согласия не включается: вслепую включённый
+    # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y, --yes или явный
+    # список портов (--allow / UFW_ALLOW): кто перечислил порты, тот знает,
+    # что остальное закроется. Явное UFW=N сильнее всего
+    # Уже включённому UFW согласие не нужно: apply_ufw только добавит правила
+    if [[ " ${resolved_ids[*]} " == *" ufw "* ]] && [ -z "$UFW_BULK" ] && ! ufw_active; then
+        if [ "$USFC_ASSUME_YES" = true ] || [ -n "$UFW_ALLOW_BULK" ]; then
+            UFW_BULK=Y
+        else
+            log_warn_t "UFW в списке, но согласия на его включение нет — добавьте --ufw (или --yes)" \
+"UFW is in the list, but there is no consent to enable it — add --ufw (or --yes)"
+        fi
+    fi
 
     # Отсев общий с мастером первого запуска — см. filter_pending в profiles.sh
     filter_pending "${REPLY_ITEM_NUMS[@]}"
@@ -105,7 +113,7 @@ main() {
 
     # Язык спрашиваем только при первом интерактивном запуске: если выбор уже
     # сохранён, задан флагом или нас позвали неинтерактивно (cloud-init,
-    # Ansible, --apply), вопрос был бы либо навязчивым, либо вовсе некому
+    # Ansible, usfc apply), вопрос был бы либо навязчивым, либо вовсе некому
     # отвечать — и скрипт завис бы на чтении с /dev/tty
     # Признак первого запуска снимаем ДО вопроса о языке: usfc_ask_language
     # сохраняет выбор, и после него «первого запуска» уже не существует
@@ -113,35 +121,28 @@ main() {
     usfc_lang_saved || first_run=true
 
     if ! usfc_lang_saved && [ "$USFC_LANG_EXPLICIT" = false ] \
-       && [ -z "$USFC_APPLY_SPEC" ] && [ -z "$USFC_ACTION" ] \
-       && [ "$USFC_LIST_ONLY" = false ] && usfc_interactive; then
+       && [ -z "$USFC_CMD" ] && usfc_interactive; then
         usfc_ask_language
     fi
 
     dry_run_enable
 
-    if [ "$USFC_LIST_ONLY" = true ]; then
-        profile_list
-        exit 0
-    fi
-    case "$USFC_ACTION" in
-        audit)   if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi; exit 0 ;;
+    case "$USFC_CMD" in
+        list)    profile_list; exit 0 ;;
+        audit)
+            if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi
+            # код возврата пригоден для мониторинга: 1 — есть важные проблемы
+            [ "$AUDIT_CRIT" -eq 0 ]; exit $? ;;
         backups) backup_list; exit $? ;;
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
+        apply)   run_noninteractive; exit $? ;;
+        firewall) firewall_cmd; exit $? ;;
+        export)  export_cmd; exit $? ;;
     esac
-    if [ -n "$USFC_CONFIG_FILE" ]; then
-        load_config "$USFC_CONFIG_FILE" || exit 2
-    fi
-    if [ -n "$USFC_APPLY_SPEC" ]; then
-        run_noninteractive
-        exit $?
-    fi
 
+    # Пользователь и SSH-порт здесь больше не печатаются: они стоят строкой
+    # над таблицей меню, а две [i]-строки до неё только сдвигали экран
     show_header
-    log_info_t "Пользователь: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}" \
-"User: ${BOLD}${TARGET_USER}${NC} ${DIM}(${TARGET_HOME})${NC}"
-    log_info_t "SSH-порт: ${SSH_PORT}" \
-"SSH port: ${SSH_PORT}"
 
     # usfc-обёртка — не отдельный пункт меню, ставится сама при первом запуске,
     # свой маркер, идемпотентно. Пропускаем для прямого root — sudo тут бесполезен
@@ -171,14 +172,10 @@ main() {
     if [ "$TARGET_USER" = "root" ] && [ "$ROOT_PROMPT_SHOWN" = false ]; then
         ROOT_PROMPT_SHOWN=true
         echo ""
-        log_warn_t "Скрипт запущен от имени root." \
-"Running as root."
-        log_info_t "РЕКОМЕНДУЮ создать обычного пользователя с sudo: работать из-под root" \
-"RECOMMENDED: create a normal sudo user. Working as root is unsafe,"
-        log_info_t "небезопасно, SSH hardening без отдельного пользователя не работает вообще," \
-"SSH hardening does not work at all without a separate user, and aliases,"
-        log_info_t "а алиасы/fastfetch/tmux сейчас лягут в /root и пропадут после перелогина." \
-"fastfetch and tmux would land in /root and vanish once you re-login."
+        log_warn_t "Запуск от root. Лучше завести пользователя с sudo: без него не работает" \
+"Running as root. Better create a sudo user: SSH hardening does not work"
+        log_info_t "SSH hardening, а алиасы, fastfetch и tmux лягут в /root." \
+"without one, and aliases, fastfetch and tmux would land in /root."
         echo ""
         if ask_yn_t "Создать пользователя сейчас?" "Create the user now?" Y; then
             apply_newuser
@@ -192,7 +189,7 @@ main() {
 
     # Мастер — ПОСЛЕ проверки обновлений и блока про голого root: статусы уже
     # посчитаны, а TARGET_USER уже переключён, если пользователя создавали.
-    # Все неинтерактивные ветки (--list, --audit, --apply, --config) вышли
+    # Все неинтерактивные ветки (команды list, audit, apply…) вышли
     # раньше по exit, поэтому отдельных гейтов здесь не нужно.
     if [ "$first_run" = true ] && usfc_interactive; then
         usfc_wizard
@@ -204,8 +201,7 @@ main() {
 
     while true; do
         show_menu
-        t "Выбор:" "Choose:"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Выбор" "Choose"; ui_prompt "$REPLY_T"
         local choice
         read -r choice </dev/tty
         case "$choice" in
@@ -228,19 +224,21 @@ main() {
             [Vv]|[Vv][[:space:],]*[0-9]*)
                 local vnum="${choice#[Vv]}"; vnum="${vnum//[ ,]/}"
                 if [ -z "$vnum" ]; then
-                    t "Номер пункта для предпросмотра (Enter — отмена):" \
-                      "Item number to preview (Enter to cancel):"
-                    echo -en "  ${BOLD}${REPLY_T}${NC} "
+                    t "Номер пункта для предпросмотра" "Item number to preview"
+                    local _h="$REPLY_T"; t "Enter — отмена" "Enter cancels"
+                    ui_prompt "$_h" "$REPLY_T"
                     read -r vnum </dev/tty
                 fi
                 [ -n "$vnum" ] && { preview_item "$vnum"; pause; }
                 ;;
             *)
-                # номера и буквы разделов вперемешку через пробел/запятую:
-                # "5", "1 3 5", "1,3,5", "B", "B,S", "B,14" — всё разбирается одинаково
+                # номера, диапазоны и буквы разделов вперемешку через пробел/запятую:
+                # "5", "1 3 5", "1,3,5", "2-6", "B", "B,S", "B,14" — всё разбирается одинаково.
+                # Хоть один непонятный кусок — не делаем ничего: «1 3 7x» не должно
+                # молча применить 1 и 3
                 local -a nums valid=()
                 IFS=', ' read -ra nums <<< "$choice"
-                local tok upper i
+                local tok upper i lo hi bad_tok=''
                 for tok in "${nums[@]}"; do
                     [ -z "$tok" ] && continue
                     upper="${tok^^}"
@@ -253,9 +251,16 @@ main() {
                         valid+=($REPLY_SECTION_ITEMS)
                     elif [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
                         valid+=("$tok")
+                    elif [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+                        # 10# — иначе «08» читается как восьмеричное и падает
+                        lo=$((10#${BASH_REMATCH[1]})); hi=$((10#${BASH_REMATCH[2]}))
+                        if [ "$lo" -ge 1 ] && [ "$lo" -le "$hi" ] && [ "$hi" -le "${#ITEM_IDS[@]}" ]; then
+                            for ((i = lo; i <= hi; i++)); do valid+=("$i"); done
+                        else
+                            bad_tok="$tok"; break
+                        fi
                     else
-                        log_error_t "Нет пункта «${tok}»" \
-"No such item: ${tok}"
+                        bad_tok="$tok"; break
                     fi
                 done
 
@@ -269,42 +274,70 @@ main() {
                 done
                 valid=("${dedup[@]}")
 
-                if [ "${#valid[@]}" -eq 0 ]; then
-                    log_error_t "Не понял ввод — номер пункта, буква раздела (C/B/S/P/A), можно сочетать через пробел/запятую, либо I, H, D, L, U, Q" \
-"Did not understand — an item number, a section letter (C/B/S/P/A), combinable with spaces or commas, or I, H, D, L, U, Q"
-                    sleep 1
+                # Ошибку не печатаем сразу: следующий show_menu очистит экран.
+                # Она встанет строкой над приглашением и продержится до ввода
+                if [ -n "$bad_tok" ]; then
+                    t "Нет пункта «${bad_tok}»: номера 1–${#ITEM_IDS[@]}, диапазон 2-5, буквы C B S P A" \
+"No item \"${bad_tok}\": numbers 1–${#ITEM_IDS[@]}, a range 2-5, letters C B S P A"
+                    MENU_NOTICE="$REPLY_T"
+                elif [ "${#valid[@]}" -eq 0 ]; then
+                    :   # пустой Enter — просто перерисовать меню
                 elif [ "${#valid[@]}" -eq 1 ]; then
                     # один пункт — как обычно, интерактивно, со всеми вопросами внутри
-                    process_item "${valid[0]}"
+                    local t0 rc1
+                    now_s; t0="$REPLY_NOW"
+                    process_item "${valid[0]}"; rc1=$?
+                    now_s
+                    item_result_line "${valid[0]}" "$rc1" "$((REPLY_NOW - t0))"
                     pause
                 else
                     # несколько пунктов разом — сначала убираем то, что уже применено
                     # (иначе "B,S" при частично готовой системе будет зря переспрашивать про то, что и так стоит)
-                    local -a pending=() pending_ids=()
+                    local -a pending=() pending_ids=() done_titles=()
                     local id
                     for n in "${valid[@]}"; do
                         id="${ITEM_IDS[$((n-1))]}"
-                        if ! item_applied "$id"; then
+                        if item_applied "$id"; then
+                            done_titles+=("${ITEM_TITLES[$((n-1))]}")
+                        else
                             pending+=("$n")
                             pending_ids+=("$id")
                         fi
                     done
 
                     echo ""
+                    if [ "${#done_titles[@]}" -gt 0 ]; then
+                        local IFS_SAVE="$IFS"; IFS=','
+                        log_info_t "Уже применено, пропускаю: ${DIM}${done_titles[*]}${NC}" \
+"Already applied, skipping: ${DIM}${done_titles[*]}${NC}"
+                        IFS="$IFS_SAVE"
+                    fi
                     if [ "${#pending[@]}" -eq 0 ]; then
-                        log_info_t "Из выбранного (${valid[*]}) уже всё применено" \
-"Everything selected (${valid[*]}) is already applied"
-                        sleep 1
+                        log_info_t "Из выбранного уже всё применено" \
+"Everything selected is already applied"
+                        pause
                     else
-                        log_info_t "Не применено из выбранного: ${pending[*]} (${#pending[@]} шт.)" \
-"Not yet applied from your selection: ${pending[*]} (${#pending[@]})"
-                        log_info_t "Каждый пункт применится со своими настройками по умолчанию, без вопросов по ходу" \
-"Each item runs with its own defaults, with no questions along the way"
-                        preask_bulk_answers "${pending_ids[@]}"
-
+                        local titles=() k
+                        for k in "${pending[@]}"; do titles+=("${ITEM_TITLES[$((k-1))]}"); done
+                        log_info_t "Будет применено (${#pending[@]}):" "To be applied (${#pending[@]}):"
+                        for k in "${titles[@]}"; do printf '      %s\n' "$k"; done
                         echo ""
-                        if ask_yn_t "Применить эти ${#pending[@]} пунктов сейчас?" "Apply these ${#pending[@]} items now?"; then
-                            run_items "${pending[@]}"
+                        if ask_yn_t "Применить эти ${#pending[@]} пунктов? Вопросы задам сразу, дальше всё пойдёт само" "Apply these ${#pending[@]} items? I will ask everything up front, then it runs on its own"; then
+                            # Пользователь — первым и интерактивно: ему нужны имя и
+                            # пароль с терминала, а дотфайлы остальных пунктов этого
+                            # же прогона иначе легли бы в /root
+                            if [[ " ${pending_ids[*]} " == *" newuser "* ]]; then
+                                process_item "$(item_number newuser)"
+                                invalidate_statuses
+                                local -a rest=() rest_ids=()
+                                for k in "${!pending_ids[@]}"; do
+                                    [ "${pending_ids[$k]}" = newuser ] && continue
+                                    rest+=("${pending[$k]}"); rest_ids+=("${pending_ids[$k]}")
+                                done
+                                pending=("${rest[@]+"${rest[@]}"}"); pending_ids=("${rest_ids[@]+"${rest_ids[@]}"}")
+                            fi
+                            preask_bulk_answers "${pending_ids[@]+"${pending_ids[@]}"}"
+                            run_items "${pending[@]+"${pending[@]}"}"
                         fi
                         reset_bulk_answers
                         pause

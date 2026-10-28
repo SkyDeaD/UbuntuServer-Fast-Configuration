@@ -55,6 +55,19 @@ status_nginx() {
     st "$YELLOW" "! установлен, не запущен" "! installed, not running"; return 1
 }
 
+# Вопросы пакетного режима (см. lib/bulk.sh). Тот же ответ нужен и когда
+# nginx стоит, но не запущен: раньше эта ветка в пакете молча оставляла его
+# выключенным, хотя автозапуск спросили заранее
+preask_nginx() {
+    pkg_installed nginx-full && service_is_up nginx && return 0
+    echo ""
+    log_info_t "nginx — веб-сервер и реверс-прокси. Если сайты пока не настроены, поднимать его не обязательно — включишь потом пунктом $(item_number nginx)" \
+"nginx is a web server and reverse proxy. If no sites are configured yet, there is no need to start it — enable it later via item $(item_number nginx)"
+    # shellcheck disable=SC2034  # читается через ask_bulk_yn / resolve_autostart
+    ask_yn_t "Запускать nginx (и включать автозапуск)?" "Start nginx (and enable autostart)?" N \
+        && NGINX_AUTOSTART=Y || NGINX_AUTOSTART=N
+}
+
 apply_nginx() {
     if ! pkg_installed nginx-full; then
         if ! ask_yn_t "Установить nginx-full?" "Install nginx-full?"; then return; fi
@@ -77,11 +90,12 @@ apply_nginx() {
     if [ "$active" = "active" ]; then
         log_success_t "nginx запущен ${DIM}(автозапуск: ${enabled:-?})${NC}" \
 "nginx is running ${DIM}(autostart: ${enabled:-?})${NC}"
+        # bulk-ok: работающий nginx уже применён и в пакет не попадает
         if [ "$enabled" != "enabled" ] && ask_yn_t "Включить автозапуск nginx при загрузке?" "Enable nginx autostart at boot?" N; then
             systemctl enable nginx >/dev/null 2>&1 && log_success_t "Автозапуск включён" \
 "Autostart enabled"
         fi
-    elif ask_yn_t "nginx не запущен. Запустить и включить автозапуск?" "nginx is not running. Start it and enable autostart?" N; then
+    elif ask_bulk_yn NGINX_AUTOSTART "nginx не запущен. Запустить и включить автозапуск?" "nginx is not running. Start it and enable autostart?" N; then
         apply_service_autostart nginx true
     else
         log_info_t "Оставляю nginx выключенным" \

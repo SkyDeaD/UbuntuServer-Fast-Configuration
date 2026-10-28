@@ -86,15 +86,15 @@ jobs:
             USFC_SOURCE_ONLY=1 bash -c "source /opt/vps-setup/setup.sh; usfc_check_profile_names" \
               || { echo "коллизия имён профилей" >&2; exit 1; }
 
-            usfc --list >/dev/null || { echo "--list упал" >&2; exit 1; }
+            usfc list >/dev/null || { echo "list упал" >&2; exit 1; }
 
             # опечатка — код 2, а не тихий успех
-            if usfc --apply nosuchprofile --dry-run >/dev/null 2>&1; then
-              echo "опечатка в --apply не дала ошибки" >&2; exit 1
+            if usfc apply nosuchprofile --dry-run >/dev/null 2>&1; then
+              echo "опечатка в apply не дала ошибки" >&2; exit 1
             fi
 
             # сухой прогон ничего не ставит и завершается нулём
-            usfc --apply all --dry-run >/dev/null 2>&1 || { echo "--dry-run вернул ошибку" >&2; exit 1; }
+            usfc apply all --dry-run >/dev/null 2>&1 || { echo "--dry-run вернул ошибку" >&2; exit 1; }
             command -v docker >/dev/null && { echo "сухой прогон установил docker" >&2; exit 1; }
             [ "$(ls /var/lib/apt/lists/ 2>/dev/null | wc -l)" -eq 0 ] \
               || { echo "сухой прогон трогал списки apt" >&2; exit 1; }
@@ -147,7 +147,7 @@ jobs:
             chmod +x /opt/vps-setup/setup.sh
             ln -sf /opt/vps-setup/setup.sh /usr/local/bin/usfc
             rm -f /opt/vps-setup/lang
-            for c in "--list" "--audit" "--apply web --dry-run"; do
+            for c in "list" "audit" "apply web --dry-run"; do
               case "$(usfc $c 2>&1)" in
                 *"Для чего этот сервер"*)
                   echo "мастер всплыл при usfc $c" >&2; exit 1 ;;
@@ -193,11 +193,84 @@ jobs:
           # заглушками этого не увидеть
           bash tests/test_uninstall.sh src/setup.sh
 
+      - name: Пакетный режим задаёт те же вопросы, что ручной
+        run: |
+          # Раздел целиком применялся не так, как пункты по одному: вопросы с
+          # дефолтом «нет» в пакете молча становились «нет» (TLS certbot, UFW)
+          bash tests/test_bulk_parity.sh src/setup.sh
+
+      - name: Командная строка
+        run: |
+          # Команды вместо флагов-режимов: таблица «аргументы → код возврата»,
+          # старые формы 4.x, флаги со значением не глотают соседей, флаги и
+          # --config дают одинаковые ответы
+          bash tests/test_cli.sh src/setup.sh
+
+      - name: Запись файлов, снимки, блоки .bashrc
+        run: |
+          # Снимок — первая копия за прогон; блоки вырезаются через write_file
+          # и не до конца файла; ключ не приклеивается к последней строке
+          bash tests/test_files.sh src/setup.sh
+
+      - name: Каталоги пользователя (btop и ~/.config)
+        run: |
+          # install -d -o user давал владельца только последнему компоненту:
+          # ~/.config появлялся от root, и btop не мог создать свой каталог.
+          # Нужны root и настоящий chown — поэтому в контейнере
+          docker run --rm -v "$PWD:/w" -w /w ubuntu:24.04 \
+            bash tests/test_user_dirs.sh src/setup.sh
+
+      - name: Приоритет свопа в fstab
+        run: |
+          # sed понимал одну форму строки и молча пропускал defaults, nofail,
+          # pri=5, UUID=/LABEL= — после перезагрузки своп поднимался с -2
+          bash tests/test_fstab_swap.sh src/setup.sh
+
+      - name: Файрвол — порты, ping, Docker
+        run: |
+          # Правка before.rules (ping) и after.rules (Docker) на эталонных
+          # файлах ufw: совпадает со схемой, повтор идемпотентен, обратная
+          # правка — байт-в-байт. Тест поймал обрезание after.rules при
+          # чтении и записи в одном конвейере
+          bash tests/test_firewall.sh src/setup.sh
+
+      - name: Карточка сервера (motd)
+        run: |
+          # Скрипт карточки под set -u, в C и C.UTF-8, ru и en: без ошибок,
+          # рамка ровной ширины, английская — без кириллицы
+          bash tests/test_motd.sh src/setup.sh
+
+      - name: Чужие drop-in'ы sshd
+        run: |
+          # sshd берёт ПЕРВОЕ значение ключа. Файл провайдера 00-*.conf с
+          # PasswordAuthentication yes молча перебивал hardening — тест
+          # проверяет порядок чтения и поиск таких строк на настоящих файлах
+          bash tests/test_ssh_dropins.sh src/setup.sh
+
+      - name: Смена SSH-порта
+        run: |
+          # Два шага: сначала слушаются оба порта, старый закрывается только
+          # после проверки входа на новом. Провал самопроверки — полный откат
+          bash tests/test_ssh_port.sh src/setup.sh
+
+      - name: Окно автоперезагрузки
+        run: |
+          # 52usfc-reboot: время, off, with-users; уже включённый
+          # unattended меняет только окно, не переспрашивая «включить?»
+          bash tests/test_unattended.sh src/setup.sh
+
+      - name: Уведомления в Telegram
+        run: |
+          # Токен не попадает в argv (ps), PAM-обёртка выходит сразу и с 0
+          # даже при зависшей сети, правка pam.d обратима байт-в-байт
+          bash tests/test_notify.sh src/setup.sh
+          bash tests/test_items_misc.sh src/setup.sh
+
       - name: Справочник флагов сходится с кодом
         run: |
-          # Документация врёт молча: добавил флаг — забыл описать, убрал —
+          # docs/CLI*.md — справочник команд. Документация врёт молча: добавил флаг — забыл описать, убрал —
           # забыл вычеркнуть. Сверяем в обе стороны и на обоих языках
-          bash tests/test_flags_doc.sh src/lib/cli.sh install.sh
+          bash tests/test_flags_doc.sh src/setup.sh install.sh
 
       - name: Реестр пунктов согласован
         run: |

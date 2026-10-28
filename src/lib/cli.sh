@@ -121,7 +121,7 @@ uninstall_self() {
     fi
 
     for p in "${USFC_RM_BASHRC[@]}"; do
-        sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$p"
+        remove_block "$p" vps-setup:self
     done
     [ "$drop_backups" = true ] && rm -rf "$USFC_BACKUP_ROOT"
     for p in "${USFC_RM_PATHS[@]}"; do
@@ -142,194 +142,576 @@ uninstall_self() {
     exit 0
 }
 
-show_usage() {
-    [ "$USFC_LANG" = en ] && { show_usage_en; return 0; }
-    cat <<EOF
-usfc ${VERSION} — UbuntuServer Fast Configuration
-  https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration
+# ═══════════════════════════════════════════════════════════════
+# Командная строка 5.0: команды вместо флагов-режимов
+# ═══════════════════════════════════════════════════════════════
+# До 5.0 режимы были флагами (--apply, --audit, --list, --backups,
+# --restore), и между ними действовал негласный приоритет: `--audit --apply
+# web` молча выполнял только аудит. Флаги со значением глотали следующий
+# флаг (`--lang --audit` ставил язык «--audit»), `--config` молча
+# игнорировался вне --apply, а ITEMS= из файла перебивал командную строку.
+#
+# Теперь: ровно одна команда — первым словом, у каждой свой набор опций,
+# чужая опция или лишний аргумент — ошибка с кодом 2 и объяснением. Старые
+# формы не работают, а печатают готовую новую строку: скрипт из cloud-init
+# упадёт громко, а не сделает что-то не то.
 
-Использование: sudo usfc [опции]
-
-Без опций открывается интерактивное меню.
-
-Опции:
-  -h, --help            эта справка
-  -V, --version         версия и выход
-      --no-update       не проверять и не ставить обновления самого usfc
-      --verbose         показывать сырой вывод команд вместо спиннера
-      --lang ru|en      язык интерфейса на этот запуск (не сохраняется;
-                        постоянный выбор — клавиша L в меню)
-
-Неинтерактивный запуск (для cloud-init, Ansible, скриптов развёртывания):
-      --apply <что>     применить пункты и выйти, без меню
-      --dry-run         показать, что было бы сделано, ничего не меняя
-      --config <файл>   ответы на вопросы из файла
-      --list            показать профили и id пунктов
-      --audit           проверить состояние сервера (только чтение)
-      --backups         показать снимки конфигов
-      --restore [метка] восстановить конфиги из снимка
-  -y, --yes             отвечать «да» на вопросы применяемых пунктов.
-                        Действует только вместе с --apply; на --restore —
-                        подтверждение отката. Разрушительные ветки (удаление
-                        usfc, остановка сервисов) им не переключаются
-
-  <что> — это профиль, список id или номеров:
-      --apply web                 профиль
-      --apply docker,nginx,ufw    свои пункты
-      --apply all                 все
-
-  Пункты, требующие явного подтверждения (SSH hardening), в неинтерактивном
-  режиме пропускаются: закрыть себе доступ к серверу по чужому конфигу —
-  не та цена за автоматизацию.
-
-Пример конфига (--config):
-      ITEMS=web
-      NGINX_AUTOSTART=Y
-      DOCKER_AUTOSTART=N
-      ZRAM_PERCENT=75
-      SWAP_MB=2048
-      CERTBOT_CF=Y
-      CF_TOKEN=...
-
-Переменные окружения:
-  USFC_NO_UPDATE=1          то же, что --no-update
-  USFC_VERBOSE=1            то же, что --verbose
-  USFC_LANG=en              то же, что --lang en
-  USFC_REPO_RAW_BASE=URL    откуда качать обновления и модули
-  USFC_KEEP_LOCALE=1        не форсировать LC_ALL=C.UTF-8
-  NO_COLOR=1                вывод без цвета (цвет отключается сам, если
-                            TERM=dumb или вывод идёт не в терминал)
-  USFC_APT_LOCK_TIMEOUT=N   сколько секунд ждать освобождения блокировки dpkg
-                            (по умолчанию ${APT_LOCK_TIMEOUT}; на свежем сервере её
-                            держит unattended-upgrades)
-
-Лог всех выполненных команд: ${USFC_LOG}
-EOF
-}
+USFC_COMMANDS="apply firewall audit export list backups restore help version"
 
 # Что делать вместо меню. Пусто — обычный интерактивный запуск.
+USFC_CMD=""
 USFC_APPLY_SPEC=""
 USFC_CONFIG_FILE=""
-USFC_LIST_ONLY=false
-USFC_ACTION=""
 USFC_RESTORE_STAMP=""
+USFC_HELP_TOPIC=""
 USFC_ASSUME_YES=false
+# Ответы, заданные флагами: КЛЮЧ → значение. Применяются ПОСЛЕ файла
+# ответов — флаг сильнее файла (apply_cli_answers)
+declare -A USFC_FLAG_ANS=()
 
-show_usage_en() {
-    cat <<EOF
-usfc ${VERSION} — UbuntuServer Fast Configuration
-  https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration
-
-Usage: sudo usfc [options]
-
-With no options it opens the interactive menu.
-
-Options:
-  -h, --help            this help
-  -V, --version         print version and exit
-      --no-update       do not check for or install usfc updates
-      --verbose         show raw command output instead of the spinner
-      --lang ru|en      interface language for this run (not persisted;
-                        to change it for good use the L key in the menu)
-
-Non-interactive use (cloud-init, Ansible, provisioning scripts):
-      --apply <what>    apply items and exit, no menu
-      --dry-run         show what would be done, change nothing
-      --config <file>   read answers from a file
-      --list            list profiles and item ids
-      --audit           check the server's current state (read-only)
-      --backups         list config snapshots
-      --restore [stamp] restore configs from a snapshot
-  -y, --yes             answer yes to the questions of the applied items.
-                        Works only together with --apply; for --restore it
-                        confirms the rollback. Destructive branches (removing
-                        usfc, stopping services) are not flipped by it
-
-  <what> is a profile, or a list of ids or numbers:
-      --apply web                 a profile
-      --apply docker,nginx,ufw    your own items
-      --apply all                 everything
-
-  Items that need explicit confirmation (SSH hardening) are skipped in
-  non-interactive mode: locking yourself out of the server because of
-  somebody else's config file is not a fair price for automation.
-
-Config file example (--config):
-      ITEMS=web
-      NGINX_AUTOSTART=Y
-      DOCKER_AUTOSTART=N
-      ZRAM_PERCENT=75
-      SWAP_MB=2048
-      CERTBOT_CF=Y
-      CF_TOKEN=...
-
-Environment:
-  USFC_NO_UPDATE=1          same as --no-update
-  USFC_VERBOSE=1            same as --verbose
-  USFC_LANG=en              same as --lang en
-  USFC_REPO_RAW_BASE=URL    where to fetch updates and modules from
-  USFC_KEEP_LOCALE=1        do not force LC_ALL=C.UTF-8
-  NO_COLOR=1                no colour (also disabled automatically when
-                            TERM=dumb or output is not a terminal)
-  USFC_APT_LOCK_TIMEOUT=N   seconds to wait for the dpkg lock
-                            (default ${APT_LOCK_TIMEOUT}; on a fresh server it is
-                            held by unattended-upgrades)
-
-Command log: ${USFC_LOG}
-EOF
+# _cli_die <ru> <en> — ошибка разбора: сообщение, подсказка, код 2
+_cli_die() {
+    t "$1" "$2"
+    printf 'usfc: %s\n' "$REPLY_T" >&2
+    t "Справка: usfc help${USFC_CMD:+ ${USFC_CMD}}" "Help: usfc help${USFC_CMD:+ ${USFC_CMD}}"
+    printf '%s\n' "$REPLY_T" >&2
+    exit 2
 }
 
-parse_args() {
-    local want_help=false
+# Старые формы → готовая новая строка. Флаг режима становится командой и
+# уезжает в начало, всё остальное остаётся как было
+_cli_old_form() {
+    local cmd="" a
+    local -a rest=()
     while [ "$#" -gt 0 ]; do
-        case "$1" in
-            # Справку и версию печатаем ПОСЛЕ разбора всех аргументов:
-            # иначе `usfc --help --lang en` выдавал бы русский текст — просто
-            # потому, что --help встретился первым
-            -h|--help)    want_help=true ;;
-            -V|--version) echo "$VERSION"; exit 0 ;;
-            --no-update)  USFC_NO_UPDATE=1 ;;
-            --verbose)    USFC_VERBOSE=1 ;;
-            --lang)
-                [ -n "${2:-}" ] || { echo "--lang требует ru или en" >&2; exit 2; }
-                USFC_LANG="$2"; shift ;;
-            --lang=*)     USFC_LANG="${1#*=}" ;;
-            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1 ;;
-            --list)       USFC_LIST_ONLY=true ;;
-            --audit)      USFC_ACTION=audit ;;
-            --json)       USFC_AUDIT_JSON=true ;;
-            --backups)    USFC_ACTION=backups ;;
-            --restore)
-                USFC_ACTION=restore
-                case "${2:-}" in -*|'') ;; *) USFC_RESTORE_STAMP="$2"; shift ;; esac ;;
-            --apply)
-                [ -n "${2:-}" ] || { echo "--apply требует список пунктов или профиль" >&2; exit 2; }
-                USFC_APPLY_SPEC="$2"; shift ;;
-            --apply=*)    USFC_APPLY_SPEC="${1#*=}" ;;
-            --config)
-                [ -n "${2:-}" ] || { echo "--config требует путь к файлу" >&2; exit 2; }
-                USFC_CONFIG_FILE="$2"; shift ;;
-            --config=*)   USFC_CONFIG_FILE="${1#*=}" ;;
-            # Для --apply он не нужен (вопросов там и так нет), а вот
-            # --restore перезаписывает работающие конфиги и всегда спрашивает.
-            # Без явного --yes откат из скрипта был бы невозможен
-            --yes|-y)     USFC_ASSUME_YES=true ;;
-            *)
-                echo "Unknown option: $1" >&2
-                echo "" >&2
-                show_usage >&2
-                exit 2
-                ;;
+        a="$1"
+        case "$a" in
+            --apply)    cmd="apply ${2:-}"; shift ;;
+            --apply=*)  cmd="apply ${a#*=}" ;;
+            --audit)    cmd="audit" ;;
+            --list)     cmd="list" ;;
+            --backups)  cmd="backups" ;;
+            --restore)  cmd="restore"
+                        case "${2:-}" in -*|'') ;; *) cmd="restore $2"; shift ;; esac ;;
+            *)          rest+=("$a") ;;
         esac
         shift
     done
-    case "$USFC_LANG" in ru|en) ;; *) USFC_LANG=ru ;; esac
-    # --json сам по себе ничего не значит: он меняет ФОРМАТ аудита, а не режим
-    if [ "$USFC_AUDIT_JSON" = true ] && [ "$USFC_ACTION" != audit ]; then
-        echo "usfc: --json работает только вместе с --audit" >&2   # i18n-ok: пара строкой ниже
-        echo "usfc: --json only works together with --audit" >&2
-        exit 2
-    fi
-    if [ "$want_help" = true ]; then show_usage; exit 0; fi
+    t "в 5.0 режимы стали командами. Вместо этого:" "in 5.0 modes became commands. Use this instead:"
+    printf 'usfc: %s\n  usfc %s%s\n' "$REPLY_T" "$cmd" "${rest[*]:+ ${rest[*]}}" >&2
+    exit 2
 }
 
+# _cli_value <опция> <следующее слово> — значение опции. Значение,
+# похожее на опцию, — ошибка: иначе `--lang --audit` поставил бы язык «--audit».
+# Отрицательное число — значение, а не опция: chat_id группы в Telegram
+# выглядит как -1001234567890, и его печатает однострочная команда usfc export
+REPLY_CLI_VAL=''; REPLY_CLI_SHIFT=1
+_cli_value() {
+    local opt="$1"
+    case "$opt" in
+        *=*) REPLY_CLI_VAL="${opt#*=}"; REPLY_CLI_SHIFT=1
+             # `--config=` — пустое значение; через пробел то же самое — ошибка
+             [ -n "$REPLY_CLI_VAL" ] || _cli_die "${opt%%=*} требует значение" "${opt%%=*} needs a value" ;;
+        *)
+            if [ "$#" -lt 2 ] || [ -z "$2" ] || { [[ "$2" == -* ]] && ! [[ "$2" =~ ^-[0-9]+$ ]]; }; then
+                _cli_die "${opt} требует значение" "${opt} needs a value"
+            fi
+            REPLY_CLI_VAL="$2"; REPLY_CLI_SHIFT=2 ;;
+    esac
+}
+
+parse_args() {
+    local a opt want_help=false want_version=false
+    local -a used=()       # «опция:разрешённые команды» — проверяются в конце
+
+    # Язык выясняем ДО разбора: ошибки ниже должны говорить на нём
+    for a in "$@"; do
+        case "$a" in --lang=en) USFC_LANG=en ;; --lang=ru) USFC_LANG=ru ;; esac
+    done
+    local prev=''
+    for a in "$@"; do
+        [ "$prev" = --lang ] && case "$a" in ru|en) USFC_LANG="$a" ;; esac
+        prev="$a"
+    done
+
+    for a in "$@"; do
+        case "$a" in --apply|--apply=*|--audit|--list|--backups|--restore) _cli_old_form "$@" ;; esac
+    done
+
+    while [ "$#" -gt 0 ]; do
+        a="$1"
+        case "$a" in
+            -h|--help)    want_help=true ;;
+            -V|--version) want_version=true ;;
+            --no-update)  USFC_NO_UPDATE=1 ;;
+            --verbose)    USFC_VERBOSE=1 ;;
+            --lang|--lang=*)
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                case "$REPLY_CLI_VAL" in
+                    ru|en) USFC_LANG="$REPLY_CLI_VAL"; USFC_LANG_EXPLICIT=true ;;
+                    *) _cli_die "--lang: ru или en, а не «${REPLY_CLI_VAL}»" "--lang: ru or en, not \"${REPLY_CLI_VAL}\"" ;;
+                esac ;;
+            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1; used+=("--dry-run:apply firewall") ;;
+            -y|--yes)     USFC_ASSUME_YES=true; used+=("--yes:apply restore firewall") ;;
+            --json)       USFC_AUDIT_JSON=true; used+=("--json:audit") ;;
+            --config|--config=*)
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                USFC_CONFIG_FILE="$REPLY_CLI_VAL"; used+=("--config:apply firewall") ;;
+            --set|--set=*)
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                [[ "$REPLY_CLI_VAL" == *=* ]] || _cli_die "--set: ожидается КЛЮЧ=значение" "--set: expected KEY=value"
+                _answer_row key "${REPLY_CLI_VAL%%=*}" || _cli_die "--set: неизвестный ключ ${REPLY_CLI_VAL%%=*}" "--set: unknown key ${REPLY_CLI_VAL%%=*}"
+                # секрет в argv виден любому через ps — только файлом ответов
+                [ "$REPLY_ANS_TYPE" = secret ] && _cli_die "--set: ${REPLY_ANS_KEY} — секрет, его видно в ps; передайте файлом ответов (--config, права 600)" \
+"--set: ${REPLY_ANS_KEY} is a secret and would show up in ps; pass it in an answers file (--config, mode 600)"
+                USFC_FLAG_ANS[$REPLY_ANS_KEY]="${REPLY_CLI_VAL#*=}"; used+=("--set:apply firewall") ;;
+            --deny|--deny=*)
+                # закрыть порт — только в firewall: у пункта ufw такого вопроса нет
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                fw_parse_ports "$REPLY_CLI_VAL" || _cli_die "--deny: ${REPLY_FW_ERR}" "--deny: ${REPLY_FW_ERR}"
+                FW_CMD_DENY="${FW_CMD_DENY}${FW_CMD_DENY:+ }${REPLY_FW_PORTS}"; used+=("--deny:firewall") ;;
+            --*)
+                # флаги ответов из таблицы: --x (Y), --no-x (N), --x <значение>
+                opt="${a%%=*}"
+                if _answer_row flag "$opt" && [ "$REPLY_ANS_TYPE" != yn ]; then
+                    _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                    USFC_FLAG_ANS[$REPLY_ANS_KEY]="$REPLY_CLI_VAL"
+                elif _answer_row flag "$opt" && [ "$opt" = "$a" ]; then
+                    USFC_FLAG_ANS[$REPLY_ANS_KEY]=Y
+                elif _answer_row flag "$opt"; then
+                    # `--ufw=Y`: yn-флаг значения не берёт, а «неизвестная опция» сбила бы с толку
+                    _cli_die "${opt} не принимает значение: пишите ${opt} или --no-${opt#--}" \
+"${opt} takes no value: write ${opt} or --no-${opt#--}"
+                elif [[ "$opt" == --no-* ]] && _answer_row flag "--${opt#--no-}" && [ "$REPLY_ANS_TYPE" = yn ]; then
+                    [ "$opt" = "$a" ] || _cli_die "${opt} не принимает значение: пишите ${opt} или --${opt#--no-}" \
+"${opt} takes no value: write ${opt} or --${opt#--no-}"
+                    USFC_FLAG_ANS[$REPLY_ANS_KEY]=N
+                else
+                    _cli_die "неизвестная опция ${a}" "unknown option ${a}"
+                fi
+                # флаги файрвола одни и те же у apply и у firewall
+                if [ "$REPLY_ANS_ITEM" = ufw ] && [ "$REPLY_ANS_KEY" != UFW ]; then
+                    used+=("${opt}:apply firewall")
+                else
+                    used+=("${opt}:apply")
+                fi ;;
+            -*) _cli_die "неизвестная опция ${a}" "unknown option ${a}" ;;
+            *)
+                if [ -z "$USFC_CMD" ]; then
+                    case " $USFC_COMMANDS " in
+                        *" $a "*) USFC_CMD="$a" ;;
+                        *) _cli_die "неизвестная команда «${a}». Команды: ${USFC_COMMANDS}" "unknown command \"${a}\". Commands: ${USFC_COMMANDS}" ;;
+                    esac
+                else
+                    case "$USFC_CMD" in
+                        apply)   USFC_APPLY_SPEC="${USFC_APPLY_SPEC}${USFC_APPLY_SPEC:+,}${a}" ;;
+                        restore) [ -z "$USFC_RESTORE_STAMP" ] || _cli_die "restore: метка одна" "restore: only one stamp"
+                                 USFC_RESTORE_STAMP="$a" ;;
+                        help)    [ -z "$USFC_HELP_TOPIC" ] || _cli_die "help: лишний аргумент «${a}»" "help: unexpected argument \"${a}\""
+                                 USFC_HELP_TOPIC="$a" ;;
+                        firewall)
+                            # usfc firewall ping off · usfc firewall docker on
+                            if [ -z "$FW_CMD_ACTION" ]; then
+                                case "$a" in
+                                    ping|docker) FW_CMD_ACTION="$a" ;;
+                                    *) _cli_die "firewall: «${a}» — ожидается ping или docker" "firewall: \"${a}\" — expected ping or docker" ;;
+                                esac
+                            elif [ -z "$FW_CMD_VALUE" ]; then
+                                case "$a" in
+                                    on|off) FW_CMD_VALUE="$a" ;;
+                                    *) _cli_die "firewall ${FW_CMD_ACTION}: on или off, а не «${a}»" "firewall ${FW_CMD_ACTION}: on or off, not \"${a}\"" ;;
+                                esac
+                            else
+                                _cli_die "firewall: лишний аргумент «${a}»" "firewall: unexpected argument \"${a}\""
+                            fi ;;
+                        *)       _cli_die "${USFC_CMD}: лишний аргумент «${a}»" "${USFC_CMD}: unexpected argument \"${a}\"" ;;
+                    esac
+                fi ;;
+        esac
+        shift
+    done
+
+    [ "$want_version" = true ] || [ "$USFC_CMD" = version ] && { echo "$VERSION"; exit 0; }
+    if [ "$want_help" = true ] || [ "$USFC_CMD" = help ]; then
+        show_usage "${USFC_HELP_TOPIC:-${USFC_CMD#help}}"; exit 0
+    fi
+
+    # Опция не от своей команды. Пустая команда (меню) принимает только --dry-run
+    local u name allowed
+    for u in "${used[@]+"${used[@]}"}"; do
+        name="${u%%:*}"; allowed=" ${u#*:} "
+        [[ "$allowed" == *" ${USFC_CMD} "* ]] && continue
+        [ -z "$USFC_CMD" ] && [ "$name" = --dry-run ] && continue
+        if [ -z "$USFC_CMD" ]; then
+            _cli_die "${name} работает только с командой: usfc${allowed% } ${name} …" "${name} only works with a command: usfc${allowed% } ${name} …"
+        fi
+        _cli_die "${name} не относится к команде ${USFC_CMD}" "${name} does not belong to the ${USFC_CMD} command"
+    done
+
+    case "$USFC_CMD" in
+        apply)
+            [ -n "$USFC_APPLY_SPEC" ] || [ -n "$USFC_CONFIG_FILE" ] \
+                || _cli_die "apply: что применять? Профиль, id или номера: usfc apply web" "apply: what to apply? A profile, ids or numbers: usfc apply web" ;;
+        firewall)
+            [ -z "$FW_CMD_ACTION" ] || [ -n "$FW_CMD_VALUE" ] \
+                || _cli_die "firewall ${FW_CMD_ACTION}: on или off?" "firewall ${FW_CMD_ACTION}: on or off?" ;;
+        restore)
+            # без метки откат спрашивает её с терминала — в скрипте спросить некого
+            if [ -z "$USFC_RESTORE_STAMP" ] && ! usfc_interactive; then
+                _cli_die "restore: укажите метку снимка (список — usfc backups)" "restore: give a snapshot stamp (list them with usfc backups)"
+            fi ;;
+    esac
+    # Обновление проверяется только для меню: у команд его результат никто
+    # не показывает, а фоновый curl лишь задерживает выход
+    [ -n "$USFC_CMD" ] && USFC_NO_UPDATE=1
+    return 0
+}
+
+# apply_cli_answers — файл ответов, потом флаги поверх, потом проверка, что
+# у каждого флага есть свой пункт в списке. Зовётся из run_noninteractive,
+# когда список пунктов уже известен
+apply_cli_answers() {
+    local key bad=0 id
+    if [ -n "$USFC_CONFIG_FILE" ]; then
+        local cfg="$USFC_CONFIG_FILE"
+        # схема URL регистронезависима (RFC 3986): HTTPS://… — это https.
+        # Приводим к нижнему регистру только схему, остальное (путь, токен) не трогаем
+        case "$cfg" in
+            [Hh][Tt][Tt][Pp][Ss]://*) cfg="https://${cfg:8}" ;;
+            [Hh][Tt][Tt][Pp]://*)     cfg="http://${cfg:7}" ;;
+        esac
+        case "$cfg" in
+            https://*) fetch_config "$cfg" || return 2; cfg="$REPLY_CONFIG_PATH" ;;
+            http://*)  log_error_t "Файл ответов только по https: в нём бывают токены" \
+"The answers file must come over https: it may hold tokens"; return 2 ;;
+        esac
+        load_config "$cfg" || bad=1
+        cleanup_config_tmp
+    fi
+    for key in "${!USFC_FLAG_ANS[@]}"; do
+        answer_set "$key" "${USFC_FLAG_ANS[$key]}" flag || bad=1
+    done
+    [ "$bad" -eq 0 ] || return 2
+    return 0
+}
+
+# check_cli_answer_items <id...> — флаг для пункта, которого нет в списке.
+# Тот же ключ из файла ответов — норма: один файл обычно делят все ноды
+check_cli_answer_items() {
+    local key chosen=" $* " bad=0
+    for key in "${!USFC_ANS_SRC[@]}"; do
+        [ "${USFC_ANS_SRC[$key]}" = flag ] || continue
+        _answer_row key "$key"
+        [[ "$chosen" == *" ${REPLY_ANS_ITEM} "* ]] && continue
+        log_error_t "${REPLY_ANS_FLAG:-$key} задан, а пункта ${REPLY_ANS_ITEM} в списке нет" \
+"${REPLY_ANS_FLAG:-$key} is set, but item ${REPLY_ANS_ITEM} is not in the list"
+        bad=1
+    done
+    return "$bad"
+}
+
+# ── Справка ──────────────────────────────────────────────────────────────────
+# Флаги ответов печатаются из таблицы USFC_ANSWER_KEYS, а не перечисляются
+# руками: ручной список уже однажды разошёлся с кодом
+_usage_answer_flags() {
+    local row k v ty fl it ru en name desc
+    for row in "${USFC_ANSWER_KEYS[@]}"; do
+        IFS='|' read -r k v ty fl it ru en <<< "$row"
+        [ -n "$fl" ] || continue
+        case "$ty" in
+            yn)  name="${fl} / --no-${fl#--}" ;;
+            pct) name="${fl} <1..400>" ;;
+            ports) if [ "$USFC_LANG" = en ]; then name="${fl} <ports>"; else name="${fl} <порты>"; fi ;;   # i18n-ok: пара на той же строке
+            addr)  name="${fl} <IP>" ;;
+            host)  if [ "$USFC_LANG" = en ]; then name="${fl} <name>"; else name="${fl} <имя>"; fi ;;   # i18n-ok: пара на той же строке
+            tz)    name="${fl} <Area/City>" ;;
+            starship) if [ "$USFC_LANG" = en ]; then name="${fl} <style>"; else name="${fl} <вид>"; fi ;;   # i18n-ok: пара на той же строке
+            port)  name="${fl} <22|1024..65535>" ;;
+            time)  if [ "$USFC_LANG" = en ]; then name="${fl} <HH:MM|off>"; else name="${fl} <ЧЧ:ММ|off>"; fi ;;   # i18n-ok: пара на той же строке
+            chat)  name="${fl} <chat_id|@channel>" ;;
+            events) name="${fl} <ssh,ban,reboot>" ;;
+            *)   name="${fl} <N>" ;;
+        esac
+        if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
+        printf '  %-30s %s (%s)\n' "$name" "$desc" "$it"
+    done
+}
+_usage_answer_keys() {
+    local row k v ty fl it ru en desc
+    for row in "${USFC_ANSWER_KEYS[@]}"; do
+        IFS='|' read -r k v ty fl it ru en <<< "$row"
+        if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
+        printf '  %-18s %s\n' "$k" "$desc"
+    done
+}
+
+# show_usage [команда] — общая справка или справка по одной команде
+show_usage() {
+    local topic="${1:-}"
+    case "$topic" in
+        ''|apply|firewall|audit|export|list|backups|restore|version) ;;
+        *) _cli_die "нет справки по «${topic}». Команды: ${USFC_COMMANDS}" "no help for \"${topic}\". Commands: ${USFC_COMMANDS}" ;;
+    esac
+    if [ "$USFC_LANG" = en ]; then show_usage_en "$topic"; else show_usage_ru "$topic"; fi
+}
+
+show_usage_ru() {
+    case "$1" in
+        apply)
+            cat <<EOF
+usfc apply <что> [опции] — применить пункты без вопросов по ходу
+
+<что>  профиль, all, id или номера пунктов через запятую, вперемешку:
+         usfc apply web
+         usfc apply basepkgs,cli,docker,zram,ufw
+         usfc apply web,bbr
+       профили и id — usfc list
+
+Опции:
+  --dry-run                      показать, что будет сделано, ничего не меняя
+  -y, --yes                      отвечать «да» и там, где дефолт «нет»
+                                 (кроме перезапуска Docker — для него --docker-restart)
+  --config <файл|https://…>      файл ответов КЛЮЧ=значение (см. ниже)
+  --set КЛЮЧ=значение            любой ключ файла ответов прямо в командной строке
+
+Ответы на вопросы пунктов (сильнее файла ответов):
+$(_usage_answer_flags)
+
+Ключи файла ответов:
+  ITEMS              что применять, если <что> не задано
+$(_usage_answer_keys)
+
+Флаг для пункта, которого нет в списке, — ошибка. Создание пользователя
+в apply не выполняется; SSH hardening — только перенос порта по --ssh-port,
+остальное ему нужно делать у терминала.
+
+Секреты (CF_TOKEN, TG_TOKEN) флагов не имеют: командную строку видно в ps.
+Передавайте их файлом ответов; --set для них отклоняется.
+
+Коды возврата: 0 — всё применилось или нечего применять; 1 — часть пунктов
+не удалась; 2 — ошибка в аргументах или в файле ответов.
+EOF
+            ;;
+        audit)
+            cat <<'EOF'
+usfc audit [--json] — проверить сервер, ничего не меняя
+
+  --json   машинно-читаемый отчёт (id проверки, уровень, текст)
+
+Коды возврата: 0 — важных проблем нет; 1 — есть важные (crit).
+EOF
+            ;;
+        restore)
+            cat <<'EOF'
+usfc restore [метка] [--yes] — вернуть конфиги из снимка
+
+Снимок делается перед каждой правкой системного файла. Список меток —
+usfc backups. Без метки спросит её (нужен терминал); --yes — не спрашивать
+подтверждения.
+EOF
+            ;;
+        firewall)
+            cat <<EOF
+usfc firewall [опции] — файрвол UFW: порты, ping, Docker
+
+  usfc firewall                          сводка: политика, правила, ping, Docker
+  usfc firewall --allow 80,443,51820/udp открыть порты (UFW выключен — включит)
+  usfc firewall --allow 5432 --from 10.0.0.5
+                                         открыть только для адреса или подсети
+  usfc firewall --deny 8080              убрать разрешение
+  usfc firewall ping on|off              отвечать ли на ping
+  usfc firewall docker on|off            подчинить ли порты контейнеров UFW
+
+Порты: 443 (tcp), 51820/udp, 1000:2000/tcp — через запятую.
+Опции: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
+--no-docker-firewall, --config, --set, --dry-run, -y/--yes.
+
+SSH-порты (все, что слушает sshd) разрешаются первыми и не закрываются никогда;
+если SSH не слушает нигде, UFW не включается. Включение
+выключенного UFW у терминала спрашивает подтверждение; --yes — не спрашивать.
+Ping выключается правкой /etc/ufw/before.rules (ACCEPT → DROP в блоках ICMP);
+в IPv6 — только echo-request: остальной ICMPv6 нужен самому IPv6.
+Docker публикует порты мимо UFW; docker on добавляет в /etc/ufw/after.rules
+схему ufw-docker. Только IPv4 и только iptables-бэкенд Docker.
+
+Коды возврата: 0 — готово; 1 — часть действий не удалась; 2 — ошибка в аргументах.
+EOF
+            ;;
+        export)  echo "usfc export > node.conf — файл ответов по этому серверу (без секретов) и та же настройка одной командой" ;;   # i18n-ok: пара — show_usage_en
+        list)    echo "usfc list — профили и id пунктов для usfc apply" ;;   # i18n-ok: пара — show_usage_en
+        backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;   # i18n-ok: пара — show_usage_en
+        version) echo "usfc version — версия (то же: -V, --version)" ;;   # i18n-ok: пара — show_usage_en
+        *)
+            cat <<EOF
+usfc ${VERSION} — UbuntuServer Fast Configuration
+
+Использование: sudo usfc [команда] [опции]
+Без команды открывается меню.
+
+Команды:
+  apply <что>        применить пункты без вопросов по ходу
+  firewall           файрвол: порты, ping, Docker
+  audit              проверить сервер (только чтение)
+  export             файл ответов по этому серверу
+  list               профили и id пунктов
+  backups            снимки конфигов
+  restore [метка]    вернуть конфиги из снимка
+  help [команда]     справка; по команде — подробнее
+  version            версия
+
+Общие опции:
+  --lang ru|en       язык этого запуска (не запоминается)
+  --no-update        не проверять обновление
+  --verbose          показывать вывод команд целиком
+  --dry-run          меню в режиме предпросмотра: ничего не меняется
+  -h, --help         справка
+  -V, --version      версия
+
+Примеры:
+  sudo usfc apply web --dry-run
+  sudo usfc apply basepkgs,cli,docker,zram,ufw --allow 443,51820/udp --no-ping --swap 2048 --yes
+  sudo usfc firewall --allow 8443
+  sudo usfc apply --config https://example.com/node.conf
+  sudo usfc audit --json
+
+Установка с командой сразу:
+  curl -fsSL …/install.sh | sudo bash -s -- apply web --yes
+
+Переменные окружения: USFC_LANG, USFC_NO_UPDATE, USFC_VERBOSE,
+USFC_REPO_RAW_BASE, USFC_KEEP_LOCALE, USFC_APT_LOCK_TIMEOUT, NO_COLOR.
+Лог всех выполненных команд: ${USFC_LOG}
+EOF
+            ;;
+    esac
+}
+
+show_usage_en() {
+    case "$1" in
+        apply)
+            cat <<EOF
+usfc apply <what> [options] — apply items without questions along the way
+
+<what>  a profile, all, item ids or numbers, comma-separated, mixed freely:
+          usfc apply web
+          usfc apply basepkgs,cli,docker,zram,ufw
+          usfc apply web,bbr
+        profiles and ids — usfc list
+
+Options:
+  --dry-run                      show what would be done, change nothing
+  -y, --yes                      answer "yes" even where the default is "no"
+                                 (except restarting Docker — use --docker-restart)
+  --config <file|https://…>      answers file, KEY=value (see below)
+  --set KEY=value                any answers-file key right on the command line
+
+Answers to item questions (override the answers file):
+$(_usage_answer_flags)
+
+Answers file keys:
+  ITEMS              what to apply when <what> is not given
+$(_usage_answer_keys)
+
+A flag for an item that is not in the list is an error. User creation is
+not run by apply; SSH hardening only moves the port with --ssh-port, the rest
+of it needs a person at the terminal.
+
+Secrets (CF_TOKEN, TG_TOKEN) have no flags: a command line is visible in ps.
+Pass them in the answers file; --set refuses them.
+
+Exit codes: 0 — everything applied or nothing to do; 1 — some items failed;
+2 — an error in the arguments or the answers file.
+EOF
+            ;;
+        audit)
+            cat <<'EOF'
+usfc audit [--json] — check the server without changing anything
+
+  --json   machine-readable report (check id, level, text)
+
+Exit codes: 0 — no critical problems; 1 — there are critical ones (crit).
+EOF
+            ;;
+        restore)
+            cat <<'EOF'
+usfc restore [stamp] [--yes] — bring configs back from a snapshot
+
+A snapshot is taken before every change to a system file. List the stamps
+with usfc backups. Without a stamp it asks for one (needs a terminal);
+--yes skips the confirmation.
+EOF
+            ;;
+        firewall)
+            cat <<EOF
+usfc firewall [options] — the UFW firewall: ports, ping, Docker
+
+  usfc firewall                          summary: policy, rules, ping, Docker
+  usfc firewall --allow 80,443,51820/udp open ports (enables UFW if it is off)
+  usfc firewall --allow 5432 --from 10.0.0.5
+                                         open only to an address or a subnet
+  usfc firewall --deny 8080              remove a rule
+  usfc firewall ping on|off              whether to reply to ping
+  usfc firewall docker on|off            whether container ports obey UFW
+
+Ports: 443 (tcp), 51820/udp, 1000:2000/tcp — comma-separated.
+Options: --allow, --deny, --from, --ping / --no-ping, --docker-firewall /
+--no-docker-firewall, --config, --set, --dry-run, -y/--yes.
+
+The SSH ports (all that sshd listens on) are allowed first and are never closed;
+if SSH listens nowhere, UFW is not enabled. Enabling UFW
+that is off asks for confirmation at a terminal; --yes skips it.
+Ping is turned off by editing /etc/ufw/before.rules (ACCEPT → DROP in the ICMP
+sections); for IPv6 only echo-request: the rest of ICMPv6 is needed by IPv6 itself.
+Docker publishes ports past UFW; docker on adds the ufw-docker scheme to
+/etc/ufw/after.rules. IPv4 only, and only with Docker's iptables backend.
+
+Exit codes: 0 — done; 1 — some actions failed; 2 — an error in the arguments.
+EOF
+            ;;
+        export)  echo "usfc export > node.conf — an answers file from this server (no secrets) and the same setup as one command" ;;
+        list)    echo "usfc list — profiles and item ids for usfc apply" ;;
+        backups) echo "usfc backups — config snapshots, newest last; undo with usfc restore <stamp>" ;;
+        version) echo "usfc version — the version (same as -V, --version)" ;;
+        *)
+            cat <<EOF
+usfc ${VERSION} — UbuntuServer Fast Configuration
+
+Usage: sudo usfc [command] [options]
+With no command, the menu opens.
+
+Commands:
+  apply <what>       apply items without questions along the way
+  firewall           the firewall: ports, ping, Docker
+  audit              check the server (read-only)
+  export             an answers file from this server
+  list               profiles and item ids
+  backups            config snapshots
+  restore [stamp]    bring configs back from a snapshot
+  help [command]     help; per command — in detail
+  version            the version
+
+Common options:
+  --lang ru|en       language for this run (not remembered)
+  --no-update        skip the update check
+  --verbose          show full command output
+  --dry-run          the menu in preview mode: nothing changes
+  -h, --help         help
+  -V, --version      the version
+
+Examples:
+  sudo usfc apply web --dry-run
+  sudo usfc apply basepkgs,cli,docker,zram,ufw --allow 443,51820/udp --no-ping --swap 2048 --yes
+  sudo usfc firewall --allow 8443
+  sudo usfc apply --config https://example.com/node.conf
+  sudo usfc audit --json
+
+Install and run a command right away:
+  curl -fsSL …/install.sh | sudo bash -s -- apply web --yes
+
+Environment: USFC_LANG, USFC_NO_UPDATE, USFC_VERBOSE, USFC_REPO_RAW_BASE,
+USFC_KEEP_LOCALE, USFC_APT_LOCK_TIMEOUT, NO_COLOR.
+Log of every command run: ${USFC_LOG}
+EOF
+            ;;
+    esac
+}

@@ -223,33 +223,47 @@ audit_units() {
 }
 
 # ── Порты наружу против правил файрвола ───────────────────────────────────────
+# TCP и UDP: до 5.0 аудит смотрел только TCP и не видел WireGuard/Hysteria
 audit_ports() {
-    local listening ports p
-    # только то, что слушает НЕ на localhost: 127.0.0.1 и ::1 наружу не смотрят
-    listening="$(ss -ltnH 2>/dev/null | awk '{print $4}' \
-        | grep -vE '^(127\.|\[::1\])' | sed 's/.*://' | sort -un)"
-    ports="$(printf '%s' "$listening" | tr '\n' ' ')"
-    if [ -z "${ports// /}" ]; then
+    local p proc open='' unlisted='' rules
+    fw_listening
+    while read -r p proc; do [ -n "$p" ] && open="${open}${p} "; done <<< "$REPLY_FW_LISTEN"
+    if [ -z "$open" ]; then
         _audit_t ports.public ok "Наружу ничего не слушает" "Nothing is listening on public interfaces"
         return 0
     fi
 
-    if ! command -v ufw >/dev/null 2>&1 || ! ufw status 2>/dev/null | grep 'Status: active' >/dev/null; then
-        _audit_t ports.public warn "Порты наружу: ${ports}" "Public ports: ${ports}" "Файрвол выключен — доступны все. Пункт $(item_number ufw)" "The firewall is off, so all of them are reachable. Item $(item_number ufw)"
+    if ! ufw_active; then
+        _audit_t ports.public warn "Порты наружу: ${open}" "Public ports: ${open}" "Файрвол выключен — доступны все. Пункт $(item_number ufw)" "The firewall is off, so all of them are reachable. Item $(item_number ufw)"
         return 0
     fi
 
-    local rules unlisted=""
     rules="$(ufw status 2>/dev/null)"
-    for p in $listening; do
-        printf '%s' "$rules" | grep -E "(^|[^0-9])${p}(/|[^0-9]|$)" >/dev/null || unlisted="${unlisted}${p} "
+    for p in $open; do
+        # «443/tcp», «443» (оба протокола) или диапазон с этим портом не ищем:
+        # расхождение лишь подсказка, а не дыра
+        grep -E "^(${p}|${p%/*})[[:space:]]" <<< "$rules" >/dev/null && continue
+        # профиль OpenSSH (ufw allow OpenSSH) — это и есть 22/tcp
+        [ "$p" = 22/tcp ] && grep -E "^OpenSSH[[:space:]]" <<< "$rules" >/dev/null && continue
+        unlisted="${unlisted}${p} "
     done
     if [ -z "$unlisted" ]; then
-        _audit_t ports.firewalled ok "Все открытые порты (${ports}) есть в правилах UFW" "Every open port (${ports}) has a UFW rule"
+        _audit_t ports.firewalled ok "Все открытые порты (${open% }) есть в правилах UFW" "Every open port (${open% }) has a UFW rule"
     else
         # Не «дыра»: UFW их и так режет. Но расхождение стоит увидеть —
         # обычно это сервис, который подняли уже после настройки файрвола
-        _audit_t ports.firewalled warn "Слушают, но правил в UFW нет: ${unlisted}" "Listening without a UFW rule: ${unlisted}" "Снаружи закрыты. Если нужны — sudo ufw allow <порт>/tcp" "Blocked from outside. If you need them: sudo ufw allow <port>/tcp"
+        _audit_t ports.firewalled warn "Слушают, но правил в UFW нет: ${unlisted}" "Listening without a UFW rule: ${unlisted}" "Снаружи закрыты. Если нужны — sudo usfc firewall --allow <порт>" "Blocked from outside. If you need them: sudo usfc firewall --allow <port>"
+    fi
+
+    fw_ping_state
+    case "$REPLY_FW_PING" in
+        off) _audit_t ports.ping ok "Ping: сервер не отвечает" "Ping: the server does not reply" ;;
+        on)  _audit_t ports.ping ok "Ping: сервер отвечает" "Ping: the server replies" "Выключить: sudo usfc firewall ping off" "To turn off: sudo usfc firewall ping off" ;;
+    esac
+
+    fw_docker_published
+    if [ -n "$REPLY_FW_DOCKER" ] && ! fw_docker_on; then
+        _audit_t ports.docker warn "Порты Docker-контейнеров открыты мимо UFW" "Docker container ports bypass UFW" "Закрыть: sudo usfc firewall docker on" "To close them: sudo usfc firewall docker on"
     fi
 }
 
@@ -270,6 +284,25 @@ audit_ssh() {
         *)
             _audit_t ssh.root_login warn "Root-логин разрешён (${rl:-?})" "Root login is allowed (${rl:-?})" "Пункт $(item_number sshhardening)" "Item $(item_number sshhardening)" ;;
     esac
+
+    # Пароль «выключен», но при UsePAM yes он по-прежнему принимается через
+    # keyboard-interactive — так выглядит половина «закрытых» серверов
+    local kbd pam
+    kbd="$(printf '%s' "$out" | awk '/^kbdinteractiveauthentication /{print $2}')"
+    pam="$(printf '%s' "$out" | awk '/^usepam /{print $2}')"
+    if [ "$pa" = "no" ] && [ "$kbd" = "yes" ] && [ "$pam" = "yes" ]; then
+        _audit_t ssh.kbd_interactive warn "Пароль принимается через keyboard-interactive" "Passwords are accepted via keyboard-interactive" "KbdInteractiveAuthentication no. Пункт $(item_number sshhardening)" "KbdInteractiveAuthentication no. Item $(item_number sshhardening)"
+    fi
+
+    # Кто перебьёт наш drop-in, если его применить (или уже перебивает).
+    # Без Include sshd_config.d «конфликтом» оказывается любой ключ основного
+    # файла, но пункт сначала вставит Include в начало, и их не будет
+    sshd_conflicts
+    if [ "$REPLY_SSHD_INCLUDED" = true ] && [ "${#REPLY_SSHD_CONFLICTS[@]}" -gt 0 ]; then
+        local first="${REPLY_SSHD_CONFLICTS[0]}" f n k v
+        IFS=$'\t' read -r f n k v <<< "$first"
+        _audit_t ssh.dropin_order warn "Чужой конфиг перебивает hardening: ${f}:${n} (${k} ${v})" "A foreign config overrides hardening: ${f}:${n} (${k} ${v})" "Пункт $(item_number sshhardening) найдёт и закомментирует" "Item $(item_number sshhardening) finds and comments it out"
+    fi
 
     if systemctl is-active fail2ban >/dev/null 2>&1; then
         _audit_t ssh.fail2ban ok "fail2ban работает" "fail2ban is running"
@@ -363,7 +396,7 @@ show_audit() {
 }
 
 # ── Машинный вывод ────────────────────────────────────────────────────────────
-# jq здесь нельзя: --audit обязан работать на свежем сервере, ДО того как
+# jq здесь нельзя: audit обязан работать на свежем сервере, ДО того как
 # поставили базовые пакеты. Поэтому экранируем сами.
 #
 # strip_ansi берём готовый из lib/layout.sh — он снимает оба вида цветовых

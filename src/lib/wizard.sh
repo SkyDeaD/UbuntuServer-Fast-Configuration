@@ -60,7 +60,7 @@ usfc_wizard() {
 
     local choice
     t "Выбор" "Choice"
-    echo -en "  ${BOLD}${REPLY_T}${NC} ${DIM}[5]:${NC} "
+    ui_prompt "$REPLY_T" 5
     read -r choice </dev/tty
     wizard_parse "$choice"
     if [ -z "$REPLY_WIZARD_PROFILE" ]; then
@@ -74,9 +74,11 @@ usfc_wizard() {
     # Про пропущенное говорим до того, как человек согласится: молчаливый
     # пропуск пункта в первом же прогоне читается как поломка
     local id
+    local title
     for id in "${REPLY_SKIPPED[@]+"${REPLY_SKIPPED[@]}"}"; do
-        log_info_t "Пункт «${id}» требует отдельного подтверждения — настройте его из меню" \
-"Item \"${id}\" needs explicit confirmation — set it up from the menu"
+        title="${ITEM_TITLES[$(( $(item_number "$id") - 1 ))]}"
+        log_info_t "«${title}» требует отдельного подтверждения — настройте из меню, пункт $(item_number "$id")" \
+"\"${title}\" needs explicit confirmation — set it up from the menu, item $(item_number "$id")"
     done
     if [ "${#REPLY_PENDING[@]}" -eq 0 ]; then
         log_success_t "Всё из этого профиля уже настроено" \

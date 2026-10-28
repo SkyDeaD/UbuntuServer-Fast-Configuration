@@ -29,8 +29,10 @@ install_usfc_wrapper() {
     [ "$TARGET_USER" = "root" ] && return 0
     local bashrc="${TARGET_HOME}/.bashrc" need_block=false
     if grep -qF "# >>> vps-setup:self >>>" "$bashrc" 2>/dev/null; then
-        if grep -qF "alias usfc='sudo usfc'" "$bashrc" 2>/dev/null; then
-            sed -i '/# >>> vps-setup:self >>>/,/# <<< vps-setup:self <<</d' "$bashrc"
+        # старые формы блока: alias (до функции) и функция без возврата кода
+        # (`usfc audit` в скрипте всегда давал 0 — код unset, а не usfc)
+        if ! grep -qF "usfc_rc" "$bashrc" 2>/dev/null; then
+            remove_block "$bashrc" vps-setup:self || return 1
             need_block=true
         fi
     else
@@ -41,9 +43,11 @@ install_usfc_wrapper() {
 
 # >>> vps-setup:self >>>
 usfc() {
-    sudo /usr/local/bin/usfc "$@"
+    local usfc_rc
+    sudo /usr/local/bin/usfc "$@"; usfc_rc=$?
     USFC_RESOURCE=1 source ~/.bashrc 2>/dev/null
     unset USFC_RESOURCE
+    return "$usfc_rc"
 }
 # <<< vps-setup:self <<<
 EOF

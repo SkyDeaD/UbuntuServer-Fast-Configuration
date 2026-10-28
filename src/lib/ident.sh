@@ -38,19 +38,35 @@ fi
 # passwordauthentication в status_sshhardening, который считается на каждой
 # перерисовке меню). Разбираем один раз в глобальные, обновляем только после
 # реальной правки конфига в apply_sshhardening()
+#
+# Читаем ВСЕ ключи, которые задаёт hardening, а не только пароль: раньше
+# проверялся один passwordauthentication, и чужой drop-in с
+# `PermitRootLogin yes` проходил незамеченным
+# SSHD_PORTS — все порты через пробел в порядке sshd -T: директива Port
+# аддитивна, и во время переноса порта (apply_sshhardening) их два. SSH_PORT —
+# первый из них, то есть старый, по которому человек сейчас и сидит
 SSH_PORT=22
+SSHD_PORTS='22'
 SSHD_PASSWORDAUTH=''
+SSHD_PERMITROOT=''
+SSHD_KBDINTERACTIVE=''
+SSHD_PUBKEY=''
 refresh_sshd_config() {
     local out key val
     out="$(sshd -T 2>/dev/null)"
-    SSH_PORT=''; SSHD_PASSWORDAUTH=''
+    SSH_PORT=''; SSHD_PORTS=''; SSHD_PASSWORDAUTH=''; SSHD_PERMITROOT=''; SSHD_KBDINTERACTIVE=''; SSHD_PUBKEY=''
     while read -r key val _; do
         case "$key" in
-            port)                   [ -z "$SSH_PORT" ] && SSH_PORT="$val" ;;
-            passwordauthentication) SSHD_PASSWORDAUTH="$val" ;;
+            port)                          [ -z "$SSH_PORT" ] && SSH_PORT="$val"
+                                           [[ " $SSHD_PORTS " == *" $val "* ]] || SSHD_PORTS="${SSHD_PORTS}${SSHD_PORTS:+ }${val}" ;;
+            passwordauthentication)        SSHD_PASSWORDAUTH="$val" ;;
+            permitrootlogin)               SSHD_PERMITROOT="$val" ;;
+            kbdinteractiveauthentication)  SSHD_KBDINTERACTIVE="$val" ;;
+            pubkeyauthentication)          SSHD_PUBKEY="$val" ;;
         esac
     done <<< "$out"
     [ -z "$SSH_PORT" ] && SSH_PORT=22
+    [ -z "$SSHD_PORTS" ] && SSHD_PORTS="$SSH_PORT"
 }
 refresh_sshd_config
 

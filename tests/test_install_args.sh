@@ -3,7 +3,7 @@
 # открывает меню.
 #
 # До 4.2.0 install.sh падал с `exit 2` на любом незнакомом аргументе, поэтому
-# `curl … | sudo bash -s -- --apply web` не начинал установку вовсе, а финальный
+# `curl … | sudo bash -s -- --apply web` (в 5.0 — `apply web`) не начинал установку вовсе, а финальный
 # `exec setup.sh </dev/tty` без терминала валился с «No such device or address»,
 # то есть установка в cloud-init заканчивалась ошибкой на последнем шаге.
 # Тестов на install.sh не было ни одного.
@@ -42,8 +42,17 @@ if [ -t 0 ]; then echo "SETUP-STDIN: терминал"; else echo "SETUP-STDIN: 
 STUB
 chmod +x "$TMP/fixture/setup.sh"
 echo "9.9.9" > "$TMP/fixture/VERSION"
-printf 'lib/fake.sh\n' > "$TMP/fixture/MODULES"
+printf 'lib/fake.sh\nlib/profiles.sh\n' > "$TMP/fixture/MODULES"
 echo '# заглушка модуля' > "$TMP/fixture/lib/fake.sh"
+# мини-таблица ответов: install.sh берёт из неё список флагов со значением
+cat > "$TMP/fixture/lib/profiles.sh" <<'PROF'
+USFC_ANSWER_KEYS=(
+    "HOSTNAME|HOSTNAME_BULK|host|--hostname|hostname|имя|name"
+    "TIMEZONE|TIMEZONE_BULK|tz|--timezone|hostname|пояс|zone"
+    "UFW|UFW_BULK|yn|--ufw|ufw|включить|enable"
+    "TG_CHAT|TG_CHAT_BULK|chat|--tg-chat|notify|кому|to"
+)
+PROF
 
 # ── шим curl: отдаёт файл из фикстуры вместо сети ────────────────────────────
 mkdir -p "$TMP/bin"
@@ -77,24 +86,24 @@ run() {
 
 # ── 1. аргументы доезжают до setup.sh, меню не открывается ───────────────────
 echo "аргументы форвардятся"
-run --apply web
-has   "setup.sh получил аргументы"  "$OUT" "SETUP-ARGS: --apply web"
+run apply web
+has   "setup.sh получил аргументы"  "$OUT" "SETUP-ARGS: apply web"
 hasnt "меню не открывалось"         "$OUT" "Терминала нет"
 [ "$RC" -eq 0 ] && ok "код возврата 0" || bad "код возврата $RC"
 
 # ── 2. --branch забирает себе установщик ─────────────────────────────────────
 echo ""
 echo "--branch не уезжает вниз"
-run --branch dev --apply zram --yes
-has   "setup.sh получил только своё" "$OUT"  "SETUP-ARGS: --apply zram --yes"
+run --branch dev apply zram --yes
+has   "setup.sh получил только своё" "$OUT"  "SETUP-ARGS: apply zram --yes"
 has   "ветка попала в URL"           "$URLS" "/dev/src/"
 hasnt "ветка не уехала в setup.sh"   "$OUT"  "--branch"
 
 # ── 3. явный разделитель отдаёт вниз даже наши флаги ─────────────────────────
 echo ""
 echo "разделитель --"
-run -- --branch собственная-ветка
-has "после -- всё уходит вниз" "$OUT"  "SETUP-ARGS: --branch собственная-ветка"
+run -- apply --branch собственная-ветка
+has "после -- всё уходит вниз" "$OUT"  "SETUP-ARGS: apply --branch собственная-ветка"
 has "ветка установщика осталась main" "$URLS" "/main/src/"
 
 # ── 4. без аргументов и без терминала: не падаем, а отчитываемся ─────────────
@@ -112,10 +121,73 @@ else
     [ "$RC" -eq 0 ] && ok "код возврата 0, а не ошибка" || bad "код возврата $RC"
 fi
 
+# ── 4б. одни модификаторы — это меню, а без терминала меню не открыть ────────
+# До 5.0 `… -s -- --lang en` уходил в setup.sh без терминала и зависал на
+# первом вопросе меню
+echo ""
+echo "только модификаторы и без терминала"
+if { : </dev/tty; } 2>/dev/null; then
+    echo "  ⚠ терминал доступен — проверку пропускаю (нужен запуск без tty)"
+else
+    run --lang en
+    has   "сказано, что меню не открывается" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался"           "$OUT" "SETUP-ARGS"
+fi
+
+# ── 4в. значение флага — не команда ──────────────────────────────────────────
+# Раньше имя команды искалось среди всех аргументов: `--hostname list` считалось
+# командой list, и меню без терминала не отсекалось
+echo ""
+echo "значение флага не принимается за команду"
+run apply basepkgs --hostname list --yes
+has   "команда после apply, значение list внутри" "$OUT" "SETUP-ARGS: apply basepkgs --hostname list --yes"
+hasnt "меню не открывалось" "$OUT" "Терминала нет"
+run --lang en apply web
+has   "общий флаг до команды" "$OUT" "SETUP-ARGS: --lang en apply web"
+run --hostname node-1 apply web
+has   "флаг ответа со значением до команды" "$OUT" "SETUP-ARGS: --hostname node-1 apply web"
+run --ufw list
+has   "yn-флаг не берёт значение: list — команда" "$OUT" "SETUP-ARGS: --ufw list"
+run --tg-chat -1001234567890 audit
+has   "отрицательное значение пропущено, audit — команда" "$OUT" "SETUP-ARGS: --tg-chat -1001234567890 audit"
+if { : </dev/tty; } 2>/dev/null; then
+    echo "  ⚠ терминал доступен — проверку пропускаю (нужен запуск без tty)"
+else
+    run --hostname list
+    has   "--hostname list без команды — это меню" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался" "$OUT" "SETUP-ARGS"
+    run --timezone help --lang en
+    has   "--timezone help без команды — это меню" "$OUT" "Терминала нет"
+    hasnt "setup.sh не запускался (help)" "$OUT" "SETUP-ARGS"
+    run --config list
+    has   "--config list без команды — это меню" "$OUT" "Терминала нет"
+fi
+
+# ── 4г. сбой при раскладке файлов возвращает старую установку целиком ────────
+echo ""
+echo "сбой раскладки: старые файлы возвращены"
+cat > "$TMP/bin/mv" <<'MVSHIM'
+#!/bin/bash
+# падает только на переносе в каталог установки, чтобы не ломать fetch
+if [ -n "${USFC_TEST_FAILMV:-}" ] && [ "${*: -1}" = "$USFC_TEST_FAILMV" ]; then exit 1; fi
+exec /bin/mv "$@"
+MVSHIM
+chmod +x "$TMP/bin/mv"
+rm -rf "$TMP/opt"; mkdir -p "$TMP/opt/lib"
+echo OLD-SETUP > "$TMP/opt/setup.sh"; echo OLD-MODULES > "$TMP/opt/MODULES"
+echo 1.0.0 > "$TMP/opt/VERSION"; echo OLD-LIB > "$TMP/opt/lib/a.sh"
+: > "$TMP/urls"; export USFC_TEST_URLS="$TMP/urls"
+OUT="$(USFC_TEST_FAILMV="$TMP/opt/MODULES" USFC_INSTALL_DIR="$TMP/opt" bash "$INSTALLER" apply web 2>&1)"; RC=$?
+[ "$RC" -eq 1 ] && ok "установка завершилась ошибкой" || bad "код возврата $RC"
+state="$(cat "$TMP/opt/setup.sh") $(cat "$TMP/opt/MODULES") $(cat "$TMP/opt/VERSION") $(cat "$TMP/opt/lib/a.sh" 2>/dev/null)"
+[ "$state" = "OLD-SETUP OLD-MODULES 1.0.0 OLD-LIB" ] && ok "setup.sh, MODULES, VERSION и lib прежние" || bad "состояние: «$state»"
+[ -n "$(find "$TMP/opt" -maxdepth 1 -name '*.old*')" ] && bad "остались *.old" || ok "служебных *.old не осталось"
+rm -f "$TMP/bin/mv"
+
 # ── 5. установка реально разложила файлы ─────────────────────────────────────
 echo ""
 echo "файлы на месте"
-run --apply web
+run apply web
 [ -x "$TMP/opt/setup.sh" ]   && ok "setup.sh установлен"      || bad "нет setup.sh"
 [ -f "$TMP/opt/VERSION" ]    && ok "VERSION установлен"       || bad "нет VERSION"
 [ -f "$TMP/opt/lib/fake.sh" ] && ok "модуль из манифеста установлен" || bad "нет модуля"
@@ -125,8 +197,13 @@ echo ""
 echo "справка"
 run --help
 has "справка упоминает передачу вниз" "$OUT" "usfc"
-has "есть пример с --apply"           "$OUT" "--apply"
+has "есть пример с командой apply"    "$OUT" "apply web"
 [ "$RC" -eq 0 ] && ok "код возврата 0" || bad "код возврата $RC"
+for args in "--help --lang en" "--lang en --help" "--lang=en -h"; do
+    # shellcheck disable=SC2086  # слова аргументов разделяются намеренно
+    run $args
+    has "справка по-английски: ${args}" "$OUT" "Usage: install.sh"
+done
 
 echo ""
 [ "$fail" -eq 0 ] && echo "аргументы установщика: все проверки пройдены" \

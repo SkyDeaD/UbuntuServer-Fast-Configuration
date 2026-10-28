@@ -78,11 +78,13 @@ apply_newuser() {
 "Creating a user needs a name and a password — skipped in batch mode."
         log_warn_t "Настройте отдельно пунктом $(item_number newuser)." \
 "Set it up separately via item $(item_number newuser)."
+        item_skip_t "нужны имя и пароль — вручную" "needs a name and password — manual"
         return
     fi
     if [ "$TARGET_USER" != "root" ]; then
         log_info_t "Скрипт уже работает от имени ${TARGET_USER} — отдельный пользователь не нужен" \
 "The script already runs as ${TARGET_USER} — a separate user is not needed"
+        # bulk-ok: пункт целиком пропускается в пакете
         if ! ask_yn_t "Всё равно создать ещё одного пользователя с sudo?" "Create another sudo user anyway?" N; then return; fi
     fi
 
@@ -99,8 +101,8 @@ apply_newuser() {
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
         t "Имя нового пользователя" "New user name"; local _p="$REPLY_T"
-        t "(латиница, начиная с буквы):" "(letters/digits, starting with a letter):"
-        echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
+        t "латиница, начиная с буквы" "letters/digits, starting with a letter"
+        ui_prompt "$_p" "$REPLY_T"
         read -r name </dev/tty
         if [ -z "$name" ]; then
             log_error_t "Пустое имя" \
@@ -114,6 +116,7 @@ apply_newuser() {
         if id -u "$name" &>/dev/null; then
             log_warn_t "Пользователь ${name} уже существует" \
 "User ${name} already exists"
+            # bulk-ok: пункт целиком пропускается в пакете
             if ask_yn_t "Использовать его и просто добавить в группу sudo?" "Use that account and just add it to the sudo group?" N; then
                 existing=true
                 break
@@ -165,8 +168,8 @@ apply_newuser() {
             local copied=0
             while IFS= read -r line; do
                 [[ "$line" =~ $key_re ]] || continue
-                grep -qxF "$line" "$auth_keys" 2>/dev/null && continue
-                echo "$line" | append_file "$auth_keys"
+                grep -qxF -- "$line" "$auth_keys" 2>/dev/null && continue
+                authkeys_add "$auth_keys" "$line"
                 copied=$((copied + 1))
             done < "$root_keys"
             log_success_t "Скопировано ключей: ${copied}" \
@@ -177,6 +180,7 @@ apply_newuser() {
         log_info_t "В /root/.ssh/authorized_keys ключей нет — копировать нечего" \
 "There are no keys in /root/.ssh/authorized_keys — nothing to copy"
     fi
+    # bulk-ok: пункт целиком пропускается в пакете
     if ask_yn_t "Добавить ещё один публичный ключ вручную?" "Add another public key by hand?" N; then
         add_pubkey_interactive "$auth_keys" && key_ok=true
     fi
@@ -186,17 +190,29 @@ apply_newuser() {
     chmod 600 "$auth_keys" 2>/dev/null
 
     # ── пароль ────────────────────────────────────────────────────────────────
-    local pw1 pw2 pw_set=false
+    local pw1 pw2 pw_set=false pw_locked=false
     attempt=0
     while [ "$attempt" -lt 3 ]; do
         attempt=$((attempt + 1))
         t "Пароль для ${name}" "Password for ${name}"; local _p="$REPLY_T"
-        t "(Enter — без пароля, вход только по ключу):" "(Enter for none — key-only login):"
-        echo -en "  ${BOLD}${_p}${NC} ${DIM}${REPLY_T}${NC} "
+        if [ "$existing" = true ]; then
+            t "Enter — оставить текущий" "Enter keeps the current one"
+        else
+            t "Enter — без пароля, вход только по ключу" "Enter for none — key-only login"
+        fi
+        ui_prompt "$_p" "$REPLY_T"
         read -rs pw1 </dev/tty; echo ""
         if [ -z "$pw1" ]; then
+            # У существующей учётки пароль уже свой: блокировать его по Enter
+            # значило молча отнять у человека вход по паролю и sudo
+            if [ "$existing" = true ]; then
+                log_info_t "Пароль ${name} не меняю" \
+"Leaving the password of ${name} unchanged"
+                pw_set=true
+                break
+            fi
             if [ "$key_ok" = true ]; then
-                passwd -l "$name" >/dev/null 2>&1
+                passwd -l "$name" >/dev/null 2>&1; pw_locked=true
                 log_success_t "Пароль не задан и заблокирован — вход только по SSH-ключу" \
 "No password set, and it is locked — SSH key login only"
                 pw_set=true
@@ -206,8 +222,8 @@ apply_newuser() {
 "Neither a password nor keys — the user could not log in at all. Set a password."
             continue
         fi
-        t "Повтори пароль:" "Repeat the password:"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Повтори пароль" "Repeat the password"
+        ui_prompt "$REPLY_T"
         read -rs pw2 </dev/tty; echo ""
         if [ "$pw1" != "$pw2" ]; then
             log_error_t "Пароли не совпали" \
@@ -229,11 +245,11 @@ apply_newuser() {
             log_success_t "Пароль установлен" \
 "Password set"
             pw_set=true
-        else
-            log_error_t "Не удалось установить пароль" \
-"Could not set the password"
+            break
         fi
-        break
+        # пользователь уже создан: без второй попытки он остался бы без пароля
+        log_error_t "Не удалось установить пароль — попробуй ещё раз" \
+"Could not set the password — try again"
     done
     unset pw1 pw2
     if [ "$pw_set" = false ]; then
@@ -244,8 +260,8 @@ apply_newuser() {
 "Set a password by hand: sudo passwd ${name}"
         else
             # попытки кончились, но ключ есть — молчать нельзя, иначе непонятно,
-            # с чем в итоге остался пользователь
-            passwd -l "$name" >/dev/null 2>&1
+            # с чем в итоге остался пользователь. Чужой пароль не трогаем
+            [ "$existing" = true ] || { passwd -l "$name" >/dev/null 2>&1; pw_locked=true; }
             log_warn_t "Пароль так и не задан — вход только по SSH-ключу" \
 "No password was set — SSH key login only"
             log_info_t "Задать позже: sudo passwd ${name}" \
@@ -261,6 +277,19 @@ apply_newuser() {
         log_error_t "Не удалось добавить ${name} в группу sudo" \
 "Could not add ${name} to the sudo group"
         return 1
+    fi
+    # Без пароля sudo по правилу %sudo не пройдёт никогда: спрашивать его
+    # будет нечем. Это не дополнительная опция, а условие рабочего админа
+    if [ "$pw_locked" = true ] && ! sudo_nopasswd_set "$name"; then
+        log_warn_t "Пароля у ${name} нет — обычный sudo спросит его и не пустит" \
+"${name} has no password — plain sudo will ask for one and refuse"
+        # bulk-ok: пункт целиком пропускается в пакете
+        if ask_yn_t "Разрешить ${name} sudo без пароля?" "Allow ${name} to use sudo without a password?" Y; then
+            sudo_nopasswd "$name"
+        else
+            log_warn_t "sudo у ${name} работать не будет, пока не задан пароль: sudo passwd ${name}" \
+"sudo will not work for ${name} until a password is set: sudo passwd ${name}"
+        fi
     fi
 
     invalidate_statuses

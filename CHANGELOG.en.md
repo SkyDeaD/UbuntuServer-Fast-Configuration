@@ -9,18 +9,168 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.0.0] — 2026-10-28
+
+Modes became commands (`usfc apply web` instead of `usfc --apply web`), SSH
+hardening is no longer overridden by foreign drop-ins, the swap priority is no
+longer lost in fstab, and a whole section applies the same way as items one by
+one. The menu has 19 items instead of 14, and the firewall learned UDP, ping
+and Docker.
+
+**This version is incompatible with the old flags.** Scripts with `--apply`,
+`--audit`, `--list`, `--backups`, `--restore` exit with code `2` and print the
+ready-made new line. What to rewrite and what changes on servers that are
+already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
+
 ### Added
 
-- **A full flag reference in the README** — in both languages, grouped by
-  purpose: installer flags, mode, modifiers, what to put in `--apply`, answer
-  file keys, exit codes, environment variables, and ready-made commands for
-  typical jobs. Putting together the line you need no longer means reading
-  `--help` and assembling flags in your head.
+- **Commands:** `usfc apply`, `audit`, `firewall`, `export`, `list`,
+  `backups`, `restore`, `help`, `version`. Each has its own options; an option
+  from another command is an error with an explanation. `usfc help <command>`
+  shows help for one command.
+- **A server in one command.** `curl … | sudo bash -s -- apply <items> <flags>`
+  installs usfc and runs the command right away, with no menu and no terminal.
+  Every answer-file key has a flag (`--swap`, `--allow`, `--ssh-port`,
+  `--reboot-time`…), plus a generic `--set KEY=VALUE`. A flag beats the
+  answers file. `--config` also takes an `https://` address.
+- **`usfc firewall`** — ports without the menu: `--allow 80,443,51820/udp`,
+  `--deny`, `--from <IP>`, `ping on|off`, `docker on|off`.
+- **`usfc export`** — an answers file for the current server and a one-line
+  command that repeats it on a new one. Secrets are never exported.
+- **New items:** "Hostname, time, NTP" (`hostname`), "TCP BBR" (`bbr`),
+  "Login greeting" (`motd`, a server card instead of the stock motd, with
+  rollback), "systemd journal cap" (`journald`), "Telegram alerts" (`notify`:
+  SSH logins, fail2ban bans, reboot required; the token never reaches the log,
+  argv or export).
+- **Firewall:** listening TCP and UDP ports with the process name, an editable
+  list, ranges and `--from`; SSH is allowed first. Ping replies can be turned
+  off by editing `before.rules` (`ping on` restores the file byte for byte).
+  Docker is tied to UFW through `DOCKER-USER`, so published container ports
+  are no longer open past the firewall.
+- **SSH port move** in two steps: first both ports are listened on (UFW,
+  fail2ban and `ssh.socket` are taken care of), and the old one is closed only
+  after a login on the new one is confirmed. Works without the menu too:
+  `usfc apply sshhardening --ssh-port N`.
+- **Reboot window** for unattended-upgrades: `--reboot-time 04:00`,
+  `--reboot-with-users`, in its own file `52usfc-reboot`.
+- **CLI block:** three starship presets (`minimal`, `git`, `powerline`, no
+  Nerd Font needed), functions `ports`, `dps`, `extract`, `myip`. A user
+  alias with the same name doesn't break the block.
+- **lazydocker**, optional in the Docker item — from the GitHub release with
+  its sha256 verified.
+- **Passwordless sudo** for a key-only user — asked, default yes: with a
+  locked password the `%sudo` rule does not let the user in at all.
+- **Menu:** ranges `1-5`, a three-line legend, an input error shown above the
+  prompt instead of vanishing after a second, a one-line result after a single
+  item, a "why" column for skipped items in the batch summary.
+- **Audit:** keyboard-interactive, a foreign drop-in overriding hardening, UDP
+  ports, ping, Docker ports past UFW.
+- **Documentation:** the reference [docs/CLI.en.md](docs/CLI.en.md) is the only
+  one, and `test_flags_doc.sh` checks it against the code in both directions;
+  [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md),
+  [docs/TROUBLESHOOTING.en.md](docs/TROUBLESHOOTING.en.md). The README got
+  shorter.
 
-  Plus `tests/test_flags_doc.sh`: the reference is checked against the code in
-  both directions and in both languages. Documentation lies silently — add a
-  flag and forget to describe it, remove one and forget to strike it out; no
-  run of the script would ever notice.
+### Changed
+
+- **SSH hardening writes `00-usfc-hardening.conf`** instead of
+  `10-hardening.conf` (the old one is removed on apply). Foreign lines that
+  would override ours are found up front and commented out with your consent.
+  After the restart every key is checked through `sshd -T`; on a mismatch the
+  change is rolled back and the mismatched keys are listed. Added
+  `KbdInteractiveAuthentication no`; `AllowUsers` only after a separate
+  question.
+- **fail2ban** writes its own `/etc/fail2ban/jail.d/usfc-sshd.local` with
+  `backend = systemd` and leaves `jail.local` alone. Debian 12 has no
+  `auth.log`, and the old jail found no log.
+- **Batch mode asks the same questions as manual mode**, only up front and
+  after the list is confirmed. Before, questions defaulting to "no" silently
+  became "no": certbot TLS templates were never installed, UFW was not enabled
+  even in the `web` and `secure` profiles. User creation goes first and
+  interactively.
+- **`--yes` no longer restarts Docker** in the `dockerlog` item: that needs an
+  explicit answer or `--docker-restart`.
+- **`usfc audit` returns `1`** on critical findings.
+- **Items on the command line beat `ITEMS=`** in the answers file; values in
+  the answers file are validated, garbage is an error with code `2`.
+- **The update check** runs only when the menu starts, not in `apply` or
+  `audit`.
+- **fastfetch** runs only on SSH login, not inside tmux and not when the motd
+  card is installed.
+- **Snapshots** remember files that did not exist, and `restore` removes them.
+  The first copy of a file per run is kept, not the last.
+- `/etc/default/zramswap` is edited in place; with `systemd-zram-generator`
+  present, zram-tools is not installed on top. Reconfiguring zram doesn't turn
+  swap off if what's in use there doesn't fit into free memory.
+- **`apply` again with new answers.** An item that is already applied is no
+  longer skipped silently when new settings are given for it: `--hostname`,
+  `--journal-max`, `--starship`, `--tg-chat`, `--swap`, and others. The full
+  list is in [docs/CLI.en.md](docs/CLI.en.md#usfc-apply).
+- **Choosing `unattended` or `notify` again in the menu** asks "set it up
+  again?" and turns the item off only on "no".
+- `/etc/fstab` is written atomically: a temporary file and `mv`, keeping the
+  mode and owner.
+
+### Fixed
+
+- **The swap priority was lost in fstab.** `sed` understood one form of the
+  line and silently skipped `defaults`, `sw,nofail`, `pri=5`, `UUID=` and
+  `LABEL=`, and mangled `swap swap` into `sw,pri=10ap`, while the item printed
+  "priority 10". Now the line is parsed by fields (on LVM too, where `swapon`
+  shows `/dev/dm-N`), the result is verified, and the item status shows `!`
+  when fstab has no priority.
+- **btop: "~/.config could not be created".** `~/.config` was created as root;
+  now every level belongs to the user, and an already broken one is repaired.
+- `restore ..` could point at `/var`: the label is now checked against its
+  format.
+- `.bashrc` blocks without an end marker removed everything to the end of the
+  file.
+- Update: the new version is downloaded in full before replacing, and the
+  previous one is restored on failure.
+- fail2ban did not reread its config after writing; a failed service start,
+  `apt install`, starship or fastfetch looked like success in the summary.
+- An existing user's password was locked when item 1 was applied again; a key
+  was glued to the last line of `authorized_keys` without a newline.
+- Ctrl+C did not stop a run.
+- `cloudflare.ini` was emptied before its snapshot.
+- **UFW could cut off SSH during a port move.** Enabling UFW allowed one SSH
+  port; now it allows every port sshd listens on, and if SSH listens nowhere,
+  UFW is not enabled. `--deny` protects all SSH ports.
+- **Ctrl+C in the middle of an SSH port move** could leave the config without
+  a `Port` line. Now an interrupt rolls the move back. The SSH hardening
+  rollback uses its own snapshot instead of the session's first one, which
+  could hold an old `Port`.
+- The updater and the installer, when they fail halfway, restore the old
+  `lib`, `setup.sh`, `MODULES`, and `VERSION` together, not just `lib`.
+- `install.sh` took a flag's value for a command (`--hostname list`).
+- `--ufw=Y` gave "unknown option" and now gives a clear hint;
+  `usfc help apply firewall` is an error instead of help for the last topic;
+  `HTTPS://` in `--config` is accepted in any case.
+- zram: `zram-generator.conf` is edited in place and other sections are kept;
+  priority 10 goes to every on-disk swap, not just the last one.
+- motd: symlinked scripts no longer strip `+x` from a package file outside
+  `/etc`; turning the card off asks for confirmation; a stale `motd.orig` is
+  overwritten.
+- dockerlog: another `log-driver` is no longer overwritten with `json-file`,
+  and a failed `daemon.json` write or a missing `python3` no longer looks like
+  success.
+- bbr in a container writes no files and doesn't fail on `sysctl -p`.
+- hostname: `preserve_hostname` for cloud-init is written even when the name
+  already matches.
+- notify: the SSH alert status checks the `pam_exec` line itself, not just
+  the marker.
+- The journald status no longer runs `journalctl --disk-usage` on every menu
+  frame; the journal size is shown again, via `du`.
+- Ctrl+C during SSH hardening rolls back `sshd_config`, edits to other
+  drop-ins and our own drop-in; if sshd was already restarted, it is
+  restarted again with the old settings.
+
+### Removed
+
+- The mode flags `--apply`, `--audit`, `--list`, `--backups`, `--restore`
+  (code `2` and a hint with the new line).
+- The flag reference in the README — it now lives in
+  [docs/CLI.en.md](docs/CLI.en.md).
 
 ## [4.2.0] — 2026-08-21
 
@@ -504,6 +654,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.2.0...v5.0.0
 [4.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.1...v4.1.0
 [4.0.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.0...v4.0.1

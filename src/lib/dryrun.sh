@@ -20,7 +20,7 @@
 # наружу: без них сухой прогон врал бы уже про текущее состояние системы.
 #
 # Полноту этого списка проверяет не глаз, а тест: tests/test_dryrun.sh
-# сверяет слепок /etc, dpkg и юнитов systemd до и после `--apply all --dry-run`.
+# сверяет слепок /etc, dpkg и юнитов systemd до и после `usfc apply all --dry-run`.
 
 # Метка сухого прогона живёт в ОДНОМ месте. Раньше тот же printf стоял ещё
 # в log.sh и apt.sh — три копии одной строки, то есть три места, где перевод
@@ -40,6 +40,57 @@ write_file() {
     # точка, через которую идут записи в системные файлы
     backup_file "$1"
     cat > "$1"
+}
+
+# write_file_atomic <путь> — как write_file, но через временный файл рядом
+# и mv. Для файлов, без которых система не загрузится (fstab): `cat >`
+# сначала обрезает файл, и на забитом диске запись падает с ENOSPC, оставив
+# пустой fstab. Симлинк mv заменил бы файлом — его пишем как обычно
+write_file_atomic() {
+    if [ "$USFC_DRY_RUN" = true ] || [ -L "$1" ] || [ ! -e "$1" ]; then
+        write_file "$1"; return
+    fi
+    local tmp
+    tmp="$(mktemp "${1}.usfc.XXXXXX")" || return 1
+    if ! cat > "$tmp" || ! chmod --reference="$1" "$tmp" || ! chown --reference="$1" "$tmp"; then
+        rm -f "$tmp"; return 1
+    fi
+    backup_file "$1"
+    mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
+# remove_file <путь> — удалить системный файл: снимок, потом rm. Сам rm в
+# сухом прогоне не подменяется (он в основном чистит временные файлы), поэтому
+# удаление системных файлов идёт только через эту функцию
+remove_file() {
+    [ -e "$1" ] || return 0
+    if [ "$USFC_DRY_RUN" = true ]; then
+        t "удаление" "removing"
+        _dry_say "${REPLY_T} ${1}"
+        return 0
+    fi
+    backup_file "$1"
+    rm -f "$1"
+}
+
+# remove_block <файл> <имя> — вырезать наш блок `# >>> <имя> >>>` …
+# `# <<< <имя> <<<` (в .bashrc). Через write_file, то есть со снимком и в
+# сухом прогоне без записи. Раньше это был `sed -i '/начало/,/конец/d'`:
+# мимо снимка, а без строки-конца он сносил всё до конца файла
+remove_block() {
+    local f="$1" start="# >>> $2 >>>" end="# <<< $2 <<<" tmp rc
+    grep -qF -- "$start" "$f" 2>/dev/null || return 0
+    if ! grep -qF -- "$end" "$f"; then
+        log_warn_t "В ${f} есть начало блока $2, но нет конца — не трогаю, поправь руками" \
+"${f} has the start of the $2 block but no end — leaving it alone, fix it by hand"
+        return 1
+    fi
+    # через временный файл: читать и обнулять один файл в одной трубе нельзя
+    tmp="$(mktemp)" || return 1
+    awk -v s="$start" -v e="$end" 'index($0, s) { skip = 1 } !skip { print } index($0, e) { skip = 0 }' "$f" > "$tmp"
+    write_file "$f" < "$tmp"; rc=$?
+    rm -f "$tmp"
+    return "$rc"
 }
 
 # append_file <путь> — то же, но дописать в конец
@@ -73,13 +124,13 @@ dry_run_enable() {
     mkswap()   { _dry_say "mkswap $*"; }
     fallocate(){ _dry_say "fallocate $*"; }
     dd()       { _dry_say "dd $*"; }
-    ufw()      { _dry_say "ufw $*"; }
+    groupadd() { _dry_say "groupadd $*"; }
     # modprobe грузит модуль в ядро — это изменение состояния машины.
     # modinfo рядом не подменяем: он только ищет файл модуля и ничего не делает
     modprobe() { _dry_say "modprobe $*"; }
     add-apt-repository() { _dry_say "add-apt-repository $*"; }
     # Эти четыре нашлись, когда предпросмотр пункта сделал достижимым SSH
-    # hardening: `--apply all --dry-run` его отфильтровывает, поэтому дыра
+    # hardening: `usfc apply all --dry-run` его отфильтровывает, поэтому дыра
     # не всплывала. А там `cp /etc/ssh/sshd_config .bak.$(date +%s)` — то есть
     # сухой прогон засорял /etc/ssh копией на каждый заход, — и `mv` поверх
     # authorized_keys. Сухой прогон, который что-то меняет, хуже, чем его
@@ -109,6 +160,37 @@ dry_run_enable() {
         esac
     }
     swapoff() { _dry_say "swapoff $*"; }
+
+    # ufw status/show/version/app list|info только читают — без них статус
+    # пункта в предпросмотре всегда был «выключен», даже на активном UFW
+    ufw() {
+        case "${1:-}" in
+            status|show|version) command ufw "$@" ;;
+            app) case "${2:-}" in list|info) command ufw "$@" ;; *) _dry_say "ufw $*" ;; esac ;;
+            *) _dry_say "ufw $*" ;;
+        esac
+    }
+
+    # Пункт hostname (5.0): имя, часовой пояс, NTP. Без аргументов и status/
+    # show/list-* — только чтение. У hostnamectl наружу — только вызовы из
+    # одних этих слов: `hostnamectl hostname ИМЯ` (systemd ≥ 249) и
+    # `--static set-hostname X` имя меняют, хотя начинаются так же
+    hostnamectl() {
+        local a
+        for a in "$@"; do
+            case "$a" in
+                status|hostname|--static|--transient|--pretty) ;;
+                *) _dry_say "hostnamectl $*"; return 0 ;;
+            esac
+        done
+        command hostnamectl "$@"
+    }
+    timedatectl() {
+        case "${1:-}" in
+            ''|status|show|show-timesync|timesync-status|list-timezones) command timedatectl "$@" ;;
+            *) _dry_say "timedatectl $*" ;;
+        esac
+    }
 
     sed() {
         # мутирует только с -i

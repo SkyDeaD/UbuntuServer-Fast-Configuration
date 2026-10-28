@@ -34,7 +34,12 @@ with_no_service_start() {
 
 # Забытый policy-rc.d тихо ломает старт сервисов при ЛЮБОЙ будущей apt install
 # в системе — поэтому убираем его и при аварийном выходе, не только при штатном
-trap 'cleanup_spinner; drop_policy_rc_d' EXIT INT TERM
+#
+# INT и TERM — отдельно и с exit: ловушка на сигнал без exit гасит сам
+# сигнал, и после Ctrl+C посреди apt install прогон шёл к следующему пункту
+trap 'cleanup_spinner; drop_policy_rc_d; cleanup_config_tmp' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Предзаданные ответы для пакетного режима (см. main): пусто — спрашиваем.
 # Читаются косвенно, через ${!1} в resolve_autostart — shellcheck этого не видит.
@@ -119,6 +124,7 @@ apply_service_autostart() {
         else
             log_error_t "Не удалось запустить ${svc} — подробности: journalctl -u ${svc}" \
 "Could not start ${svc} — details: journalctl -u ${svc}"
+            return 1
         fi
     else
         systemctl disable --now "${REPLY_UNITS[@]}" >/dev/null 2>&1

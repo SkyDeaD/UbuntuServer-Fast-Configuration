@@ -174,10 +174,17 @@ show_item_help() {
             i=$((i+1))
         done
         box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$desc_w" "$st_w"
+        # Легенда значков статуса: одним цветом, чтобы truncate_colored
+        # обрезал её на узком терминале, не теряя цвет
+        t "✓ применено · ! требует внимания · ○ не применено · ⇄ выключается повтором" \
+          "✓ applied · ! needs attention · ○ not applied · ⇄ pick again to undo"
+        truncate_colored "${DIM}${REPLY_T}${NC}" "$(( TERM_W - 2 ))"
+        echo -e "  ${REPLY_TRUNC}"
 
         echo ""
-        t "Номер пункта — подробности, Enter — назад:" "Item number for details, Enter to go back:"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Номер пункта — подробности" "Item number for details"; local _q="$REPLY_T"
+        t "Enter — назад" "Enter to go back"
+        ui_prompt "$_q" "$REPLY_T"
         local choice
         read -r choice </dev/tty
         [ -z "$choice" ] && return 0

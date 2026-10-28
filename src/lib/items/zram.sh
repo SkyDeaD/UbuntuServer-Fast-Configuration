@@ -149,15 +149,266 @@ zram_report_start_failure() {
     zram_stand_down
 }
 
+# ── Настройка самого zram ────────────────────────────────────────────────────
+# Раньше /etc/default/zramswap перезаписывался целиком тремя строками, и всё,
+# что там правили руками, пропадало. Теперь меняются только наши ключи, а SIZE
+# (он перебил бы PERCENT) комментируется с пометкой.
+#
+# zram бывает поднят не zram-tools, а systemd-zram-generator (Fedora-подход,
+# встречается и на Ubuntu). Ставить zram-tools поверх нельзя: две службы
+# дерутся за /dev/zram0, и после перезагрузки одна из них падает. Поэтому
+# в этом случае настраивается сам генератор.
+zram_uses_generator() {
+    dpkg-query -W -f='${Status}' systemd-zram-generator 2>/dev/null | grep 'install ok installed' >/dev/null
+}
+
+zramswap_write_conf() {
+    local pct="$1" f=/etc/default/zramswap content
+    content="$(cat "$f" 2>/dev/null)"
+    # Два прохода: сперва узнать, у каких ключей есть активная строка. Новое
+    # значение пишется в первую активную (а без неё — в первую закомментированную),
+    # остальные активные комментируются: при `source` побеждает последняя, и
+    # забытый ниже PERCENT=30 молча перебил бы наш
+    content="$(printf '%s\n' "$content" | awk -v pct="$pct" '
+        BEGIN { want["ALGO"] = "lz4"; want["PERCENT"] = pct; want["PRIORITY"] = "100" }
+        { line[NR] = $0 }
+        END {
+            for (i = 1; i <= NR; i++) {
+                k = line[i]; sub(/^[[:space:]]*/, "", k)
+                key = k; sub(/=.*/, "", key)
+                if (k ~ /^[A-Z_]+=/ && (key in want)) active[key] = 1
+            }
+            for (i = 1; i <= NR; i++) {
+                isact = (line[i] ~ /^[[:space:]]*[A-Z_]+=/)
+                k = line[i]; sub(/^[[:space:]]*#?[[:space:]]*/, "", k)
+                key = k; sub(/=.*/, "", key)
+                if (k ~ /^[A-Z_]+=/ && (key in want)) {
+                    if (key in done) {
+                        if (isact) print "# usfc: " key " is set above: " line[i]; else print line[i]
+                        continue
+                    }
+                    if ((key in active) && !isact) { print line[i]; continue }
+                    print key "=" want[key]; done[key] = 1; continue
+                }
+                if (line[i] ~ /^[[:space:]]*SIZE=/) { print "# usfc: PERCENT is used instead: " line[i]; continue }
+                if (line[i] != "" || i > 1) print line[i]
+            }
+            for (key in want) if (!(key in done)) print key "=" want[key]
+        }')"
+    printf '%s\n' "$content" | write_file "$f"
+}
+
+# zram_swapoff_fits — можно ли сейчас снять /dev/zram0. Перенастройка
+# останавливает zram, и всё, что в нём лежит, распаковывается обратно в RAM.
+# Не влезет — OOM-killer, а на маленьком VPS и зависание. Порог тот же, что
+# у swap_set_pri и resize_swapfile
+zram_swapoff_fits() {
+    local used_mb avail_mb
+    used_mb="$(human_to_mb "$(swapon --show --noheadings --raw 2>/dev/null | awk '$1=="/dev/zram0" {print $4; exit}')")"
+    avail_mb="$(awk '/^MemAvailable:/{print int($2/1024)}' /proc/meminfo 2>/dev/null)"
+    [[ "$avail_mb" =~ ^[0-9]+$ ]] || avail_mb=0
+    if [ "$used_mb" -gt 0 ] && [ "$used_mb" -ge $(( avail_mb - 200 )) ]; then
+        log_warn_t "В zram занято ${used_mb} МБ, а свободной памяти ${avail_mb} МБ — перенастройка сейчас рискует уронить процессы, не трогаю" \
+"zram holds ${used_mb} MB and only ${avail_mb} MB of memory is free — reconfiguring now risks killing processes, leaving it alone"
+        log_info_t "Освободи память (или перезагрузись) и вернись в этот пункт" \
+"Free some memory (or reboot) and come back to this item"
+        return 1
+    fi
+    return 0
+}
+
+# Путь вынесен в переменную ради tests/test_fstab_swap.sh; в работе всегда умолчание
+ZRAM_GENERATOR_CONF="${ZRAM_GENERATOR_CONF:-/etc/systemd/zram-generator.conf}"
+
+# zram_generator_write_conf <процент> — поправить конфиг генератора на месте.
+# Раньше файл писался целиком, и пропадали чужие секции ([zram1] и др.) и
+# опции. Теперь меняются только три наших ключа секции [zram0]; повтор ключа
+# внутри секции комментируется, нет ключа — дописывается в конец секции,
+# нет секции — дописывается секция
+zram_generator_write_conf() {
+    local pct="$1" f="$ZRAM_GENERATOR_CONF" cur=''
+    # Файл читается целиком до записи: чтение и запись в один путь через
+    # конвейер гоняются друг с другом
+    [ -f "$f" ] && cur="$(command cat "$f")"
+    printf '%s' "$cur" | awk -v pct="$pct" '
+        BEGIN { nk = 3
+                key[1] = "zram-size";             val[1] = "ram * " pct " / 100"
+                key[2] = "compression-algorithm"; val[2] = "lz4"
+                key[3] = "swap-priority";         val[3] = "100" }
+        function flush(   i) {
+            for (i = 1; i <= nk; i++) if (!(key[i] in done)) print key[i] " = " val[i]
+            if (held != "") printf "%s", held
+            held = ""; delete done
+        }
+        /^[[:space:]]*\[.*\]/ {
+            name = $0; sub(/^[[:space:]]*\[/, "", name); sub(/\].*/, "", name)
+            if (insec) flush(); else if (held != "") { printf "%s", held; held = "" }
+            insec = (name == "zram0"); if (insec) seen = 1
+            print; next
+        }
+        !insec { print; next }
+        /^[[:space:]]*$/ { held = held $0 "\n"; next }
+        {
+            if (held != "") { printf "%s", held; held = "" }
+            k = $0
+            if (k ~ /^[[:space:]]*[A-Za-z-]+[[:space:]]*=/) {
+                sub(/^[[:space:]]*/, "", k); sub(/[[:space:]]*=.*/, "", k)
+                for (i = 1; i <= nk; i++) if (k == key[i]) {
+                    if (key[i] in done) print "# usfc: duplicate: " $0
+                    else { print key[i] " = " val[i]; done[key[i]] = 1 }
+                    next
+                }
+            }
+            print
+        }
+        END {
+            if (insec) flush()
+            else if (!seen) {
+                if (NR > 0) print ""
+                print "[zram0]"; flush()
+            }
+        }' | write_file "$f"
+}
+
+# zram_configure <процент> — настроить и поднять zram; 0 — zram работает
+zram_configure() {
+    local pct="$1"
+    if zram_uses_generator; then
+        log_info_t "zram управляется systemd-zram-generator — настраиваю его, zram-tools не ставлю" \
+"zram is managed by systemd-zram-generator — configuring it instead of installing zram-tools"
+        zram_generator_write_conf "$pct"
+        systemctl daemon-reload
+        systemctl restart systemd-zram-setup@zram0.service 2>/dev/null
+    else
+        ensure_pkg "zram-tools" zram-tools || {
+            log_error_t "Установка zram-tools не удалась" "Installing zram-tools failed"; return 1; }
+        systemctl stop zramswap 2>/dev/null
+        swapoff /dev/zram0 2>/dev/null || true
+        zramswap_write_conf "$pct"
+        if ! systemctl start zramswap; then
+            sleep 2
+            systemctl start zramswap
+        fi
+    fi
+    [ "$USFC_DRY_RUN" = true ] && return 0
+    swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null
+}
+
+# Вопросы пакетного режима — те же, что задаёт apply_zram (см. lib/bulk.sh)
+preask_zram() {
+    read_swap_state
+    if [ "$ZRAM_ACTIVE" = true ] && [ "$ZRAM_PRIO" != "100" ]; then
+        # До 5.0 здесь спрашивался процент, а сам вопрос «перенастроить»
+        # в пакете молча становился «нет» — ответ пропадал зря
+        echo ""
+        log_warn_t "zram активен, но приоритет ${ZRAM_PRIO} (рекомендуется 100) — похоже, настраивали вручную" \
+"zram is active but its priority is ${ZRAM_PRIO} (100 recommended) — looks hand-tuned"
+        # shellcheck disable=SC2034  # ZRAM_RECONF_BULK читается через ask_bulk_yn
+        if ask_yn_t "Перенастроить zram под рекомендованные значения?" "Reconfigure zram to the recommended values?" N; then
+            ZRAM_RECONF_BULK=Y
+            ZRAM_BULK_PERCENT="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" 75)"
+        else
+            ZRAM_RECONF_BULK=N
+        fi
+    elif [ "$ZRAM_ACTIVE" != true ]; then
+        echo ""
+        log_info_t "zram — сжатая память вместо свопа на диске: быстрее и не треплет SSD. 75% — разумный дефолт" \
+"zram is compressed memory instead of on-disk swap: faster, and it spares the SSD. 75% is a sensible default"
+        ZRAM_BULK_PERCENT="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" 75)"
+    fi
+    if [ "$SWAP_ACTIVE" != true ]; then
+        echo ""
+        log_info_t "Своп-файл — запас на диске на случай, если zram кончится" \
+"A swap file is the on-disk reserve for when zram runs out"
+        SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$(suggest_swap_mb)")"
+    elif [ "$SWAP_TYPE" = "file" ]; then
+        local sw_want
+        sw_want="$(suggest_swap_mb "$SWAP_SIZE_MB")"
+        if swap_needs_resize "$SWAP_SIZE_MB" "$sw_want"; then
+            log_info_t "Своп ${SWAP_PATH}: сейчас ${SWAP_SIZE_MB} МБ, рекомендуется ${sw_want} МБ" \
+"Swap ${SWAP_PATH}: currently ${SWAP_SIZE_MB} MB, recommended ${sw_want} MB"
+            SWAP_BULK_MB="$(ask_value_t "Размер резервного swap-файла, МБ?" "Backup swap file size, MB?" "$sw_want")"
+        fi
+    fi
+    # sysctl — такая же рекомендация пункта. Прежний дефолт вычислялся из
+    # текущих значений и выпадал в «нет» на любой машине, где их хоть немного
+    # трогали, — рекомендация тихо не применялась (tests/test_sysctl.sh)
+    local cur_sw cur_vfs
+    cur_sw="$(cat "${USFC_PROC_VM}"/swappiness 2>/dev/null || echo '?')"
+    cur_vfs="$(cat "${USFC_PROC_VM}"/vfs_cache_pressure 2>/dev/null || echo '?')"
+    if ! { [ "$cur_sw" = "80" ] && [ "$cur_vfs" = "50" ]; }; then
+        echo ""
+        log_info_t "Сейчас swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. Под zram рекомендуются 80 и 50: своп быстрый, и отдавать в него страницы охотнее выгодно" \
+"Currently swappiness=${cur_sw}, vfs_cache_pressure=${cur_vfs}. With zram 80 and 50 are recommended: swap is fast here, so paging out more eagerly pays off"
+        if ask_yn_t "Применить рекомендованные значения sysctl?" "Apply the recommended sysctl values?"; then
+            SYSCTL_BULK=Y
+        else
+            SYSCTL_BULK=N
+        fi
+    fi
+}
+
+# zram_fix_swap_prios <путь_основного_свопа> <его_приоритет> — довести приоритет 10 у ВСЕХ
+# активных дисковых свопов (SWAP_PATHS из read_swap_state) и в fstab, и сейчас.
+# REPLY_SWAP_LAST_PRIO — приоритет свопа, который read_swap_state считает
+# основным (по нему apply_zram решает, предлагать ли менять размер)
+REPLY_SWAP_LAST_PRIO=''
+zram_fix_swap_prios() {
+    # Дисковых свопов может быть несколько (/swap.img и раздел провайдера):
+    # статус требует приоритет 10 у каждого, поэтому и чиним каждый
+    local sw_i sw_path sw_cur
+    REPLY_SWAP_LAST_PRIO="$2"
+    for (( sw_i = 0; sw_i < ${#SWAP_PATHS[@]}; sw_i++ )); do
+        sw_path="${SWAP_PATHS[sw_i]}"; sw_cur="${SWAP_PRIOS[sw_i]}"
+        if [ "$sw_cur" != "10" ]; then
+            log_warn_t "Своп на диске (${sw_path}) активен, но приоритет ${sw_cur} (рекомендуется 10)" \
+"On-disk swap (${sw_path}) is active but its priority is ${sw_cur} (10 recommended)"
+            if ask_yn_t "Исправить приоритет ${sw_path} на 10 (в fstab и сейчас)?" "Set the priority of ${sw_path} to 10 (in fstab and right now)?"; then
+                if swap_set_pri "$sw_path" 10; then
+                    log_success_t "Приоритет исправлен" \
+"Priority fixed"
+                    [ "$sw_path" = "$1" ] && REPLY_SWAP_LAST_PRIO=10
+                fi
+            fi
+        else
+            # Рабочий приоритет 10 ещё не значит, что он переживёт перезагрузку:
+            # его могли выставить `swapon -p` руками. Смотрим и в fstab
+            fstab_swap_pri "$sw_path"
+            if [ "$REPLY_FSTAB_PRI" != "10" ]; then
+                log_warn_t "${sw_path}: сейчас приоритет 10, но в ${USFC_FSTAB} он не записан — после перезагрузки сбросится" \
+"${sw_path}: priority is 10 right now, but ${USFC_FSTAB} does not record it — a reboot would reset it"
+                if fstab_set_swap_pri "$sw_path" 10; then
+                    log_success_t "Приоритет 10 записан в ${USFC_FSTAB}" \
+"Priority 10 written to ${USFC_FSTAB}"
+                else
+                    log_error_t "Не удалось записать приоритет в ${USFC_FSTAB}" \
+"Could not write the priority to ${USFC_FSTAB}"
+                fi
+            fi
+        fi
+    done
+}
+
 status_zram() {
-    local zram_ok=false swap_ok=false
+    local zram_ok=false swap_ok=false fstab_ok=true
     local n t s u p
     while read -r n t s u p; do
         case "$n" in
             /dev/zram*) [ "$p" = "100" ] && zram_ok=true ;;
-            *)          [ "$p" = "10" ] && swap_ok=true ;;
+            *)
+                [ "$p" = "10" ] && swap_ok=true
+                # Рабочий приоритет без записи в fstab после перезагрузки
+                # пропадает. Считать такое «настроено» нельзя: пункт —
+                # переключатель, и повторный выбор выключил бы его, вместо
+                # того чтобы починить
+                fstab_swap_pri "$n"
+                [ "$REPLY_FSTAB_PRI" = "10" ] || fstab_ok=false
+                ;;
         esac
     done < <(swapon --show --noheadings --raw 2>/dev/null)
+    if [ "$swap_ok" = true ] && [ "$fstab_ok" = false ]; then
+        st "$YELLOW" "! приоритет свопа не записан в fstab" "! swap priority not in fstab"; return 1
+    fi
     if [ "$zram_ok" = true ] && [ "$swap_ok" = true ]; then
         st "$GREEN" "✓ настроено" "✓ configured"; return 0
     elif [ "$zram_ok" = true ] || [ "$swap_ok" = true ]; then
@@ -179,28 +430,17 @@ apply_zram() {
         else
             log_warn_t "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную" \
 "zram is active but its priority is ${zram_prio} (100 recommended) — looks hand-tuned"
-            if ask_yn_t "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N; then
+            if ask_bulk_yn ZRAM_RECONF_BULK "Перенастроить под рекомендованные значения?" "Reconfigure it to the recommended values?" N \
+                && zram_swapoff_fits; then
                 local cur_percent zram_percent
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
-                zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "$cur_percent")"
-                if ensure_pkg "zram-tools" zram-tools; then
-                    systemctl stop zramswap 2>/dev/null
-                    swapoff /dev/zram0 2>/dev/null || true
-                    printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
-                    if ! systemctl start zramswap; then
-                        sleep 2
-                        systemctl start zramswap
-                    fi
-                    if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
-                        log_success_t "zram перенастроен (${zram_percent}% RAM)" \
+                zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-$cur_percent}")"
+                if zram_configure "$zram_percent"; then
+                    log_success_t "zram перенастроен (${zram_percent}% RAM)" \
 "zram reconfigured (${zram_percent}% of RAM)"
-                    else
-                        zram_report_start_failure
-                    fi
                 else
-                    log_error_t "Установка zram-tools не удалась" \
-"Installing zram-tools failed"
+                    zram_report_start_failure
                 fi
             fi
         fi
@@ -211,28 +451,22 @@ apply_zram() {
         if zram_ensure_module; then
             local zram_percent
             zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-75}")"
-            if ensure_pkg "zram-tools" zram-tools; then
-                systemctl stop zramswap 2>/dev/null
-                swapoff /dev/zram0 2>/dev/null || true
-                printf 'ALGO=lz4\nPERCENT=%s\nPRIORITY=100\n' "$zram_percent" | write_file /etc/default/zramswap
-                if ! systemctl start zramswap; then
-                    sleep 2
-                    systemctl start zramswap
-                fi
-                if swapon --show --noheadings --raw 2>/dev/null | awk '{print $1}' | grep '^/dev/zram' >/dev/null; then
-                    log_success_t "zram-tools установлен и настроен (${zram_percent}% RAM)" \
-"zram-tools installed and configured (${zram_percent}% of RAM)"
-                else
-                    zram_report_start_failure
-                fi
+            if zram_configure "$zram_percent"; then
+                log_success_t "zram установлен и настроен (${zram_percent}% RAM)" \
+"zram installed and configured (${zram_percent}% of RAM)"
             else
-                log_error_t "Установка zram-tools не удалась" \
-"Installing zram-tools failed"
+                zram_report_start_failure
             fi
         fi
     fi
 
     if [ "$swap_active" = true ]; then
+        # Сначала приоритет, потом размер. Раньше это были две разные ветки, и
+        # заранее заданный в пакетном режиме размер терялся, если приоритет
+        # был не 10: до вопроса о размере дело просто не доходило
+        zram_fix_swap_prios "$swap_path" "$swap_prio"
+        swap_prio="$REPLY_SWAP_LAST_PRIO"
+
         if [ "$swap_prio" = "10" ]; then
             local sw_suggest
             sw_suggest="$(suggest_swap_mb "$SWAP_SIZE_MB")"
@@ -253,6 +487,7 @@ apply_zram() {
                 local want_resize=false
                 if [ "$BULK_MODE" = true ]; then
                     [ -n "$SWAP_BULK_MB" ] && want_resize=true
+                # bulk-ok: пакетная ветка — строкой выше
                 elif ask_yn_t "Изменить размер swap-файла?" "Resize the swap file?" N; then
                     want_resize=true
                 fi
@@ -270,26 +505,6 @@ apply_zram() {
                 log_success_t "Размер близок к рекомендуемому (${sw_suggest} МБ) — оставляю как есть" \
 "Close enough to the recommendation (${sw_suggest} MB) — leaving it as is"
             fi
-        else
-            log_warn_t "Своп на диске (${swap_path}) активен, но приоритет ${swap_prio} (рекомендуется 10)" \
-"On-disk swap (${swap_path}) is active but its priority is ${swap_prio} (10 recommended)"
-            if ask_yn_t "Исправить приоритет ${swap_path} в /etc/fstab на 10?" "Set the priority of ${swap_path} to 10 in /etc/fstab?"; then
-                local esc_path
-                esc_path="$(printf '%s' "$swap_path" | sed 's/[.[\*^$/]/\\&/g')"
-                sed -i -E "s#^(${esc_path}\s+none\s+swap\s+)sw([^,].*)?\$#\1sw,pri=10\2#" /etc/fstab
-                swapoff "$swap_path" 2>/dev/null || true
-                swapon -a
-                # sed молча не найдёт строку, если своп в fstab указан через
-                # UUID=/LABEL=, а не путём (типично для разделов) — тогда без
-                # этой проверки log_success был бы враньём
-                if swapon --show --noheadings --raw 2>/dev/null | awk -v p="$swap_path" '$1==p {print $5}' | grep '^10$' >/dev/null; then
-                    log_success_t "Приоритет исправлен" \
-"Priority fixed"
-                else
-                    log_error_t "Не удалось исправить приоритет ${swap_path} — возможно, в /etc/fstab он указан через UUID=/LABEL=, а не путём. Поправьте вручную: pri=10 в опциях монтирования" \
-"Could not fix the priority of ${swap_path} — /etc/fstab may reference it by UUID= or LABEL= rather than by path. Fix it by hand: pri=10 in the mount options"
-                fi
-            fi
         fi
     else
         local suggested_mb
@@ -297,12 +512,17 @@ apply_zram() {
         if ask_yn_t "Создать резервный swap-файл (по умолчанию ${suggested_mb} МБ, приоритет 10)?" "Create a backup swap file (${suggested_mb} MB by default, priority 10)?"; then
             local swap_mb
             swap_mb="$(ask_value_t "Размер swap-файла, МБ?" "Swap file size, MB?" "${SWAP_BULK_MB:-$suggested_mb}")"
-            if create_swapfile /swapfile "$swap_mb"; then
-                ensure_fstab_swap /swapfile
-                swapoff /swapfile 2>/dev/null
-                swapon -a 2>/dev/null       # поднимаем уже с приоритетом из fstab
-                log_success_t "swapfile создан (${swap_mb} МБ, приоритет 10)" \
+            if [ "$swap_mb" -lt 64 ]; then
+                log_error_t "Слишком мало (${swap_mb} МБ) — swap-файл не создаю" \
+"Too small (${swap_mb} MB) — not creating a swap file"
+            elif create_swapfile /swapfile "$swap_mb"; then
+                if swap_set_pri /swapfile 10; then
+                    log_success_t "swapfile создан (${swap_mb} МБ, приоритет 10)" \
 "swapfile created (${swap_mb} MB, priority 10)"
+                else
+                    log_warn_t "swapfile создан (${swap_mb} МБ), но приоритет 10 выставить не удалось" \
+"swapfile created (${swap_mb} MB), but priority 10 could not be set"
+                fi
             else
                 log_error_t "Не удалось создать /swapfile на ${swap_mb} МБ — подробности выше" \
 "Could not create a ${swap_mb} MB /swapfile — details above"
@@ -332,7 +552,16 @@ apply_zram() {
 
 disable_zram() {
     if ask_yn_t "Выключить zram-устройство (swapfile на диске НЕ трогается)?" "Disable the zram device (the on-disk swapfile is NOT touched)?" N; then
-        systemctl disable --now zramswap &>/dev/null || true
+        if zram_uses_generator; then
+            # у генератора нет «disable»: устройство описывает конфиг, без
+            # него после перезагрузки zram просто не создаётся
+            remove_file /etc/systemd/zram-generator.conf
+            systemctl stop systemd-zram-setup@zram0.service &>/dev/null || true
+            log_info_t "Если zram-size задан в /usr/lib/systemd/zram-generator.conf, zram вернётся после перезагрузки — уберите пакет systemd-zram-generator" \
+"If zram-size is set in /usr/lib/systemd/zram-generator.conf, zram comes back after a reboot — remove the systemd-zram-generator package"
+        else
+            systemctl disable --now zramswap &>/dev/null || true
+        fi
         log_success_t "zram выключен. swapfile (если есть) продолжает работать" \
 "zram disabled. The swapfile, if any, keeps working"
     fi

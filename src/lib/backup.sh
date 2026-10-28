@@ -38,19 +38,37 @@ backup_made() {
     [ -d "$USFC_BACKUP_DIR" ] && [ -n "$(ls -A "$USFC_BACKUP_DIR" 2>/dev/null)" ]
 }
 
-# backup_file <путь> — сохранить копию, если файл существует.
-# Молчит про несуществующие: создание нового файла откатывать нечем,
-# для этого есть команды удаления на экране I.
+# Список файлов, которых до прогона не было: restore их удаляет. Лежит в
+# корне снимка рядом с копиями и в списки файлов не попадает
+USFC_CREATED_LIST=".usfc-created"
+
+# backup_file <путь> — сохранить копию, если файл существует, или запомнить,
+# что его не было: откат созданного — удаление (drop-in sshd, sysctl.d…).
+#
+# Первая запись за прогон — единственная. .bashrc за один заход дописывают
+# обёртка, cli и fastfetch; раньше каждая запись перезаписывала снимок, и
+# `usfc restore` возвращал файл, в котором уже были почти все наши правки.
+# По той же причине созданный и потом дописанный файл остаётся «созданным»
 backup_file() {
     local src="$1" dir dst
-    [ -f "$src" ] || return 0
     [ "$USFC_DRY_RUN" = true ] && return 0
+    [ -f "$src" ] || [ ! -e "$src" ] || return 0      # каталог, сокет — не наше
     dir="$(backup_session_dir)" || return 0
     dst="${dir}${src}"
+    [ -e "$dst" ] && return 0
+    grep -qxF -- "$src" "${dir}/${USFC_CREATED_LIST}" 2>/dev/null && return 0
+    if [ ! -e "$src" ]; then
+        printf '%s\n' "$src" >> "${dir}/${USFC_CREATED_LIST}"
+        return 0
+    fi
     mkdir -p "$(dirname "$dst")" 2>/dev/null || return 0
     # -p сохраняет права и время: восстановленный sudoers с чужими правами
     # хуже, чем не восстановленный вовсе
-    cp -p "$src" "$dst" 2>/dev/null || return 0
+    if ! cp -p "$src" "$dst" 2>/dev/null; then
+        # запись всё равно пойдёт — но человек должен знать, что отката нет
+        log_warn_t "Снимок ${src} не сохранился (место на диске?) — откатить эту правку будет нечем" \
+"Could not snapshot ${src} (disk space?) — this change cannot be rolled back"
+    fi
     return 0
 }
 
@@ -67,10 +85,13 @@ backup_list() {
 "Config snapshots:"
     for d in "$USFC_BACKUP_ROOT"/*/; do
         [ -d "$d" ] || continue
-        n="$(find "$d" -type f 2>/dev/null | wc -l | tr -d ' ')"
+        n="$(find "$d" -type f ! -name "$USFC_CREATED_LIST" 2>/dev/null | wc -l | tr -d ' ')"
+        [ -f "${d}${USFC_CREATED_LIST}" ] && n=$(( n + $(grep -c . "${d}${USFC_CREATED_LIST}") ))
         t "файлов" "files"
         printf '    %b%s%b  %s: %s\n' "$BOLD" "$(basename "$d")" "$NC" "$REPLY_T" "$n"
-        find "$d" -type f -printf '        %P\n' 2>/dev/null | sed "s|^        |        /|"
+        find "$d" -type f ! -name "$USFC_CREATED_LIST" -printf '        %P\n' 2>/dev/null | sed "s|^        |        /|"
+        t "(создан — откат удалит)" "(created — restore removes it)"
+        [ -f "${d}${USFC_CREATED_LIST}" ] && sed "s|^|        |; s|\$|  ${REPLY_T}|" "${d}${USFC_CREATED_LIST}"
     done
     echo ""
     return 0
@@ -83,11 +104,20 @@ backup_restore() {
     backup_list || return 1
 
     if [ -z "$stamp" ]; then
-        t "Метка снимка (Enter — отмена):" "Snapshot stamp (Enter to cancel):"
-        echo -en "  ${BOLD}${REPLY_T}${NC} "
+        t "Метка снимка" "Snapshot stamp"; local _q="$REPLY_T"
+        t "Enter — отмена" "Enter to cancel"
+        ui_prompt "$_q" "$REPLY_T"
         read -r stamp </dev/tty
         [ -z "$stamp" ] && { log_info_t "Отменено" \
 "Cancelled"; return 0; }
+    fi
+    # Метка — только в том виде, в каком её ставит backup.sh: иначе
+    # `restore ..` превращается в /var/backups, а `restore .` — в
+    # восстановление всех снимков разом в порядке find
+    if [[ ! "$stamp" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+(-restore)?$ ]]; then
+        log_error_t "Метка «${stamp}» не похожа на снимок (ГГГГММДД-ЧЧММСС-PID)" \
+"«${stamp}» does not look like a snapshot stamp (YYYYMMDD-HHMMSS-PID)"
+        return 1
     fi
     dir="${USFC_BACKUP_ROOT}/${stamp}"
     if [ ! -d "$dir" ]; then
@@ -104,7 +134,12 @@ backup_restore() {
     echo ""
     log_warn_t "Файлы будут перезаписаны содержимым снимка ${stamp}:" \
 "These files will be overwritten from snapshot ${stamp}:"
-    find "$dir" -type f -printf '    /%P\n' 2>/dev/null
+    find "$dir" -type f ! -name "$USFC_CREATED_LIST" -printf '    /%P\n' 2>/dev/null
+    if [ -s "${dir}/${USFC_CREATED_LIST}" ]; then
+        log_warn_t "Файлы, созданные в том прогоне, будут удалены:" \
+"Files created in that run will be removed:"
+        sed 's/^/    /' "${dir}/${USFC_CREATED_LIST}"
+    fi
     echo ""
     if [ "$USFC_ASSUME_YES" = true ]; then
         log_info_t "--yes: подтверждение пропущено" \
@@ -127,7 +162,24 @@ backup_restore() {
             log_error_t "Не удалось восстановить ${target}" \
 "Could not restore ${target}"
         fi
-    done < <(find "$dir" -type f 2>/dev/null)
+    done < <(find "$dir" -type f ! -name "$USFC_CREATED_LIST" 2>/dev/null)
+
+    # Созданные — удаляем через remove_file: со снимком, то есть откат отката
+    # вернёт и их
+    if [ -s "${dir}/${USFC_CREATED_LIST}" ]; then
+        while IFS= read -r target; do
+            case "$target" in /*) ;; *) continue ;; esac
+            [ -e "$target" ] || continue
+            if remove_file "$target"; then
+                log_success_t "Удалён ${target}" \
+"Removed ${target}"
+                restored=$((restored + 1))
+            else
+                log_error_t "Не удалось удалить ${target}" \
+"Could not remove ${target}"
+            fi
+        done < "${dir}/${USFC_CREATED_LIST}"
+    fi
 
     echo ""
     log_info_t "Восстановлено файлов: ${restored}" \
@@ -147,6 +199,6 @@ backup_hint() {
     echo ""
     log_info_t "Конфиги, которые правились, сохранены: ${BOLD}${USFC_BACKUP_DIR}${NC}" \
 "Configs that were edited are saved in: ${BOLD}${USFC_BACKUP_DIR}${NC}"
-    log_info_t "Вернуть как было: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}" \
-               "Undo: ${BOLD}sudo usfc --restore $(basename "$USFC_BACKUP_DIR")${NC}"
+    log_info_t "Вернуть как было: ${BOLD}sudo usfc restore $(basename "$USFC_BACKUP_DIR")${NC}" \
+               "Undo: ${BOLD}sudo usfc restore $(basename "$USFC_BACKUP_DIR")${NC}"
 }

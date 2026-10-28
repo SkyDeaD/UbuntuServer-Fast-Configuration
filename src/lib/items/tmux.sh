@@ -62,7 +62,7 @@ set -g status-left '#[fg=colour39,bold]#S '
 set -g status-right '%H:%M %d-%b-%y'
 setw -g automatic-rename on
 EOF
-        chown "${TARGET_USER}:${TARGET_USER}" "$TMUX_CONF"
+        chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$TMUX_CONF"
         log_success_t ".tmux.conf установлен" \
 ".tmux.conf installed"
     fi

@@ -1,3 +1,7 @@
+// usfc:fastfetch-config v2
+// Совместим с fastfetch 2.40.4 (Debian 13) и новее: без {formatted} и прочего
+// из поздних версий. Менять осторожно — usfc обновляет файл только пока он
+// совпадает с одной из прежних поставок.
 {
   "$schema": "https://github.com/fastfetch-cli/fastfetch/raw/dev/doc/json_schema.json",
 
@@ -20,8 +24,16 @@
 
     { "type": "os",       "key": "│  OS",         "keyColor": "cyan", "keyWidth": 16, "format": "{pretty-name<43}" },
     { "type": "kernel",   "key": "│  Kernel",     "keyColor": "cyan", "keyWidth": 16, "format": "{release<43}" },
-    { "type": "uptime",   "key": "│ 󰥔 Uptime",   "keyColor": "cyan", "keyWidth": 16, "format": "{formatted<43}" },
-    { "type": "cpu",      "key": "│  CPU",        "keyColor": "cyan", "keyWidth": 16, "format": "{name<43}" },
+    { "type": "host",     "key": "│ 󰒋 Host",     "keyColor": "cyan", "keyWidth": 16, "format": "{name<43}" },
+    {
+      "type": "command",
+      "key": "│ 󰍹 Virt",
+      "keyColor": "cyan",
+      "keyWidth": 16,
+      "text": "command -v systemd-detect-virt >/dev/null 2>&1 || { echo -; exit 0; }; v=$(systemd-detect-virt 2>/dev/null); case \"$v\" in none|'') echo 'bare metal' ;; *) echo \"$v\" ;; esac"
+    },
+    { "type": "uptime",   "key": "│ 󰥔 Uptime",   "keyColor": "cyan", "keyWidth": 16, "format": "{days}d {hours}h {minutes}m" },
+    { "type": "cpu",      "key": "│  CPU",        "keyColor": "cyan", "keyWidth": 16, "format": "{name} ({cores-logical}){?freq-max} @ {freq-max}{?}" },
     { "type": "memory",   "key": "│  Memory",     "keyColor": "cyan", "keyWidth": 16, "format": "{used} / {total} ({percentage})" },
     { "type": "swap",     "key": "│ 󰾴 Swap",     "keyColor": "cyan", "keyWidth": 16, "format": "{used} / {total} ({percentage})" },
     { "type": "disk",     "key": "│ 󰋊 Storage",  "keyColor": "cyan", "keyWidth": 16, "folders": "/", "format": "{size-used} / {size-total} ({size-percentage})" },

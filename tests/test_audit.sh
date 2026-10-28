@@ -24,13 +24,15 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 before="$(snapshot)"
-usfc --audit >/tmp/audit.log 2>&1
+usfc audit >/tmp/audit.log 2>&1
 rc=$?
 after="$(snapshot)"
 
 fail=0
 [ "$before" = "$after" ] || { echo "FAIL: аудит изменил систему" >&2; fail=1; }
-[ "$rc" -eq 0 ] || { echo "FAIL: аудит вернул ${rc}" >&2; fail=1; }
+# 0 — критичного нет, 1 — есть; что-то другое — аудит упал. Соответствие
+# числу critical сверяется ниже по JSON
+[ "$rc" -le 1 ] || { echo "FAIL: аудит вернул ${rc}" >&2; fail=1; }
 grep -q 'Итог:' /tmp/audit.log || { echo "FAIL: нет итоговой строки" >&2; tail -5 /tmp/audit.log >&2; fail=1; }
 # отчёт должен быть содержательным, а не пустым каркасом
 [ "$(grep -cE '^\s+[✓!✗]' /tmp/audit.log)" -ge 8 ] \
@@ -38,21 +40,23 @@ grep -q 'Итог:' /tmp/audit.log || { echo "FAIL: нет итоговой ст
 
 # ── машинный вывод ───────────────────────────────────────────────────────────
 before_json="$(snapshot)"
-usfc --audit --json > /tmp/audit.json 2>/tmp/audit.json.err
+usfc audit --json > /tmp/audit.json 2>/tmp/audit.json.err
 json_rc=$?
-[ "$before_json" = "$(snapshot)" ] || { echo "FAIL: --audit --json изменил систему" >&2; fail=1; }
-[ "$json_rc" -eq 0 ] || { echo "FAIL: --audit --json вернул ${json_rc}" >&2; fail=1; }
-[ -s /tmp/audit.json.err ] && { echo "FAIL: --audit --json написал в stderr" >&2; cat /tmp/audit.json.err >&2; fail=1; }
+[ "$before_json" = "$(snapshot)" ] || { echo "FAIL: audit --json изменил систему" >&2; fail=1; }
+[ "$json_rc" -eq "$rc" ] || { echo "FAIL: audit --json вернул ${json_rc}, текстовый — ${rc}" >&2; fail=1; }
+[ -s /tmp/audit.json.err ] && { echo "FAIL: audit --json написал в stderr" >&2; cat /tmp/audit.json.err >&2; fail=1; }
 
 # Ни цветов, ни лишних строк вокруг документа: и то и другое ломает потребителя
 grep -q $'\033\[' /tmp/audit.json && { echo "FAIL: в JSON попал ANSI-код" >&2; fail=1; }
 grep -qF '\033[' /tmp/audit.json && { echo "FAIL: в JSON попал буквальный \\033[" >&2; fail=1; }
 
-python3 - /tmp/audit.json <<'PYJSON' || fail=1
+python3 - /tmp/audit.json "$json_rc" <<'PYJSON' || fail=1
 import json, re, sys
 d = json.load(open(sys.argv[1], encoding="utf-8"))
 bad = []
 s = d["summary"]
+if (s["crit"] > 0) != (sys.argv[2] == "1"):
+    bad.append("код возврата %s при crit=%d" % (sys.argv[2], s["crit"]))
 if len(d["findings"]) != s["total"]:
     bad.append("находок %d, total %d" % (len(d["findings"]), s["total"]))
 if s["ok"] + s["warn"] + s["crit"] != s["total"]:
@@ -81,7 +85,7 @@ PYJSON
 
 # Самая ценная проверка: ключи не должны выводиться из текста. Набор
 # (id, level) обязан совпасть на двух языках, а тексты — различаться
-usfc --audit --json --lang en > /tmp/audit.en.json 2>/dev/null
+usfc --lang en audit --json > /tmp/audit.en.json 2>/dev/null
 python3 - /tmp/audit.json /tmp/audit.en.json <<'PYLANG' || fail=1
 import json, sys
 ru = json.load(open(sys.argv[1], encoding="utf-8"))["findings"]

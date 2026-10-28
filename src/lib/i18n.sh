@@ -106,7 +106,7 @@ _usfc_lang_parse() {
 usfc_ask_language() {
     _usfc_lang_options false
     local choice
-    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[1]:${NC} "   # i18n-ok: двуязычный по замыслу
+    ui_prompt "Выбор / Choice" 1   # i18n-ok: двуязычный по замыслу
     read -r choice </dev/tty
     _usfc_lang_parse "$choice"
     USFC_LANG="${REPLY_LANG:-ru}"
@@ -134,7 +134,7 @@ usfc_switch_language() {
     _usfc_lang_options true
     local choice
     t "Enter — отмена" "Enter to cancel"
-    echo -en "  ${BOLD}Выбор / Choice${NC} ${DIM}[${REPLY_T}]:${NC} "   # i18n-ok: двуязычный по замыслу
+    ui_prompt "Выбор / Choice" "$REPLY_T"   # i18n-ok: двуязычный по замыслу
     read -r choice </dev/tty
 
     if [ -z "$choice" ]; then
@@ -178,6 +178,8 @@ log_error_t()   { t "$1" "$2"; log_error   "$REPLY_T"; }
 ask_yn_t()      { t "$1" "$2"; ask_yn "$REPLY_T" "${3:-Y}"; }
 # ask_value_t <ru> <en> <дефолт>
 ask_value_t()   { t "$1" "$2"; ask_value "$REPLY_T" "$3"; }
+# ask_text_t <ru> <en> [дефолт] → REPLY_TEXT
+ask_text_t()    { t "$1" "$2"; ask_text "$REPLY_T" "${3:-}"; }
 
 # st <цвет> <ru> <en> — строка статуса пункта.
 # Статусы печатаются десятками и всегда одной формой «цвет + текст + сброс»,
