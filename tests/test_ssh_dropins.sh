@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Функции приходят из src/setup.sh, а ниже их подменяют заглушками — SC2218 ложный.
+# shellcheck disable=SC2218
 # Чужие drop-in'ы sshd, которые перебивают hardening.
 #
 # Жалоба была ровно на это: у провайдера лежал /etc/ssh/sshd_config.d/00-*.conf

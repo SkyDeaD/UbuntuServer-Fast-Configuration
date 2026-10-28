@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Функции приходят из src/setup.sh, а ниже их подменяют заглушками — SC2218 ложный.
+# shellcheck disable=SC2218
 # Файрвол 5.0: разбор портов, ping через before.rules, блок Docker в
 # after.rules и разбор `usfc firewall`.
 #

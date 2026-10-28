@@ -329,7 +329,7 @@ ssh_dropin_scan() {
 REPLY_SSH_PORT_FROM=''
 REPLY_SSH_PORT_TO=''
 ssh_port_pending() {
-    ssh_dropin_scan "${1:-$USFC_SSHD_DROPIN}"
+    ssh_dropin_scan "$USFC_SSHD_DROPIN"
     local n="${#REPLY_SSH_DROPIN_PORTS[@]}"
     REPLY_SSH_PORT_FROM=''; REPLY_SSH_PORT_TO=''
     [ "$n" -ge 2 ] || return 1
