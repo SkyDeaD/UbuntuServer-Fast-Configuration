@@ -906,7 +906,54 @@ status_sshhardening() {
     st "$GREEN" "✓ применено (только ключи)" "✓ applied (keys only)"; return 0
 }
 
+# ── Ctrl+C посреди hardening ─────────────────────────────────────────────────
+# Пока пункт правит конфиги, прерывание откатывает всё, что успело измениться:
+# закомментированные чужие строки, Include в sshd_config, наш drop-in. Если
+# sshd уже перезапускался — перезапускаем его на возвращённом конфиге.
+# SSH_HARD_STAGE: '' — ничего не тронуто, edit — тронуты чужие файлы,
+# dropin — записан наш drop-in, restarted — sshd перезапущен с ним
+SSH_HARD_STAGE=''
+SSH_HARD_TRAPS=''
+_ssh_hard_guard_fire() {
+    trap '' INT TERM            # второй Ctrl+C во время отката не прерывает его
+    case "$SSH_HARD_STAGE" in
+        dropin|restarted)
+            # had_dropin/prev_dropin — локальные apply: trap выполняется внутри неё
+            if [ "${had_dropin:-false}" = true ]; then
+                printf '%s\n' "$prev_dropin" | write_file "$USFC_SSHD_DROPIN"
+            else
+                rm -f "$USFC_SSHD_DROPIN"
+            fi
+            ;;
+    esac
+    if [ -n "$SSH_HARD_STAGE" ]; then
+        _ssh_snap_restore
+        _ssh_snap_drop
+        log_warn_t "Прервано — изменения SSH hardening откачены" "Interrupted — SSH hardening changes rolled back"
+    fi
+    [ "$SSH_HARD_STAGE" = restarted ] && systemctl restart ssh
+    SSH_HARD_STAGE=''
+    ssh_selftest_end
+    trap - INT TERM
+    [ -n "$SSH_HARD_TRAPS" ] && eval "$SSH_HARD_TRAPS"
+    SSH_HARD_TRAPS=''
+    exit 130
+}
+
 apply_sshhardening() {
+    local rc
+    SSH_HARD_STAGE=''
+    SSH_HARD_TRAPS="$(trap -p INT TERM)"
+    trap '_ssh_hard_guard_fire' INT TERM
+    _ssh_hardening_run "$@"; rc=$?
+    SSH_HARD_STAGE=''
+    trap - INT TERM
+    [ -n "$SSH_HARD_TRAPS" ] && eval "$SSH_HARD_TRAPS"
+    SSH_HARD_TRAPS=''
+    return "$rc"
+}
+
+_ssh_hardening_run() {
     if [ "$TARGET_USER" = "root" ]; then
         # Перенос порта отдельного пользователя не требует: самопроверка входит
         # ключом root (PermitRootLogin prohibit-password по умолчанию это
@@ -965,6 +1012,7 @@ apply_sshhardening() {
     _ssh_snap_drop      # снимок от прошлого шага (перенос порта) нам не нужен
     hsnap() {
         [ -n "$SSH_PORT_SNAP" ] || _ssh_snap_reset || return 1
+        SSH_HARD_STAGE="${SSH_HARD_STAGE:-edit}"
         _ssh_snap "$1"
     }
     # Вернуть закомментированные чужие строки и sshd_config из снимка — на
@@ -973,6 +1021,7 @@ apply_sshhardening() {
     restore_touched() {
         _ssh_snap_restore
         _ssh_snap_drop
+        SSH_HARD_STAGE=''
     }
 
     # Конфликты ищем ДО всего остального, в том числе до сухого прогона:
@@ -1095,6 +1144,9 @@ apply_sshhardening() {
 
     # Временный ключ для самопроверки — см. ssh_selftest_begin
     ssh_selftest_begin || { restore_touched; return 1; }
+    # ssh_selftest_begin поставил свой trap (только ключ) — наш шире: он же
+    # откатывает конфиги. ssh_selftest_end вернёт именно его
+    trap '_ssh_hard_guard_fire' INT TERM
 
     log_info_t "Проверяю базовый вход по ключу (до изменений конфига)..." \
 "Checking that key login works at all (before touching the config)..."
@@ -1122,6 +1174,7 @@ apply_sshhardening() {
     fi
     ssh_dropin_scan
     local -a keep_ports=("${REPLY_SSH_DROPIN_PORTS[@]}")
+    SSH_HARD_STAGE=dropin
     {
         echo "# usfc: SSH hardening. Named 00-... so that it is read before other drop-ins"
         echo "PermitRootLogin no"
@@ -1157,6 +1210,7 @@ apply_sshhardening() {
         return 1
     fi
 
+    SSH_HARD_STAGE=restarted
     systemctl restart ssh
     sleep 1
     log_info_t "Проверяю вход по ключу ПОСЛЕ применения hardening..." \
@@ -1192,6 +1246,7 @@ apply_sshhardening() {
 "SSH hardening applied: root login disabled, key-only login"
     log_info_t "Текущая сессия не разрывалась — рестарт sshd не убивает открытые соединения" \
 "Your current session was not dropped — restarting sshd does not kill open connections"
+    SSH_HARD_STAGE=''
     ssh_selftest_end
     _ssh_snap_drop
     if ! sudo_nopasswd_set "$TARGET_USER" \

@@ -52,17 +52,26 @@ _jd_default_mb() {
     return 0
 }
 
+# Каталог постоянного журнала; переменная — ради теста
+JOURNALD_DIR="${JOURNALD_DIR:-/var/log/journal}"
+
 status_journald() {
     local cap=''
     if [ -f "$JOURNALD_DROPIN" ]; then
         cap="$(sed -nE 's/^[[:space:]]*SystemMaxUse=([^[:space:]]+).*/\1/p' "$JOURNALD_DROPIN" | tail -n1)"
     fi
     # journalctl --disk-usage (до 5 с) тут не зовём: статус пересчитывается
-    # после каждого действия меню; занятое место показывает apply
+    # после каждого действия меню. Хватает du по каталогу журнала — один форк,
+    # десятки файлов; цифра та же с точностью до округления блоков
+    local dir used=''
+    for dir in "$JOURNALD_DIR" /run/log/journal; do
+        if [ -d "$dir" ]; then used="$(du -sh "$dir" 2>/dev/null)"; used="${used%%[[:space:]]*}"; break; fi
+    done
+    [ -n "$used" ] && used=" · ${used}"
     if [ -n "$cap" ]; then
-        st "$GREEN" "✓ лимит ${cap}" "✓ cap ${cap}"; return 0
+        st "$GREEN" "✓ лимит ${cap}${used}" "✓ cap ${cap}${used}"; return 0
     fi
-    st "$DIM" "○ не задан" "○ not set"; return 1
+    st "$DIM" "○ не задан${used}" "○ not set${used}"; return 1
 }
 
 # Реальный рестарт и сжатие возможны только под systemd: в контейнере

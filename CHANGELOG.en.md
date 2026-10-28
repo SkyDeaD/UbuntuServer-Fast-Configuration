@@ -160,7 +160,10 @@ already set up — in [docs/MIGRATION-5.en.md](docs/MIGRATION-5.en.md).
 - notify: the SSH alert status checks the `pam_exec` line itself, not just
   the marker.
 - The journald status no longer runs `journalctl --disk-usage` on every menu
-  frame.
+  frame; the journal size is shown again, via `du`.
+- Ctrl+C during SSH hardening rolls back `sshd_config`, edits to other
+  drop-ins and our own drop-in; if sshd was already restarted, it is
+  restarted again with the old settings.
 
 ### Removed
 

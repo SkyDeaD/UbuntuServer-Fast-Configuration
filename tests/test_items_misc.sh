@@ -105,5 +105,22 @@ _hn_apply_name >/dev/null 2>&1
 cmp -s "$TMP/cc1" "$HN_CLOUD_ETC/cloud.cfg.d/99-usfc-hostname.cfg" && ok "повтор идемпотентен" || bad "повтор изменил файл"
 
 echo ""
+echo "journald: статус показывает занятое место без journalctl"
+mkdir -p "$TMP/journal/abc"
+head -c 300000 /dev/zero > "$TMP/journal/abc/system.journal"
+printf '[Journal]\nSystemMaxUse=200M\n' > "$TMP/jd.conf"
+saved_jd="$(declare -f journalctl 2>/dev/null)"
+journalctl() { echo "journalctl вызван" >&2; return 1; }
+# shellcheck disable=SC2034  # читаются в status_journald
+JOURNALD_DIR="$TMP/journal"
+# shellcheck disable=SC2034
+JOURNALD_DROPIN="$TMP/jd.conf"
+out="$(status_journald 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [[ "$out" == *"200M"* ]] && ok "лимит виден (код 0)" || bad "статус: «${out}» rc=$rc"
+[[ "$out" =~ ·\ [0-9.,]+K ]] && ok "размер журнала виден: ${out##*· }" || bad "размера нет: «${out}»"
+[[ "$out" != *"journalctl вызван"* ]] && ok "journalctl не вызывается" || bad "статус зовёт journalctl"
+unset -f journalctl; [ -n "$saved_jd" ] && eval "$saved_jd"
+
+echo ""
 [ "$fail" -eq 0 ] && echo "мелкие пункты: все проверки пройдены" || echo "мелкие пункты: ЕСТЬ ОШИБКИ"
 exit "$fail"

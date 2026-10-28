@@ -226,6 +226,45 @@ apply_sshhardening >/dev/null 2>&1; rc=$?
 [ "$SELFTEST_BEGIN_CALLS" -eq 0 ] && ok "самопроверка не запускалась" || bad "дошли до самопроверки без ключей"
 [ ! -e "$USFC_SSHD_DROPIN" ] && ok "drop-in с PasswordAuthentication no не записан" || bad "drop-in записан при пустом authorized_keys"
 [ "$(cat "$SSHCFG")" = "$before_cfg" ] && ok "sshd_config возвращён" || bad "sshd_config остался изменённым: $(tr '\n' '|' < "$SSHCFG")"
+
+# Ctrl+C посреди hardening: откат всего, что успело измениться. Гоняем в
+# подоболочке — обработчик делает exit 130. Прерывание шлём из заглушки
+# ssh_selftest: первая — до записи drop-in, вторая — после рестарта sshd
+echo ""
+echo "hardening: Ctrl+C откатывает конфиги"
+printf '%s\n' "$REAL" > "$TMP/ak9"
+hard_int_case() {   # $1 — на каком вызове ssh_selftest прерывать
+    INT_AT="$1"; SELFTEST_N=0
+    printf 'PasswordAuthentication yes\nInclude %s/*.conf\n' "$D" > "$SSHCFG"
+    before_cfg="$(cat "$SSHCFG")"
+    rm -f "$USFC_SSHD_DROPIN" "$TMP/systemctl.log"
+    (
+        trap 'echo outer >> "$TMP/systemctl.log"' INT
+        ssh_selftest() { SELFTEST_N=$((SELFTEST_N + 1)); [ "$SELFTEST_N" -eq "$INT_AT" ] && kill -INT "$BASHPID"; return 0; }
+        systemctl() { echo "$*" >> "$TMP/systemctl.log"; return 0; }
+        sleep() { :; }
+        apply_sshhardening >/dev/null 2>&1
+        echo "не прервалось" >> "$TMP/systemctl.log"
+    ); rc=$?
+}
+hard_int_case 1
+[ "$rc" -eq 130 ] && ok "до drop-in: код 130" || bad "до drop-in: код $rc вместо 130"
+[ "$(cat "$SSHCFG")" = "$before_cfg" ] && ok "до drop-in: sshd_config возвращён" || bad "до drop-in: sshd_config $(tr '\n' '|' < "$SSHCFG")"
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "до drop-in: drop-in нет" || bad "до drop-in: drop-in появился"
+hard_int_case 2
+[ "$rc" -eq 130 ] && ok "после рестарта: код 130" || bad "после рестарта: код $rc вместо 130"
+[ "$(cat "$SSHCFG")" = "$before_cfg" ] && ok "после рестарта: sshd_config возвращён" || bad "после рестарта: sshd_config $(tr '\n' '|' < "$SSHCFG")"
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "после рестарта: наш drop-in убран" || bad "после рестарта: drop-in остался"
+[ "$(grep -c '^restart ssh$' "$TMP/systemctl.log" 2>/dev/null)" = 2 ] && ok "после рестарта: sshd перезапущен на возвращённом конфиге" \
+    || bad "после рестарта: рестартов ssh $(grep -c '^restart ssh$' "$TMP/systemctl.log" 2>/dev/null) вместо 2"
+# обычный выход (самопроверка не прошла) возвращает прежний trap
+after_trap="$(
+    trap 'echo outer' INT
+    ssh_selftest() { return 1; }
+    apply_sshhardening >/dev/null 2>&1
+    trap -p INT
+)"
+[[ "$after_trap" == *"echo outer"* ]] && ok "после выхода прежний trap INT на месте" || bad "trap INT после выхода: ${after_trap:-пусто}"
 unset -f ask_yn_t ensure_ssh_dir _ssh_key_users ssh_selftest_begin ssh_selftest ssh_selftest_end sshd
 
 echo ""
