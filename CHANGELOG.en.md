@@ -9,7 +9,7 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [5.0.0] — 2026-10-23
+## [5.0.0] — 2026-10-28
 
 Modes became commands (`usfc apply web` instead of `usfc --apply web`), SSH
 hardening is no longer overridden by foreign drop-ins, the swap priority is no
