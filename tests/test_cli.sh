@@ -202,15 +202,14 @@ grep -E '^(SWAP_MB|ZRAM_PERCENT|SYSCTL|TIMEZONE|HOSTNAME)=' <<< "$ex" >/dev/null
 # файл export и его однострочная команда принимаются и дают одно состояние
 printf '%s\n' "$ex" > "$cfg"
 # shellcheck disable=SC2034  # читается в apply_cli_answers
-via_cfg="$( USFC_CONFIG_FILE="$cfg"; apply_cli_answers >/dev/null 2>&1; echo "rc=$? $USFC_APPLY_SPEC|$UFW_BULK|$UFW_ALLOW_BULK|$UFW_PING_BULK|$CERTBOT_CF_BULK|$CERTBOT_TLS_BULK" )"
+via_cfg="$( USFC_CONFIG_FILE="$cfg"; apply_cli_answers >"$TMP/cfg-err" 2>&1; echo "rc=$? $USFC_APPLY_SPEC|$UFW_BULK|$UFW_ALLOW_BULK|$UFW_PING_BULK|$CERTBOT_CF_BULK|$CERTBOT_TLS_BULK" )"
 line="$(sed -n 's/^#     apply //p' "$cfg")"
 # shellcheck disable=SC2086  # строка команды делится на аргументы, как в shell
 via_flags="$( parse_args apply ${line} >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1
     check_cli_answer_items certbot ufw >/dev/null 2>&1 || echo "items-fail"
     echo "rc=0 $USFC_APPLY_SPEC|$UFW_BULK|$UFW_ALLOW_BULK|$UFW_PING_BULK|$CERTBOT_CF_BULK|$CERTBOT_TLS_BULK" )"
 [[ "$via_cfg" == rc=0* ]] && [ "$via_cfg" = "$via_flags" ] && ok "файл export и его команда дают одни ответы" \
-    || bad "файл: «$via_cfg», команда: «$via_flags»"
-echo "    ($via_cfg)"
+    || { bad "файл: «$via_cfg», команда: «$via_flags»"; sed 's/^/      /' "$TMP/cfg-err"; sed 's/^/      | /' "$cfg"; }
 
 echo ""
 echo "проверка скачанного обновления перед заменой"
