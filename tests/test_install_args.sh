@@ -60,12 +60,15 @@ cat > "$TMP/bin/curl" <<'SHIM'
 #!/bin/bash
 # Понимает и один файл, и пачку «url -o путь url -o путь…» с --parallel.
 # USFC_TEST_NOPARALLEL=1 — curl без --parallel (отказ, как у старого curl);
-# USFC_TEST_SKIP=<хвост> — в пачке этот файл не приходит
-urls=(); outs=(); par=0
+# USFC_TEST_SKIP=<хвост> — в пачке этот файл не приходит;
+# USFC_TEST_TRUNC=<хвост> — в пачке приходит половина файла с кодом 18.
+# -w печатает «код путь» на каждую передачу, как настоящий curl
+urls=(); outs=(); par=0; wo=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) outs+=("$2"); shift 2 ;;
         --parallel) par=1; shift ;;
+        -w) wo=1; shift 2 ;;
         http*) urls+=("$1"); shift ;;
         *) shift ;;
     esac
@@ -77,9 +80,13 @@ for i in "${!urls[@]}"; do
     url="${urls[$i]}"; out="${outs[$i]}"
     echo "$url" >> "$USFC_TEST_URLS"
     rel="${url##*/src/}"
-    if [ "$par" = 1 ] && [ "$rel" = "${USFC_TEST_SKIP:-}" ]; then rc=22; continue; fi
-    [ -f "${USFC_TEST_FIXTURE}/${rel}" ] || { rc=22; continue; }
+    if [ "$par" = 1 ] && [ "$rel" = "${USFC_TEST_SKIP:-}" ]; then rc=22; [ "$wo" = 1 ] && echo "22 $out"; continue; fi
+    [ -f "${USFC_TEST_FIXTURE}/${rel}" ] || { rc=22; [ "$wo" = 1 ] && echo "22 $out"; continue; }
+    if [ "$par" = 1 ] && [ "$rel" = "${USFC_TEST_TRUNC:-}" ]; then
+        head -c 10 "${USFC_TEST_FIXTURE}/${rel}" > "$out"; rc=18; [ "$wo" = 1 ] && echo "18 $out"; continue
+    fi
     cat "${USFC_TEST_FIXTURE}/${rel}" > "$out"
+    [ "$wo" = 1 ] && echo "0 $out"
 done
 exit "$rc"
 SHIM
@@ -218,6 +225,9 @@ OUT="$(USFC_TEST_NOPARALLEL=1 bash -c 'rm -rf "$1/opt"; USFC_INSTALL_DIR="$1/opt
     && ok "curl без --parallel: докачано по одному" || bad "без --parallel: rc=$RC $OUT"
 OUT="$(USFC_TEST_SKIP=lib/fake.sh bash -c 'rm -rf "$1/opt"; USFC_INSTALL_DIR="$1/opt" bash "$2" apply web' _ "$TMP" "$INSTALLER" 2>&1)"; RC=$?
 { [ "$RC" -eq 0 ] && [ -f "$TMP/opt/lib/fake.sh" ]; } && ok "файл, не пришедший в пачке, докачан" || bad "докачка: rc=$RC $OUT"
+OUT="$(USFC_TEST_TRUNC=lib/fake.sh bash -c 'rm -rf "$1/opt"; USFC_INSTALL_DIR="$1/opt" bash "$2" apply web' _ "$TMP" "$INSTALLER" 2>&1)"; RC=$?
+{ [ "$RC" -eq 0 ] && cmp -s "$TMP/opt/lib/fake.sh" "$TMP/fixture/lib/fake.sh"; } \
+    && ok "обрубок с кодом 18 не принят, файл перекачан" || bad "обрубок: rc=$RC"
 mv "$TMP/fixture/lib/fake.sh" "$TMP/fake.bak"
 run apply web
 { [ "$RC" -eq 1 ] && [[ "$OUT" == *"Не удалось скачать lib/fake.sh"* ]]; } && ok "ошибка называет модуль" || bad "ошибка: rc=$RC $OUT"

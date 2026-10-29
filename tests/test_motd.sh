@@ -105,9 +105,19 @@ for lang in ru en; do
     card_as 'Prod_DB.01' "$card" C.UTF-8 > "$TMP/o-mix"
     read -r wmax _ wbig < <(widths "$TMP/o-mix")
     [ "$wbig" -eq 2 ] && [ "$wmax" -le "$MAX_WIDTH" ] && ok "заглавные, точка, _ и цифры — крупно" || bad "смешанное имя: $wbig/$wmax"
-    card_as 'host+1' "$card" C.UTF-8 > "$TMP/o-odd"
-    read -r _ _ wbig < <(widths "$TMP/o-odd")
-    [ "$wbig" -eq 0 ] && ok "незнакомый символ — обычным текстом" || bad "незнакомый символ: $wbig"
+    # IPv6 до 39 символов: строка с аптаймом переносится, а не вылезает
+    sed -e "s|^\[ -n \"\$IP\" \] .*|IP=2001:0db8:85a3:0000:0000:8a2e:0370:7334|" -e "s|/proc/uptime|$TMP/up|" "$card" > "$TMP/card-v6.sh"
+    echo '1100000.00 1.00' > "$TMP/up"
+    env -i PATH="$PATH" HOME="$TMP" LC_ALL=C.UTF-8 bash -u "$TMP/card-v6.sh" > "$TMP/o-v6" 2>&1; rc=$?
+    read -r wmax _ _ < <(widths "$TMP/o-v6")
+    { [ "$rc" -eq 0 ] && grep -F '2001:0db8' "$TMP/o-v6" >/dev/null && [ "$wmax" -le "$MAX_WIDTH" ]; } \
+        && ok "длинный IPv6: ширина $wmax" || bad "IPv6: rc=$rc ширина $wmax"
+    for odd in 'host+1' 'a@b' 'x*y' 'q[1]' 'имя'; do
+        card_as "$odd" "$card" C.UTF-8 > "$TMP/o-odd"; rc=$?
+        read -r _ _ wbig < <(widths "$TMP/o-odd")
+        { [ "$rc" -eq 0 ] && [ "$wbig" -eq 0 ] && ! grep -F 'unbound' "$TMP/o-odd" >/dev/null; } \
+            && ok "«${odd}» — обычным текстом" || bad "«${odd}»: rc=$rc полублоков $wbig"
+    done
 
     # язык зашит при установке: в английской карточке нет кириллицы
     if [ "$lang" = en ]; then

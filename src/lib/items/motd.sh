@@ -200,7 +200,8 @@ big() {
     [ "$NATIVE" = 1 ] && [ -n "$s" ] || return 1
     for ((i = 0; i < ${#s}; i++)); do
         c=${s:i:1}
-        [ -n "${GT[$c]+x}" ] || return 1
+        # только символы шрифта: остальное даже не ищем в массиве
+        [[ $c == [a-z0-9._-] ]] && [ -n "${GT[$c]+x}" ] || return 1
         [ "$i" -gt 0 ] && { BIG1+=' '; BIG2+=' '; }
         BIG1+=${GT[$c]}; BIG2+=${GB[$c]}
     done
@@ -329,7 +330,11 @@ l1s="$OS$sep$KERN"
 [ -n "$VIRT" ] && l1s+="$sep$VIRT"
 [ "$cpus" -gt 0 ] && l1s+="$sep$cpus vCPU"
 row "$l1s"
-row "$IP$sep$L_UP $UPT$sep$L_LOAD $l1 $l5 $l15"
+l2s="$IP$sep$L_UP $UPT$sep$L_LOAD $l1 $l5 $l15"
+vlen "$l2s"
+# IPv6 из hostname -I длиной до 39 — тогда время и нагрузка своей строкой
+if [ "$L" -le "$W" ]; then row "$l2s"
+else row "$IP"; row "$L_UP $UPT$sep$L_LOAD $l1 $l5 $l15"; fi
 row ''
 meter RAM "$mu" "$mt"
 meter "$L_DISK" "$du" "$dt"

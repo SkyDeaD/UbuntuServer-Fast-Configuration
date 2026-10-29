@@ -238,17 +238,19 @@ fm_run() {  # fm_run <режим curl> — REPLY: код, вызовы curl, в�
         # shellcheck disable=SC2034  # читается в usfc_fetch_many
         REPO_RAW_BASE="https://example.invalid/src"; MODE="$1"
         curl() {
-            local a urls=() outs=() par=0 i rel
+            local urls=() outs=() par=0 i rel
             while [ "$#" -gt 0 ]; do
-                case "$1" in -o) outs+=("$2"); shift 2 ;; --parallel) par=1; shift ;; https*) urls+=("$1"); shift ;; *) shift ;; esac
+                case "$1" in -o) outs+=("$2"); shift 2 ;; -w) shift 2 ;; --parallel) par=1; shift ;; https*) urls+=("$1"); shift ;; *) shift ;; esac
             done
             echo "curl ${#urls[@]} par=$par" >> "$fm/log"
             [ "$MODE" = old ] && [ "$par" = 1 ] && return 2
             for i in "${!urls[@]}"; do
                 rel="${urls[$i]##*/src/}"
-                case "$MODE" in skip|dead) [ "$rel" = lib/b.sh ] && continue ;; esac
-                if [ "$MODE" = broken ] && [ "$rel" = lib/c.sh ]; then echo 'if then' > "${outs[$i]}"; continue; fi
-                cp "$fm/remote/$rel" "${outs[$i]}"
+                case "$MODE" in skip|dead) [ "$rel" = lib/b.sh ] && { echo "22 ${outs[$i]}"; continue; } ;; esac
+                if [ "$MODE" = broken ] && [ "$rel" = lib/c.sh ]; then echo 'if then' > "${outs[$i]}"; echo "0 ${outs[$i]}"; continue; fi
+                # обрубок, который bash -n пропустит: судить можно только по коду
+                if [ "$MODE" = trunc ] && [ "$rel" = lib/c.sh ]; then echo 'c=' > "${outs[$i]}"; echo "18 ${outs[$i]}"; continue; fi
+                cp "$fm/remote/$rel" "${outs[$i]}"; echo "0 ${outs[$i]}"
             done
         }
         usfc_fetch_to() { echo "one $1" >> "$fm/log"; [ "$MODE" = dead ] && [ "$1" = lib/b.sh ] && return 1; cp "$fm/remote/$1" "$2"; }
@@ -272,6 +274,9 @@ out="$(fm_run skip)"
 out="$(fm_run broken)"
 [[ "$out" == *"one lib/c.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1 parts=0"* ]] \
     && ok "битый в пачке перекачан по одному" || bad "битый: $out"
+out="$(fm_run trunc)"
+[[ "$out" == *"one lib/c.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1 parts=0"* ]] \
+    && ok "обрубок с кодом 18 не принят, перекачан" || bad "обрубок: $out"
 out="$(fm_run dead)"
 [[ "$out" == *"rc=1 failed=lib/b.sh"* ]] && ok "сбой назван: lib/b.sh" || bad "сбой: $out"
 rm -rf "$fm"

@@ -110,11 +110,18 @@ fetch_many() {
         mkdir -p "$(dirname "${dir}/${rel}")" || { FETCH_FAILED="$rel"; return 1; }
         args+=("${RAW}/${rel}" -o "${dir}/${rel}.part")
     done
-    # --remove-on-error: оборванный файл не остаётся похожим на целый.
-    # Код возврата не смотрим — судим по каждому файлу отдельно
-    curl -fsSL --parallel --parallel-max 8 --remove-on-error \
-        --retry 3 --retry-delay 2 --max-time 30 "${args[@]}" >/dev/null 2>&1
+    # Общий код возврата не годится — судим по каждому файлу: curl печатает
+    # код завершения на каждую передачу, принимаем только с кодом 0. Обрыв
+    # ровно на границе команд bash -n не заметил бы
+    local done_ok
+    done_ok="$(curl -fsSL --parallel --parallel-max 8 --remove-on-error \
+        --retry 3 --retry-delay 2 --max-time 30 \
+        -w '%{exitcode} %{filename_effective}\n' "${args[@]}" 2>/dev/null)"
     for rel in "$@"; do
+        case $'\n'"${done_ok}"$'\n' in
+            *$'\n'"0 ${dir}/${rel}.part"$'\n'*) ;;
+            *) rm -f "${dir}/${rel}.part" ;;
+        esac
         if [ -s "${dir}/${rel}.part" ]; then
             case "$rel" in
                 *.sh) bash -n "${dir}/${rel}.part" 2>/dev/null || rm -f "${dir}/${rel}.part" ;;
