@@ -127,6 +127,46 @@ usfc_fetch_to() {
     mv "$tmp" "$dest" || { rm -f "$tmp"; return 1; }
 }
 
+# usfc_fetch_many <каталог> <url-хвост>... — скачать все файлы разом.
+# По одному curl на файл — это TLS-рукопожатие на каждый: 47 модулей шли
+# ~25 с. Один curl --parallel тянет их за секунду. Что не пришло этим
+# заходом (нет --parallel в curl, сбой на отдельном файле), докачивается
+# по одному через usfc_fetch_to. В REPLY_FETCH_FAILED — первый файл,
+# который не удалось получить и проверить
+REPLY_FETCH_FAILED=""
+usfc_fetch_many() {
+    local dir="$1" rel args=()
+    shift
+    REPLY_FETCH_FAILED=""
+    for rel in "$@"; do
+        mkdir -p "$(dirname "${dir}/${rel}")" || { REPLY_FETCH_FAILED="$rel"; return 1; }
+        args+=("${REPO_RAW_BASE}/${rel}" -o "${dir}/${rel}.part")
+    done
+    # Общий код возврата не годится — судим по каждому файлу: curl печатает
+    # код завершения на каждую передачу, принимаем только с кодом 0. Обрыв
+    # ровно на границе команд bash -n не заметил бы
+    local done_ok
+    done_ok="$(curl -fsSL --parallel --parallel-max 8 --remove-on-error \
+        --retry 3 --retry-delay 2 --max-time 30 \
+        -w '%{exitcode} %{filename_effective}\n' "${args[@]}" 2>/dev/null)"
+    for rel in "$@"; do
+        case $'\n'"${done_ok}"$'\n' in
+            *$'\n'"0 ${dir}/${rel}.part"$'\n'*) ;;
+            *) rm -f "${dir}/${rel}.part" ;;
+        esac
+        if [ -s "${dir}/${rel}.part" ]; then
+            case "$rel" in
+                *.sh) bash -n "${dir}/${rel}.part" 2>/dev/null || rm -f "${dir}/${rel}.part" ;;
+            esac
+        fi
+        if [ -s "${dir}/${rel}.part" ] && mv "${dir}/${rel}.part" "${dir}/${rel}"; then
+            continue
+        fi
+        rm -f "${dir}/${rel}.part"
+        usfc_fetch_to "$rel" "${dir}/${rel}" || { REPLY_FETCH_FAILED="$rel"; return 1; }
+    done
+}
+
 # Читает список модулей из файла манифеста в массив REPLY_MANIFEST
 REPLY_MANIFEST=()
 usfc_parse_manifest() {
@@ -204,27 +244,20 @@ install_update() {
         rm -rf "$stage"; return 1
     fi
 
-    local total="${#REPLY_MANIFEST[@]}" i=0 m
-    log_info_t "Скачиваю модули (${total} шт.)" \
-"Downloading modules (${total})"
-    for m in "${REPLY_MANIFEST[@]}"; do
-        i=$((i + 1))
-        # %b, а не %s: цвета заданы как '\033[2m', и printf разворачивает
-        # такие escape-последовательности только в формате и в %b. Через %s
-        # строка уезжала на экран буквально — «\033[2m[ 1/38]\033[0m lib/core.sh»
-        printf '  %b[%2d/%2d]%b %s' "$DIM" "$i" "$total" "$NC" "$m"
-        if usfc_fetch_to "$m" "${stage}/${m}"; then
-            printf ' %b✓%b\n' "$GREEN" "$NC"
-        else
-            printf ' %b✗%b\n' "$RED" "$NC"
-            log_error_t "Модуль ${m} не скачался или не прошёл проверку синтаксиса" \
-"Module ${m} failed to download or failed the syntax check"
-            log_info_t "Ничего не меняю: установка ${VERSION} осталась как была" \
+    local total="${#REPLY_MANIFEST[@]}"
+    t "Скачиваю модули (${total} шт.)..." "Downloading modules (${total})..."
+    printf '  %s' "$REPLY_T"
+    if usfc_fetch_many "$stage" "${REPLY_MANIFEST[@]}"; then
+        printf ' %b✓%b\n' "$GREEN" "$NC"
+    else
+        printf ' %b✗%b\n' "$RED" "$NC"
+        log_error_t "Модуль ${REPLY_FETCH_FAILED} не скачался или не прошёл проверку синтаксиса" \
+"Module ${REPLY_FETCH_FAILED} failed to download or failed the syntax check"
+        log_info_t "Ничего не меняю: установка ${VERSION} осталась как была" \
 "Changing nothing: the ${VERSION} install is untouched"
-            rm -rf "$stage"
-            return 1
-        fi
-    done
+        rm -rf "$stage"
+        return 1
+    fi
 
     # VERSION — из той же выкачки, что и модули: фоновая проверка была
     # раньше, и пуш между ними дал бы версию, не совпадающую с кодом

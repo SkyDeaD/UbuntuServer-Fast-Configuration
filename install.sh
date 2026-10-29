@@ -97,6 +97,44 @@ fetch() {  # fetch <хвост пути> <куда>
     mkdir -p "$(dirname "$dest")" && mv "$tmp" "$dest"
 }
 
+# fetch_many <каталог> <хвост пути>... — все файлы одним curl --parallel:
+# по curl на файл — это TLS-рукопожатие на каждый, 47 модулей шли ~25 с.
+# Что не пришло этим заходом (старый curl без --parallel, сбой отдельного
+# файла), докачивается по одному через fetch. FETCH_FAILED — первый
+# файл, который так и не удалось получить
+FETCH_FAILED=""
+fetch_many() {
+    local dir="$1" rel args=()
+    shift
+    for rel in "$@"; do
+        mkdir -p "$(dirname "${dir}/${rel}")" || { FETCH_FAILED="$rel"; return 1; }
+        args+=("${RAW}/${rel}" -o "${dir}/${rel}.part")
+    done
+    # Общий код возврата не годится — судим по каждому файлу: curl печатает
+    # код завершения на каждую передачу, принимаем только с кодом 0. Обрыв
+    # ровно на границе команд bash -n не заметил бы
+    local done_ok
+    done_ok="$(curl -fsSL --parallel --parallel-max 8 --remove-on-error \
+        --retry 3 --retry-delay 2 --max-time 30 \
+        -w '%{exitcode} %{filename_effective}\n' "${args[@]}" 2>/dev/null)"
+    for rel in "$@"; do
+        case $'\n'"${done_ok}"$'\n' in
+            *$'\n'"0 ${dir}/${rel}.part"$'\n'*) ;;
+            *) rm -f "${dir}/${rel}.part" ;;
+        esac
+        if [ -s "${dir}/${rel}.part" ]; then
+            case "$rel" in
+                *.sh) bash -n "${dir}/${rel}.part" 2>/dev/null || rm -f "${dir}/${rel}.part" ;;
+            esac
+        fi
+        if [ -s "${dir}/${rel}.part" ] && mv "${dir}/${rel}.part" "${dir}/${rel}"; then
+            continue
+        fi
+        rm -f "${dir}/${rel}.part"
+        fetch "$rel" "${dir}/${rel}" || { FETCH_FAILED="$rel"; return 1; }
+    done
+}
+
 echo ""
 echo "  usfc — установка"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -129,19 +167,14 @@ if [ "${#MODULES[@]}" -eq 0 ]; then
     exit 1
 fi
 
-echo "  Скачивание модулей..."
-i=0
-for m in "${MODULES[@]}"; do
-    i=$((i + 1))
-    printf '  [%2d/%2d] %-28s' "$i" "${#MODULES[@]}" "$m"
-    if fetch "$m" "${STAGE}/${m}"; then
-        printf '✓\n'
-    else
-        printf '✗\n'
-        echo "  Не удалось скачать ${m}. Ничего не установлено." >&2
-        exit 1
-    fi
-done
+printf '  Скачивание модулей (%d)... ' "${#MODULES[@]}"
+if fetch_many "$STAGE" "${MODULES[@]}"; then
+    printf '✓\n'
+else
+    printf '✗\n'
+    echo "  Не удалось скачать ${FETCH_FAILED}. Ничего не установлено." >&2
+    exit 1
+fi
 echo "  Все ${#MODULES[@]} на месте и проверены."
 
 # ── Установка на место ───────────────────────────────────────────────────────

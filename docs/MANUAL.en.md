@@ -277,8 +277,27 @@ sudo truncate -s 0 /etc/motd
 ```
 
 In place of what it switched off, usfc installs its own server card —
-`/etc/update-motd.d/01-usfc`: name, OS, kernel, virtualisation, IP, uptime,
-load, vCPUs, RAM and disk bars, swap, container count and warnings. The script
+`/etc/update-motd.d/01-usfc`: the server name in large letters, OS, kernel,
+virtualisation, IP, uptime, load, vCPUs, RAM and disk bars, swap, container
+count and warnings:
+
+```text
+
+ █▄ █ █▀█ █▀▄ █▀▀ ▄▄ ▄█
+ █ ▀█ █▄█ █▄▀ ██▄     █
+
+ Ubuntu 24.04.5 LTS · 6.8.0-147 · kvm · 2 vCPU
+ 203.0.113.10 · uptime 3 h · load 0.12 0.08 0.05
+
+ RAM   ▰▰▱▱▱▱▱▱▱▱▱▱  20%  397M / 1.9G
+ Disk  ▰▰▰▰▰▱▱▱▱▱▱▱  44%  4.7G / 10.6G
+ Swap  zram 0M / 1.4G · disk 0M / 1.9G
+```
+
+A name wider than the terminal line, or one with a character the font lacks
+(Latin letters, digits, `-`, `.`, `_` are supported), is printed in plain
+bold, and so is any name under the C locale. A card from usfc 5.0 is marked
+"outdated" in the menu: choosing the item again installs the new one. The script
 makes no network calls: the update count comes from the
 `/var/lib/update-notifier/updates-available` cache. usfc records what it
 switched off in `/etc/usfc/motd-disabled`, so choosing the item again restores

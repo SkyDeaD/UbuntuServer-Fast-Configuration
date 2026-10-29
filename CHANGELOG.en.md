@@ -9,6 +9,20 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.1.0] — 2026-10-29
+
+### Changed
+
+- **Install and update about 10 times faster.** Modules are fetched with one
+  `curl --parallel` instead of a request per file: 47 files take about 2 s
+  instead of ~25. Whatever the batch misses (an old curl, a failed file,
+  broken syntax) is fetched one by one; an error still names the module.
+  Progress is one line instead of a line per module.
+- **New login card.** The server name in large letters, no frame, `▰▱`
+  bars. A long name, an unknown character or the C locale prints the name in
+  plain bold. A card from 5.0 is marked "outdated" in the menu; choosing the
+  item again installs the new one.
+
 ## [5.0.0] — 2026-10-28
 
 Modes became commands (`usfc apply web` instead of `usfc --apply web`), SSH
@@ -654,6 +668,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.2.0...v5.0.0
 [4.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.0.1...v4.1.0

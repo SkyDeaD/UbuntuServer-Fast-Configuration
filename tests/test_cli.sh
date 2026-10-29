@@ -228,6 +228,60 @@ usfc_stage_loads "$stg/setup.sh" && bad "exit 0 в первом модуле п�
 rm -rf "$stg"
 
 echo ""
+echo "обновление: модули пачкой, недостающее — по одному"
+fm="$(mktemp -d)"
+mkdir -p "$fm/remote/lib"
+echo 'a=1' > "$fm/remote/lib/a.sh"; echo 'b=1' > "$fm/remote/lib/b.sh"; echo 'c=1' > "$fm/remote/lib/c.sh"
+fm_run() {  # fm_run <режим curl> — REPLY: код, вызовы curl, вызовы usfc_fetch_to
+    (
+        rm -rf "$fm/st" "$fm/log"; mkdir -p "$fm/st"
+        # shellcheck disable=SC2034  # читается в usfc_fetch_many
+        REPO_RAW_BASE="https://example.invalid/src"; MODE="$1"
+        curl() {
+            local urls=() outs=() par=0 i rel
+            while [ "$#" -gt 0 ]; do
+                case "$1" in -o) outs+=("$2"); shift 2 ;; -w) shift 2 ;; --parallel) par=1; shift ;; https*) urls+=("$1"); shift ;; *) shift ;; esac
+            done
+            echo "curl ${#urls[@]} par=$par" >> "$fm/log"
+            [ "$MODE" = old ] && [ "$par" = 1 ] && return 2
+            for i in "${!urls[@]}"; do
+                rel="${urls[$i]##*/src/}"
+                case "$MODE" in skip|dead) [ "$rel" = lib/b.sh ] && { echo "22 ${outs[$i]}"; continue; } ;; esac
+                if [ "$MODE" = broken ] && [ "$rel" = lib/c.sh ]; then echo 'if then' > "${outs[$i]}"; echo "0 ${outs[$i]}"; continue; fi
+                # обрубок, который bash -n пропустит: судить можно только по коду
+                if [ "$MODE" = trunc ] && [ "$rel" = lib/c.sh ]; then echo 'c=' > "${outs[$i]}"; echo "18 ${outs[$i]}"; continue; fi
+                cp "$fm/remote/$rel" "${outs[$i]}"; echo "0 ${outs[$i]}"
+            done
+        }
+        usfc_fetch_to() { echo "one $1" >> "$fm/log"; [ "$MODE" = dead ] && [ "$1" = lib/b.sh ] && return 1; cp "$fm/remote/$1" "$2"; }
+        usfc_fetch_many "$fm/st" lib/a.sh lib/b.sh lib/c.sh; rc=$?
+        echo "rc=$rc failed=${REPLY_FETCH_FAILED}" >> "$fm/log"
+        ok_files=1
+        [ "$rc" -eq 0 ] && for f in a b c; do cmp -s "$fm/st/lib/$f.sh" "$fm/remote/lib/$f.sh" || ok_files=0; done
+        echo "files=$ok_files parts=$(find "$fm/st" -name '*.part' | wc -l)" >> "$fm/log"
+    )
+    cat "$fm/log"
+}
+out="$(fm_run normal)"
+[[ "$out" == *"curl 3 par=1"* && "$out" != *"one "* && "$out" == *"rc=0"* && "$out" == *"files=1 parts=0"* ]] \
+    && ok "все три одним curl --parallel" || bad "пачка: $out"
+out="$(fm_run old)"
+[[ "$out" == *"one lib/a.sh"* && "$out" == *"one lib/c.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1"* ]] \
+    && ok "curl без --parallel: все по одному" || bad "старый curl: $out"
+out="$(fm_run skip)"
+[[ "$out" == *"one lib/b.sh"* && "$out" != *"one lib/a.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1"* ]] \
+    && ok "не пришедший файл докачан, остальные нет" || bad "докачка: $out"
+out="$(fm_run broken)"
+[[ "$out" == *"one lib/c.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1 parts=0"* ]] \
+    && ok "битый в пачке перекачан по одному" || bad "битый: $out"
+out="$(fm_run trunc)"
+[[ "$out" == *"one lib/c.sh"* && "$out" == *"rc=0"* && "$out" == *"files=1 parts=0"* ]] \
+    && ok "обрубок с кодом 18 не принят, перекачан" || bad "обрубок: $out"
+out="$(fm_run dead)"
+[[ "$out" == *"rc=1 failed=lib/b.sh"* ]] && ok "сбой назван: lib/b.sh" || bad "сбой: $out"
+rm -rf "$fm"
+
+echo ""
 echo "обновление: сбой на середине замены возвращает всё"
 # Падает mv MODULES из staging: к этому моменту lib и setup.sh уже новые. Откат обязан
 # вернуть все четыре вещи, а не один lib (смешанная установка)
@@ -246,6 +300,7 @@ run_update() {  # run_update <паттерн цели mv, на которой п
         # shellcheck disable=SC2034
         USFC_ROOT="$ur/root"; VERSION=1.0.0; FAIL_MV="$1"
         usfc_fetch_to() { mkdir -p "$(dirname "$2")"; cp "$ur/remote/$1" "$2"; }
+        curl() { return 2; }    # пачка не приходит — модули идут через usfc_fetch_to
         usfc_stage_loads() { return 0; }
         mv() { [ -n "$FAIL_MV" ] && [[ "${*: -2:1}" == *"/.usfc-stage${FAIL_MV}" ]] && return 1; command mv "$@"; }
         install_update 2.0.0 >/dev/null 2>&1

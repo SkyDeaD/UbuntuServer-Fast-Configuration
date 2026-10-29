@@ -129,7 +129,7 @@ Sections: "system" — 1–3, "base" — 4–8, "services" — 9–11, "hardenin
 
 **fastfetch** — shows server info (OS, kernel, memory, disk, IP) on SSH login. Runs only on an SSH login, not inside tmux, and not when the "Login greeting" item is installed — so the summary isn't printed twice.
 
-**Login greeting** — a server card of its own instead of the stock motd: name, OS, kernel, virtualisation, IP, uptime, load, vCPUs, RAM and disk bars, swap, the number of running containers and warnings (updates available, reboot required). No network calls. The stock greeting and provider scripts in `/etc/update-motd.d` are listed and switched off with your consent; choosing the item again restores everything.
+**Login greeting** — a server card of its own instead of the stock motd: the server name in large letters, OS, kernel, virtualisation, IP, uptime, load, vCPUs, RAM and disk bars, swap, the number of running containers and warnings (updates available, reboot required). No network calls. The stock greeting and provider scripts in `/etc/update-motd.d` are listed and switched off with your consent; choosing the item again restores everything.
 
 **tmux** — a terminal multiplexer: keeps your session alive across disconnects (just reconnect over SSH and everything you had running is still there, including multiple windows and panes). Installed with a minimal config (mouse support, 10000-line history).
 
