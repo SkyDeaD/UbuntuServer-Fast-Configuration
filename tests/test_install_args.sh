@@ -58,18 +58,30 @@ PROF
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'SHIM'
 #!/bin/bash
-url=""; out=""
+# Понимает и один файл, и пачку «url -o путь url -o путь…» с --parallel.
+# USFC_TEST_NOPARALLEL=1 — curl без --parallel (отказ, как у старого curl);
+# USFC_TEST_SKIP=<хвост> — в пачке этот файл не приходит
+urls=(); outs=(); par=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        -o) out="$2"; shift 2 ;;
-        http*) url="$1"; shift ;;
+        -o) outs+=("$2"); shift 2 ;;
+        --parallel) par=1; shift ;;
+        http*) urls+=("$1"); shift ;;
         *) shift ;;
     esac
 done
-echo "$url" >> "$USFC_TEST_URLS"
-rel="${url##*/src/}"
-[ -f "${USFC_TEST_FIXTURE}/${rel}" ] || exit 22
-cat "${USFC_TEST_FIXTURE}/${rel}" > "$out"
+echo "CALL ${#urls[@]} parallel=${par}" >> "${USFC_TEST_URLS}.calls"
+[ "$par" = 1 ] && [ -n "${USFC_TEST_NOPARALLEL:-}" ] && exit 2
+rc=0
+for i in "${!urls[@]}"; do
+    url="${urls[$i]}"; out="${outs[$i]}"
+    echo "$url" >> "$USFC_TEST_URLS"
+    rel="${url##*/src/}"
+    if [ "$par" = 1 ] && [ "$rel" = "${USFC_TEST_SKIP:-}" ]; then rc=22; continue; fi
+    [ -f "${USFC_TEST_FIXTURE}/${rel}" ] || { rc=22; continue; }
+    cat "${USFC_TEST_FIXTURE}/${rel}" > "$out"
+done
+exit "$rc"
 SHIM
 chmod +x "$TMP/bin/curl"
 
@@ -78,7 +90,7 @@ export PATH="$TMP/bin:$PATH"
 
 # run <аргументы...> → OUT, RC. Каждый прогон в свой каталог установки
 run() {
-    rm -rf "$TMP/opt" "$TMP/urls"; : > "$TMP/urls"
+    rm -rf "$TMP/opt" "$TMP/urls" "$TMP/urls.calls"; : > "$TMP/urls"
     export USFC_TEST_URLS="$TMP/urls"
     OUT="$(USFC_INSTALL_DIR="$TMP/opt" bash "$INSTALLER" "$@" 2>&1)"; RC=$?
     URLS="$(cat "$TMP/urls")"
@@ -191,6 +203,30 @@ run apply web
 [ -x "$TMP/opt/setup.sh" ]   && ok "setup.sh установлен"      || bad "нет setup.sh"
 [ -f "$TMP/opt/VERSION" ]    && ok "VERSION установлен"       || bad "нет VERSION"
 [ -f "$TMP/opt/lib/fake.sh" ] && ok "модуль из манифеста установлен" || bad "нет модуля"
+
+# ── 5б. модули одним curl --parallel, без него — по одному ───────────────────
+echo ""
+echo "параллельная загрузка"
+run apply web
+calls="$(cat "$TMP/urls.calls")"
+has "модули пачкой с --parallel" "$calls" "CALL 2 parallel=1"
+[ "$(grep -c 'parallel=1' "$TMP/urls.calls")" -eq 1 ] && ok "пачка — один вызов curl" || bad "вызовов с --parallel: $(grep -c 'parallel=1' "$TMP/urls.calls")"
+hasnt "строки на каждый модуль нет" "$OUT" "[ 1/"
+has   "итог одной строкой" "$OUT" "Скачивание модулей (2)... ✓"
+OUT="$(USFC_TEST_NOPARALLEL=1 bash -c 'rm -rf "$1/opt"; USFC_INSTALL_DIR="$1/opt" bash "$2" apply web' _ "$TMP" "$INSTALLER" 2>&1)"; RC=$?
+{ [ "$RC" -eq 0 ] && [ -f "$TMP/opt/lib/fake.sh" ] && [ -f "$TMP/opt/lib/profiles.sh" ]; } \
+    && ok "curl без --parallel: докачано по одному" || bad "без --parallel: rc=$RC $OUT"
+OUT="$(USFC_TEST_SKIP=lib/fake.sh bash -c 'rm -rf "$1/opt"; USFC_INSTALL_DIR="$1/opt" bash "$2" apply web' _ "$TMP" "$INSTALLER" 2>&1)"; RC=$?
+{ [ "$RC" -eq 0 ] && [ -f "$TMP/opt/lib/fake.sh" ]; } && ok "файл, не пришедший в пачке, докачан" || bad "докачка: rc=$RC $OUT"
+mv "$TMP/fixture/lib/fake.sh" "$TMP/fake.bak"
+run apply web
+{ [ "$RC" -eq 1 ] && [[ "$OUT" == *"Не удалось скачать lib/fake.sh"* ]]; } && ok "ошибка называет модуль" || bad "ошибка: rc=$RC $OUT"
+[ -f "$TMP/opt/setup.sh" ] && bad "при сбое что-то установлено" || ok "при сбое ничего не установлено"
+mv "$TMP/fake.bak" "$TMP/fixture/lib/fake.sh"
+printf 'if then\n' > "$TMP/fixture/lib/fake.sh"
+run apply web
+[ "$RC" -eq 1 ] && ok "битый синтаксис отвергнут" || bad "битый модуль принят: rc=$RC"
+echo '# заглушка модуля' > "$TMP/fixture/lib/fake.sh"
 
 # ── 6. --help объясняет, что остальные флаги уходят в usfc ───────────────────
 echo ""
