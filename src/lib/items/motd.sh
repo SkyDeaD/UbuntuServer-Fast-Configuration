@@ -9,7 +9,7 @@ usfc_item motd база "Приветствие при входе" \
 usfc_item_toggle motd
 
 usfc_item_full motd "Ставит скрипт /etc/update-motd.d/01-usfc: при входе по SSH показывает
-карточку сервера — имя, ОС, ядро, виртуализацию, IP, uptime, нагрузку, число
+карточку сервера — имя крупными буквами, ОС, ядро, виртуализацию, IP, uptime, нагрузку, число
 vCPU, полоски RAM и диска, swap (zram и файл отдельно), число запущенных
 контейнеров Docker и предупреждения (есть обновления, нужна перезагрузка).
 
@@ -23,7 +23,7 @@ vCPU, полоски RAM и диска, swap (zram и файл отдельно)
 право на запуск, а /etc/motd опустошается. Что именно выключено — записано в
 /etc/usfc/motd-disabled, повторный выбор пункта возвращает всё как было." \
 "Installs /etc/update-motd.d/01-usfc: on SSH login it prints a server card —
-host name, OS, kernel, virtualisation, IP, uptime, load, vCPU count, RAM and
+the host name in large letters, OS, kernel, virtualisation, IP, uptime, load, vCPU count, RAM and
 disk bars, swap (zram and file separately), the number of running Docker
 containers and warnings (updates available, reboot required).
 
@@ -53,9 +53,18 @@ MOTD_STATE="${MOTD_STATE:-/etc/usfc/motd-disabled}"
 MOTD_ORIG="${MOTD_ORIG:-/etc/usfc/motd.orig}"
 MOTD_STATIC="${MOTD_STATIC:-/etc/motd}"
 
+# Метка версии в самом скрипте — одна на оба языка. Карточка без неё (или со
+# старым номером) показывается как устаревшая: rc=1, и повторный выбор пункта
+# ставит новую, а не убирает её
+MOTD_CARD_VERSION=2
+MOTD_CARD_MARK="# usfc-motd-card: ${MOTD_CARD_VERSION}"
+
 status_motd() {
     if [ -f "$MOTD_FILE" ] && [ -x "$MOTD_FILE" ]; then
-        st "$GREEN" "✓ карточка установлена" "✓ card installed"; return 0
+        if grep -Fx "$MOTD_CARD_MARK" "$MOTD_FILE" >/dev/null 2>&1; then
+            st "$GREEN" "✓ карточка установлена" "✓ card installed"; return 0
+        fi
+        st "$YELLOW" "! карточка устарела, выбор обновит" "! card outdated, select to update"; return 1
     fi
     st "$DIM" "○ не включено" "○ not enabled"; return 1
 }
@@ -70,9 +79,10 @@ _motd_bake() { printf "%s='%s'\n" "$1" "$REPLY_T"; }
 # запустить его, не трогая систему
 motd_card_script() {
     printf '%s\n' '#!/bin/bash'
-    t "# Создано usfc (пункт «Приветствие при входе»), версия карточки 1." \
-"# Created by usfc (item \"Login greeting\"), card version 1."
+    t "# Создано usfc (пункт «Приветствие при входе»)." \
+"# Created by usfc (item \"Login greeting\")."
     printf '%s\n' "$REPLY_T"
+    printf '%s\n' "$MOTD_CARD_MARK"
     t "# Не редактируйте: usfc перезапишет файл. Убрать — повторный выбор пункта в usfc." \
 "# Do not edit: usfc will overwrite it. To remove, select the item again in usfc."
     printf '%s\n' "$REPLY_T"
@@ -94,21 +104,22 @@ motd_card_script() {
 set -u
 shopt -s extglob nullglob
 
-W=60   # внутренняя ширина рамки; вся карточка — W+2 колонки
-BW=20  # ширина полоски
+W=76   # предел ширины любой строки: влезает в терминал 80 колонок
+BW=12  # ширина полоски
 
 # Без единой переменной локали (так карточку может запустить PAM при входе)
-# bash считает байты, и рамка была бы ASCII всегда. Тогда берём C.UTF-8 — она
+# bash считает байты, и вывод был бы ASCII всегда. Тогда берём C.UTF-8 — она
 # есть в glibc на всех целевых ОС. Явно заданную C не трогаем
 [ -n "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" ] || export LC_ALL=C.UTF-8
 
-# Считает ли ${#s} символы. В C-локали это байты: тогда рамку рисуем ASCII,
-# а длину кириллицы считаем по ведущим байтам UTF-8 (как делает сам usfc)
-_p='─'
+# Считает ли ${#s} символы. В C-локали это байты: тогда крупных букв нет
+# (имя печатается просто жирным), полоски — ASCII, а длину кириллицы
+# считаем по ведущим байтам UTF-8 (как делает сам usfc)
+_p='▰'
 if [ "${#_p}" -eq 1 ]; then
-    NATIVE=1; TL='╭'; TR='╮'; BL='╰'; BR='╯'; H='─'; V='│'; FULL='█'; EMPTY='░'; DOT='·'
+    NATIVE=1; FULL='▰'; EMPTY='▱'; DOT='·'
 else
-    NATIVE=0; TL='+'; TR='+'; BL='+'; BR='+'; H='-'; V='|'; FULL='#'; EMPTY='.'; DOT='-'
+    NATIVE=0; FULL='#'; EMPTY='.'; DOT='-'
 fi
 
 E=$'\e'
@@ -123,20 +134,14 @@ vlen() {
 }
 
 OUT=''
-row() {
-    local pad
-    vlen "$1"
-    pad=$((W - 2 - L)); [ "$pad" -lt 0 ] && pad=0
-    printf -v pad '%*s' "$pad" ''
-    OUT+="${CYN}${V}${C0} $1${pad} ${CYN}${V}${C0}"$'\n'
-}
+row() { if [ -n "$1" ]; then OUT+=" $1"$'\n'; else OUT+=$'\n'; fi; }
 
-# метка, дополненная до 7 колонок → LB
+# метка, дополненная до 6 колонок → LB
 LB=''
 lab() {
     local pad
     vlen "$1"
-    pad=$((7 - L)); [ "$pad" -lt 1 ] && pad=1
+    pad=$((6 - L)); [ "$pad" -lt 1 ] && pad=1
     printf -v pad '%*s' "$pad" ''
     LB="${CYN}$1${C0}${pad}"
 }
@@ -153,7 +158,8 @@ hsz() {
 BAR=''
 bar() {
     local p=$1 n c full empty
-    n=$((p * BW / 100)); [ "$n" -gt "$BW" ] && n=$BW
+    n=$(((p * BW + 50) / 100)); [ "$n" -gt "$BW" ] && n=$BW
+    [ "$p" -gt 0 ] && [ "$n" -eq 0 ] && n=1
     printf -v full '%*s' "$n" ''; full=${full// /$FULL}
     printf -v empty '%*s' "$((BW - n))" ''; empty=${empty// /$EMPTY}
     if [ "$p" -ge 90 ]; then c=$RED; elif [ "$p" -ge 70 ]; then c=$YEL; else c=$GRN; fi
@@ -169,12 +175,44 @@ meter() {
     row "$LB$BAR $(printf '%3d%%' "$p")  $u / $t"
 }
 
+# Крупные буквы: две строки из полублоков, между буквами пробел.
+# Только то, что бывает в имени хоста; любой другой символ — и имя
+# печатается обычным жирным
+declare -A GT GB
+_g() { GT[$1]=$2; GB[$1]=$3; }
+_g a '▄▀█' '█▀█'; _g b '█▄▄' '█▄█'; _g c '█▀▀' '█▄▄'; _g d '█▀▄' '█▄▀'
+_g e '█▀▀' '██▄'; _g f '█▀▀' '█▀ '; _g g '█▀▀' '█▄█'; _g h '█ █' '█▀█'
+_g i '█' '█';     _g j '  █' '█▄█'; _g k '█▄▀' '█ █'; _g l '█  ' '█▄▄'
+_g m '█▀▄▀█' '█ ▀ █'; _g n '█▄ █' '█ ▀█'; _g o '█▀█' '█▄█'; _g p '█▀█' '█▀▀'
+_g q '█▀█' '▀▀█'; _g r '█▀█' '█▀▄'; _g s '█▀' '▄█';   _g t '▀█▀' ' █ '
+_g u '█ █' '█▄█'; _g v '█ █' '▀▄▀'; _g w '█ █ █' '▀▄▀▄▀'; _g x '▀▄▀' '█ █'
+_g y '█▄█' ' █ '; _g z '▀█' '█▄'
+_g 0 '█▀▀█' '█▄▄█'; _g 1 '▄█' ' █'; _g 2 '▀▀█' '█▄▄'; _g 3 '▀▀█' '▄██'
+_g 4 '█ █' '▀▀█'; _g 5 '█▀▀' '▄▄█'; _g 6 '█▀▀' '███'; _g 7 '▀▀█' '  █'
+_g 8 '▄█▄' '█▄█'; _g 9 '███' '▄▄█'
+_g - '▄▄' '  '; _g . ' ' '▄'; _g _ '   ' '▄▄▄'
+
+# имя → две строки крупных букв в BIG1/BIG2; 1, если не выходит
+BIG1=''; BIG2=''
+big() {
+    local s=${1,,} c i
+    BIG1=''; BIG2=''
+    [ "$NATIVE" = 1 ] && [ -n "$s" ] || return 1
+    for ((i = 0; i < ${#s}; i++)); do
+        c=${s:i:1}
+        [ -n "${GT[$c]+x}" ] || return 1
+        [ "$i" -gt 0 ] && { BIG1+=' '; BIG2+=' '; }
+        BIG1+=${GT[$c]}; BIG2+=${GB[$c]}
+    done
+    [ "${#BIG1}" -le "$W" ]
+}
+
 # ── сбор данных (только чтение /proc, /sys и несколько утилит) ──
 HOST=''; read -r HOST < /proc/sys/kernel/hostname 2>/dev/null
 [ -n "$HOST" ] || HOST='?'
 HOST=${HOST:0:36}
 KERN=''; read -r KERN < /proc/sys/kernel/osrelease 2>/dev/null
-KERN=${KERN:0:22}
+KERN=${KERN%-generic}; KERN=${KERN:0:20}
 OS=''
 if [ -r /etc/os-release ]; then
     while IFS='=' read -r k v; do
@@ -182,12 +220,13 @@ if [ -r /etc/os-release ]; then
     done < /etc/os-release
 fi
 [ -n "$OS" ] || OS=Linux
-OS=${OS:0:32}
+OS=${OS:0:28}
 
 VIRT=''
 if command -v systemd-detect-virt >/dev/null 2>&1; then
     VIRT=$(systemd-detect-virt 2>/dev/null) || VIRT=''
     [ "$VIRT" = none ] && VIRT=''
+    VIRT=${VIRT:0:10}
 fi
 
 IP=''
@@ -276,17 +315,21 @@ if [ -r "$f" ]; then
 fi
 
 # ── вывод ──
-sep=" $DOT "
-vlen "$HOST"
-printf -v fill '%*s' "$((W - 3 - L))" ''; fill=${fill// /$H}
-OUT+=$'\n'"${CYN}${TL}${H} ${C0}${BLD}${HOST}${C0}${CYN} ${fill}${TR}${C0}"$'\n'
+sep=" ${DIM}${DOT}${C0} "
+OUT=$'\n'
+if big "$HOST"; then
+    row "${BLD}${CYN}${BIG1}${C0}"
+    row "${BLD}${CYN}${BIG2}${C0}"
+else
+    row "${BLD}${CYN}${HOST}${C0}"
+fi
+row ''
 
-row "$OS$sep$KERN"
-l2="$IP"
-[ -n "$VIRT" ] && l2+="$sep$VIRT"
-[ "$cpus" -gt 0 ] && l2+="$sep$cpus vCPU"
-row "$l2"
-row "$L_UP $UPT$sep$L_LOAD $l1 $l5 $l15"
+l1s="$OS$sep$KERN"
+[ -n "$VIRT" ] && l1s+="$sep$VIRT"
+[ "$cpus" -gt 0 ] && l1s+="$sep$cpus vCPU"
+row "$l1s"
+row "$IP$sep$L_UP $UPT$sep$L_LOAD $l1 $l5 $l15"
 row ''
 meter RAM "$mu" "$mt"
 meter "$L_DISK" "$du" "$dt"
@@ -313,9 +356,7 @@ if [ -n "$warn" ]; then
     while IFS= read -r line; do row "$line"; done <<< "${warn%$'\n'}"
 fi
 
-printf -v fill '%*s' "$W" ''; fill=${fill// /$H}
-OUT+="${CYN}${BL}${fill}${BR}${C0}"$'\n\n'
-printf '%s' "$OUT"
+printf '%s\n' "$OUT"
 BODY
 }
 
