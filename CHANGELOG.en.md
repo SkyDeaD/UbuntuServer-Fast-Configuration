@@ -9,6 +9,8 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.2.0] — 2026-10-30
+
 ### Changed
 
 - **The server name on the login card uses the usfc logo font.** The same six
@@ -678,6 +680,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.1.0...v5.2.0
 [5.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.2.0...v5.0.0
 [4.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.1.0...v4.2.0
