@@ -283,8 +283,12 @@ count and warnings:
 
 ```text
 
- █▄ █ █▀█ █▀▄ █▀▀ ▄▄ ▄█
- █ ▀█ █▄█ █▄▀ ██▄     █
+ ███╗   ██╗ ██████╗ ██████╗ ███████╗       ██████╗  ██╗
+ ████╗  ██║██╔═══██╗██╔══██╗██╔════╝      ██╔═████╗███║
+ ██╔██╗ ██║██║   ██║██║  ██║█████╗  █████╗██║██╔██║╚██║
+ ██║╚██╗██║██║   ██║██║  ██║██╔══╝  ╚════╝████╔╝██║ ██║
+ ██║ ╚████║╚██████╔╝██████╔╝███████╗      ╚██████╔╝ ██║
+ ╚═╝  ╚═══╝ ╚═════╝ ╚═════╝ ╚══════╝       ╚═════╝  ╚═╝
 
  Ubuntu 24.04.5 LTS · 6.8.0-147 · kvm · 2 vCPU
  203.0.113.10 · uptime 3 h · load 0.12 0.08 0.05
@@ -294,10 +298,13 @@ count and warnings:
  Swap  zram 0M / 1.4G · disk 0M / 1.9G
 ```
 
-A name wider than the terminal line, or one with a character the font lacks
-(Latin letters, digits, `-`, `.`, `_` are supported), is printed in plain
-bold, and so is any name under the C locale. A card from usfc 5.0 is marked
-"outdated" in the menu: choosing the item again installs the new one. The script
+The name is drawn in the same font as the usfc logo in the menu, with the
+same colour gradient. A name wider than 76 columns (roughly more than 9
+characters) falls back to a compact two-line font; a name that fits neither,
+or one with a character the font lacks (Latin letters, digits, `-`, `.`, `_`
+are supported), is printed in plain bold, and so is any name under the C
+locale. A card from an earlier usfc is marked "outdated" in the menu:
+choosing the item again installs the new one. The script
 makes no network calls: the update count comes from the
 `/var/lib/update-notifier/updates-available` cache. usfc records what it
 switched off in `/etc/usfc/motd-disabled`, so choosing the item again restores

@@ -9,6 +9,18 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.2.0] — 2026-10-30
+
+### Changed
+
+- **The server name on the login card uses the usfc logo font.** The same six
+  rows and the same cyan → blue gradient as the logo in the menu; the two-row
+  half-block letters were hard to read. A name wider than 76 columns falls
+  back to the compact two-row font, then to plain bold text as before. On the
+  `linux` console the gradient becomes plain cyan. A card from 5.1 is marked
+  "outdated" in the menu; choosing the "Login greeting" item again installs
+  the new one.
+
 ## [5.1.0] — 2026-10-29
 
 ### Changed
@@ -668,6 +680,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.1.0...v5.2.0
 [5.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.2.0...v5.0.0
 [4.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.1.0...v4.2.0
