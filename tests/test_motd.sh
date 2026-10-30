@@ -8,7 +8,8 @@
 #     «unbound variable» под set -u на другом сервере легко не заметить;
 #   • ширина: ни одна строка не шире 78 колонок (терминал 80), в C-локали
 #     ${#s} считает байты, а не символы, и именно там расчёт ломается первым;
-#   • крупные буквы имени: есть в UTF-8, нет в C-локали и для длинного имени;
+#   • крупные буквы имени: шрифт лого (6 строк), мелкие (2) — если не влезает,
+#     обычный текст — в C-локали и для длинного имени;
 #   • время работы — скрипт исполняется при КАЖДОМ входе по SSH.
 # Нужен python3: ширину в символах считаем им, а не тем же bash, что в карточке.
 set -uo pipefail
@@ -39,14 +40,15 @@ MAX_WIDTH=78
 # раз — иначе проверка теряет смысл
 MAX_MS=300
 
-# widths <файл вывода> → "<макс. ширина> <непустых строк> <строк с полублоками>"
+# widths <файл вывода> → "<макс. ширина> <непустых строк> <строк крупного имени>"
+# Крупное имя — строки с блоками или рамочными символами шрифта; полоски ▰▱ не в счёт
 widths() {
     python3 -I - "$1" <<'PY'
 import re, sys
 raw = open(sys.argv[1], 'rb').read().decode('utf-8', 'replace')
 raw = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', raw)
 lines = [l for l in raw.split('\n') if l.strip()]
-big = [l for l in lines if re.search('[▀▄█]', l)]
+big = [l for l in lines if re.search('[▀▄█╗╝║═]', l)]
 print(max([len(l) for l in lines] or [0]), len(lines), len(big))
 PY
 }
@@ -90,10 +92,18 @@ for lang in ru en; do
     env -i PATH="$PATH" HOME="$TMP" TERM=xterm bash -u "$card" >"$TMP/out-noloc" 2>&1
     grep -F '▰' "$TMP/out-noloc" >/dev/null && ok "без локали: Unicode-полоски" || bad "без локали: полоски ASCII"
 
-    # крупное имя: в UTF-8 — две строки полублоков, в C и для длинного — нет
+    # крупное имя: в UTF-8 — шрифт лого в 6 строк, не влезает — 2 строки
+    # полублоков, в C и для длинного — обычный текст
     card_as srv-01 "$card" C.UTF-8 > "$TMP/o-big"
     read -r wmax _ wbig < <(widths "$TMP/o-big")
-    [ "$wbig" -eq 2 ] && ok "имя крупными буквами (2 строки)" || bad "крупного имени нет: строк с полублоками $wbig"
+    [ "$wbig" -eq 6 ] && ok "имя шрифтом лого (6 строк)" || bad "крупного имени нет: строк $wbig"
+    card_as 'a.b_c-1' "$card" C.UTF-8 > "$TMP/o-sym"
+    read -r wmax _ wbig < <(widths "$TMP/o-sym")
+    [ "$wbig" -eq 6 ] && [ "$wmax" -le "$MAX_WIDTH" ] && ok "точка, _, дефис и цифра — шрифтом лого" || bad "символы: $wbig/$wmax"
+    grep -F $'\e[38;5;51m' "$TMP/o-big" >/dev/null && ok "перелив цветов, как у лого" || bad "перелива нет"
+    echo srv-01 > "$TMP/hn"
+    env -i PATH="$PATH" HOME="$TMP" LC_ALL=C.UTF-8 TERM=linux bash -u "$TMP/card-host.sh" > "$TMP/o-lnx" 2>&1
+    ! grep -F '38;5;' "$TMP/o-lnx" >/dev/null && ok "консоль linux — без 256 цветов" || bad "в консоли linux 256 цветов"
     card_as srv-01 "$card" C > "$TMP/o-c"
     read -r _ _ wbig < <(widths "$TMP/o-c")
     { [ "$wbig" -eq 0 ] && grep -F 'srv-01' "$TMP/o-c" >/dev/null; } && ok "C-локаль: имя обычным текстом" || bad "C-локаль: полублоков $wbig"
@@ -104,7 +114,10 @@ for lang in ru en; do
         && ok "длинное имя — обычным текстом" || bad "длинное имя: полублоков $wbig, ширина $wmax"
     card_as 'Prod_DB.01' "$card" C.UTF-8 > "$TMP/o-mix"
     read -r wmax _ wbig < <(widths "$TMP/o-mix")
-    [ "$wbig" -eq 2 ] && [ "$wmax" -le "$MAX_WIDTH" ] && ok "заглавные, точка, _ и цифры — крупно" || bad "смешанное имя: $wbig/$wmax"
+    [ "$wbig" -eq 6 ] && [ "$wmax" -le "$MAX_WIDTH" ] && ok "заглавные, точка, _ и цифры — шрифтом лого" || bad "смешанное имя: $wbig/$wmax"
+    card_as prod-db-node-01 "$card" C.UTF-8 > "$TMP/o-mid"
+    read -r wmax _ wbig < <(widths "$TMP/o-mid")
+    { [ "$wbig" -eq 2 ] && [ "$wmax" -le "$MAX_WIDTH" ]; } && ok "шире шрифта лого — полублоками (2 строки)" || bad "среднее имя: $wbig/$wmax"
     # IPv6 до 39 символов: строка с аптаймом переносится, а не вылезает
     sed -e "s|^\[ -n \"\$IP\" \] .*|IP=2001:0db8:85a3:0000:0000:8a2e:0370:7334|" -e "s|/proc/uptime|$TMP/up|" "$card" > "$TMP/card-v6.sh"
     echo '1100000.00 1.00' > "$TMP/up"

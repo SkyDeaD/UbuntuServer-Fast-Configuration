@@ -9,6 +9,16 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The server name on the login card uses the usfc logo font.** The same six
+  rows and the same cyan → blue gradient as the logo in the menu; the two-row
+  half-block letters were hard to read. A name wider than 76 columns falls
+  back to the compact two-row font, then to plain bold text as before. On the
+  `linux` console the gradient becomes plain cyan. A card from 5.1 is marked
+  "outdated" in the menu; choosing the "Login greeting" item again installs
+  the new one.
+
 ## [5.1.0] — 2026-10-29
 
 ### Changed
