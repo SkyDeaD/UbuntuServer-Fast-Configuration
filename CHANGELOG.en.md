@@ -9,6 +9,26 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.2.1] — 2026-11-16
+
+### Fixed
+
+- **BBR went back to cubic after a reboot.** The item counted as applied by
+  what is running now. If the provider put bbr in `/etc/sysctl.conf` and the
+  `/etc/sysctl.d/99-sysctl.conf` link is missing (Ubuntu 26.04, Debian 13),
+  that file is not read at boot — and usfc never wrote its own
+  `60-usfc-bbr.conf`. The status now reads the sysctl.d files in boot order
+  and shows "! bbr until reboot"; choosing the item writes its own file.
+  After applying, usfc warns if another file overrides its own.
+- **`usfc` did not work for a user after a one-command install.** The
+  `~/.bashrc` wrapper was installed only from the menu, and `install.sh …
+  apply` never opens it. `apply` now installs it too.
+- **An unclear error when running `usfc` without sudo.** `setup.sh` was
+  installed `0711` and unreadable without root; on Ubuntu 26.04 this looked
+  like an `env` error. Now the installer, the update and usfc itself (when
+  run as root) set `755`/`644` (the update to 5.2.1 runs 5.2.0 code, so the
+  first run fixes the permissions). Without root usfc asks for `sudo usfc`.
+
 ## [5.2.0] — 2026-10-30
 
 ### Changed
@@ -680,6 +700,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.2.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.2.0...v5.2.1
 [5.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.1.0...v5.2.0
 [5.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v4.2.0...v5.0.0

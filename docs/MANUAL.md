@@ -160,6 +160,17 @@ sysctl net.ipv4.tcp_congestion_control   # должно быть bbr
 В контейнере (LXC, OpenVZ) ядро хоста не твоё — там это не сработает. Пункт
 usfc в контейнере ничего не пишет и говорит об этом.
 
+Пункт считается применённым, только если bbr выставит и загрузка, а не
+только работает сейчас. `/etc/sysctl.conf` при загрузке читается лишь через
+ссылку `/etc/sysctl.d/99-sysctl.conf`; в Ubuntu 26.04 и Debian 13 её нет. Если
+хостер прописал bbr только в `sysctl.conf`, меню покажет «! bbr до
+перезагрузки», и выбор пункта запишет свой файл:
+
+```bash
+ls -l /etc/sysctl.d/99-sysctl.conf   # нет ссылки — sysctl.conf при загрузке не читается
+sudo systemd-analyze cat-config sysctl.d | grep congestion   # что выставит загрузка
+```
+
 ## 4. Базовые пакеты
 
 ```bash

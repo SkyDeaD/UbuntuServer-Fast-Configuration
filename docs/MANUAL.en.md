@@ -159,6 +159,17 @@ sysctl net.ipv4.tcp_congestion_control   # should say bbr
 In a container (LXC, OpenVZ) the kernel belongs to the host — this won't work
 there. In a container the usfc item writes nothing and says so.
 
+The item counts as applied only if the boot will set bbr too, not just if it
+is running now. `/etc/sysctl.conf` is read at boot only through the
+`/etc/sysctl.d/99-sysctl.conf` link, and Ubuntu 26.04 and Debian 13 don't have
+it. If the provider put bbr only in `sysctl.conf`, the menu shows "! bbr until
+reboot", and choosing the item writes its own file:
+
+```bash
+ls -l /etc/sysctl.d/99-sysctl.conf   # no link — sysctl.conf is not read at boot
+sudo systemd-analyze cat-config sysctl.d | grep congestion   # what the boot will set
+```
+
 ## 4. Base packages
 
 ```bash
