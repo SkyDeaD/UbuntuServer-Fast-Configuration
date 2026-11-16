@@ -5,7 +5,8 @@
 # root нужен, чтобы что-то ДЕЛАТЬ. Просто загрузить функции (тесты, CI) можно и
 # без него — иначе линтер пришлось бы гонять от root на ровном месте
 if [ "$(id -u)" -ne 0 ] && [ -z "${USFC_SOURCE_ONLY:-}" ]; then
-    echo "Root required: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
+    # usfc уже стоит, раз этот код выполняется: нужен sudo, а не переустановка
+    echo "Нужны права root: sudo usfc / Root required: sudo usfc" >&2   # i18n-ok: язык ещё не выбран (--lang разбирается позже), обе строки сразу
     exit 1
 fi
 

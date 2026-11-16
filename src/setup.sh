@@ -173,6 +173,16 @@ if [ "${#_usfc_missing[@]}" -gt 0 ]; then
 fi
 unset _usfc_missing
 
+# Права установки чиним на каждом запуске от root. Обновление выполняет код
+# ПРЕЖНЕЙ версии, а до 5.2.1 он оставлял setup.sh 0711 (mktemp + chmod +x):
+# без +r голый `usfc` от пользователя падал невнятно, а не просьбой о sudo.
+# Без этой строки исправленные права доехали бы только со следующим обновлением
+if [ "$EUID" -eq 0 ] && [ -z "${USFC_SOURCE_ONLY:-}" ]; then
+    chmod 755 "${USFC_ROOT}/setup.sh" 2>/dev/null
+    chmod -R u=rwX,go=rX "${USFC_ROOT}/lib" 2>/dev/null
+    chmod 644 "$USFC_MANIFEST" "${USFC_ROOT}/VERSION" 2>/dev/null
+fi
+
 # ВАЖНО: статус `source` — это статус ПОСЛЕДНЕЙ команды в файле, а не признак
 # успешной загрузки. Проверять его нельзя: lib/ident.sh, например, кончается на
 # `[ -z "$VERSION" ] && VERSION="0.0.0"`, и на нормальной установке (версия
