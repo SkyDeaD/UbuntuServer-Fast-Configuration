@@ -207,7 +207,12 @@ if ! { mv "${STAGE}/lib" "${INSTALL_DIR}/lib" && mv "${STAGE}/setup.sh" "${INSTA
     rm -rf "$OLD_FILES"
     exit 1
 fi
-chmod +x "${INSTALL_DIR}/setup.sh"
+# Читать установку может любой: без +r у setup.sh голый `usfc` от пользователя
+# падал невнятно (на 26.04 — ошибкой env из uutils), а не просьбой о sudo.
+# mktemp создаёт файлы 0600, поэтому права выставляются явно
+chmod 755 "${INSTALL_DIR}/setup.sh"
+chmod -R u=rwX,go=rX "${INSTALL_DIR}/lib"
+chmod 644 "${INSTALL_DIR}/VERSION" "${INSTALL_DIR}/MODULES"
 [ -n "$OLD_LIB" ] && rm -rf "$OLD_LIB"
 rm -rf "$OLD_FILES"
 

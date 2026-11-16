@@ -55,12 +55,68 @@ bbr_kernel_state() {
     return 0
 }
 
+# Какой алгоритм выставит загрузка → REPLY_BBR_BOOT (значение) и
+# REPLY_BBR_BOOT_FILE (файл, где оно задано последним). Порядок как у
+# systemd-sysctl: одноимённый файл из каталога левее в списке перекрывает
+# правые, затем все файлы читаются по имени и побеждает последнее значение.
+# /etc/sysctl.conf сам по себе при загрузке не читается: только через ссылку
+# /etc/sysctl.d/99-sysctl.conf. В Ubuntu 26.04 и Debian 13 procps её больше не
+# ставит, и BBR, прописанный хостером в sysctl.conf, жил до перезагрузки
+BBR_SYSCTL_DIRS=(/etc/sysctl.d /run/sysctl.d /usr/local/lib/sysctl.d /usr/lib/sysctl.d)
+REPLY_BBR_BOOT=''
+REPLY_BBR_BOOT_FILE=''
+bbr_boot_value() {
+    local d f name line v
+    local -A pick=()
+    REPLY_BBR_BOOT=''; REPLY_BBR_BOOT_FILE=''
+    for d in "${BBR_SYSCTL_DIRS[@]}"; do
+        for f in "$d"/*.conf; do
+            [ -e "$f" ] || continue
+            name="${f##*/}"
+            [ -n "${pick[$name]+x}" ] || pick[$name]="$f"
+        done
+    done
+    if [ "${#pick[@]}" -gt 0 ]; then
+        while IFS= read -r name; do
+            f="${pick[$name]}"
+            # "-" в начале строки у systemd-sysctl — «не ругаться при ошибке»
+            while IFS= read -r line || [ -n "$line" ]; do
+                [[ $line =~ ^[-[:space:]]*net[./]ipv4[./]tcp_congestion_control[[:space:]]*=[[:space:]]*([A-Za-z0-9_]+) ]] || continue
+                v="${BASH_REMATCH[1]}"
+                REPLY_BBR_BOOT="$v"; REPLY_BBR_BOOT_FILE="$f"
+            done < "$f"
+        done < <(printf '%s\n' "${!pick[@]}" | LC_ALL=C sort)
+    fi
+    # Ни один файл алгоритм не задаёт — загрузка оставит умолчание ядра. Бывают
+    # сборки, где это и есть bbr (XanMod): его берём из конфига ядра, а если
+    # конфига нет, значение остаётся пустым — честное «не знаю»
+    if [ -z "$REPLY_BBR_BOOT" ]; then
+        local rel='' kc
+        read -r rel < /proc/sys/kernel/osrelease 2>/dev/null
+        kc="${BBR_KCONFIG_DIR:-/boot}/config-${rel}"
+        if [ -n "$rel" ] && [ -r "$kc" ]; then
+            while IFS= read -r line; do
+                [[ $line =~ ^CONFIG_DEFAULT_TCP_CONG=\"([A-Za-z0-9_]+)\" ]] || continue
+                REPLY_BBR_BOOT="${BASH_REMATCH[1]}"; REPLY_BBR_BOOT_FILE="$kc"
+                break
+            done < "$kc"
+        fi
+    fi
+    return 0
+}
+
 status_bbr() {
     local cc qd
     cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
     if [ "$cc" = bbr ]; then
-        st "$GREEN" "✓ bbr + ${qd:-?}" "✓ bbr + ${qd:-?}"; return 0
+        bbr_boot_value
+        if [ "$REPLY_BBR_BOOT" = bbr ]; then
+            st "$GREEN" "✓ bbr + ${qd:-?}" "✓ bbr + ${qd:-?}"; return 0
+        fi
+        # включён руками или из файла, который загрузка не читает: rc=1, и
+        # выбор пункта применит его, а не выключит
+        st "$YELLOW" "! bbr до перезагрузки" "! bbr until reboot"; return 1
     fi
     st "$DIM" "○ ${cc:-?}" "○ ${cc:-?}"; return 1
 }
@@ -83,15 +139,6 @@ apply_bbr() {
             return 1 ;;
     esac
 
-    # Свой файл не побеждает файл с большим номером: если кто-то уже задал
-    # алгоритм в другом месте, после перезагрузки там может оказаться не bbr
-    local other
-    other="$(grep -lE '^[[:space:]]*net\.ipv4\.tcp_congestion_control' /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null | grep -vxF "$BBR_SYSCTL")"
-    if [ -n "$other" ]; then
-        log_warn_t "Алгоритм перегрузки уже задан в: $(echo "$other" | tr '\n' ' ')— проверь, что там не перебивает bbr" \
-"The congestion control is also set in: $(echo "$other" | tr '\n' ' ')— check that nothing there overrides bbr"
-    fi
-
     ask_yn_t "Включить TCP BBR (+ очередь fq)?" "Enable TCP BBR (+ the fq queue)?" Y || return 0
 
     write_file "$BBR_SYSCTL" <<'EOF'
@@ -113,6 +160,13 @@ EOF
         return 1
     fi
     log_success_t "TCP BBR включён" "TCP BBR is on"
+    # Свой файл не побеждает файл с большим номером: проверяем, что выставит
+    # именно загрузка, а не только что сказал sysctl -p
+    bbr_boot_value
+    if [ "$REPLY_BBR_BOOT" != bbr ]; then
+        log_warn_t "После перезагрузки алгоритм станет «${REPLY_BBR_BOOT:-?}»: его задаёт ${REPLY_BBR_BOOT_FILE:-?} — уберите оттуда строку tcp_congestion_control" \
+"After a reboot the algorithm becomes \"${REPLY_BBR_BOOT:-?}\": ${REPLY_BBR_BOOT_FILE:-?} sets it — remove the tcp_congestion_control line there"
+    fi
     log_info_t "Очередь fq применится к интерфейсам, которые поднимутся заново (после перезагрузки); BBR при этом работает уже сейчас" \
 "The fq queue applies to interfaces brought up again (after a reboot); BBR itself works right now"
 }

@@ -321,8 +321,23 @@ install_update() {
 "The update stopped while replacing files — ${VERSION} restored in full (modules, setup.sh, MODULES, VERSION); if usfc fails to start, reinstall: curl -fsSL ${USFC_INSTALL_URL} | sudo bash"
         rm -rf "$stage" "$old_files"; return 1
     fi
-    chmod +x "$SCRIPT_PATH"
+    # права — как в install.sh: файлы из mktemp приходят 0600
+    chmod 755 "$SCRIPT_PATH"
+    chmod -R u=rwX,go=rX "$live_lib"
+    chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION"
     rm -rf "$stage" "$old_lib" "$old_files"
+    return 0
+}
+
+# Права установки: setup.sh 755, модули и MODULES/VERSION 644. Зовётся из main
+# на каждом запуске. Обновление выполняет код ПРЕЖНЕЙ версии, а до 5.2.1 он
+# оставлял setup.sh 0711 (mktemp + chmod +x): без +r голый `usfc` от
+# пользователя падал невнятно, а не просьбой о sudo. Без этого вызова
+# исправленные права доехали бы только со следующим обновлением
+usfc_fix_install_perms() {
+    chmod 755 "${USFC_ROOT}/setup.sh" 2>/dev/null
+    chmod -R u=rwX,go=rX "${USFC_ROOT}/lib" 2>/dev/null
+    chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION" 2>/dev/null
     return 0
 }
 
