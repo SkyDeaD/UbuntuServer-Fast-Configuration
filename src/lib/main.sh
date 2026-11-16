@@ -37,11 +37,6 @@ run_noninteractive() {
     for k in "${REPLY_ITEM_NUMS[@]}"; do resolved_ids+=("${ITEM_IDS[$((k - 1))]}"); done
     check_cli_answer_items "${resolved_ids[@]}" || return 2
 
-    # Обёртка usfc в ~/.bashrc ставится и без меню: после `install.sh apply …`
-    # меню может не запускаться никогда, и голый `usfc` от пользователя падал
-    # без sudo. Для root функция сама ничего не делает
-    install_usfc_wrapper
-
     # UFW в списке без явного согласия не включается: вслепую включённый
     # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y, --yes или явный
     # список портов (--allow / UFW_ALLOW): кто перечислил порты, тот знает,
@@ -67,6 +62,10 @@ run_noninteractive() {
         log_info_t "Сухой прогон: ничего меняться не будет" \
 "Dry run: nothing will be changed"
     fi
+    # Обёртка usfc в ~/.bashrc ставится и без меню: после `install.sh apply …`
+    # меню может не запускаться никогда, и голый `usfc` от пользователя падал
+    # без sudo. Для root функция сама ничего не делает
+    install_usfc_wrapper
     log_info_t "Пунктов к применению: ${#nums[@]} ${DIM}(${USFC_APPLY_SPEC})${NC}" \
 "Items to apply: ${#nums[@]} ${DIM}(${USFC_APPLY_SPEC})${NC}"
     if [ "${#already[@]}" -gt 0 ]; then
@@ -130,6 +129,11 @@ main() {
         usfc_ask_language
     fi
 
+    # до dry_run_enable: там chmod уже подменён. Аудит обязан только читать,
+    # сухой прогон — ничего не менять, поэтому в них права не трогаем
+    if [ "$USFC_DRY_RUN" != true ] && [ "$USFC_CMD" != audit ]; then
+        usfc_fix_install_perms
+    fi
     dry_run_enable
 
     case "$USFC_CMD" in

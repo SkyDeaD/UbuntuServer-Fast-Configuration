@@ -329,6 +329,18 @@ install_update() {
     return 0
 }
 
+# Права установки: setup.sh 755, модули и MODULES/VERSION 644. Зовётся из main
+# на каждом запуске. Обновление выполняет код ПРЕЖНЕЙ версии, а до 5.2.1 он
+# оставлял setup.sh 0711 (mktemp + chmod +x): без +r голый `usfc` от
+# пользователя падал невнятно, а не просьбой о sudo. Без этого вызова
+# исправленные права доехали бы только со следующим обновлением
+usfc_fix_install_perms() {
+    chmod 755 "${USFC_ROOT}/setup.sh" 2>/dev/null
+    chmod -R u=rwX,go=rX "${USFC_ROOT}/lib" 2>/dev/null
+    chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION" 2>/dev/null
+    return 0
+}
+
 # Версия — только цифры и точки: строка попадает в файл и в сравнение
 # sort -V, а обрывок ответа или HTML-страница ошибки версией не являются
 usfc_valid_version() {

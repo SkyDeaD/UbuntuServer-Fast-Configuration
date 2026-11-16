@@ -48,6 +48,9 @@ echo "bbr: статус учитывает, что выставит загруз
 BBR_LIVE=bbr
 sysctl() { case "$*" in *tcp_congestion_control*) echo "$BBR_LIVE" ;; *default_qdisc*) echo fq ;; esac; }
 B="$TMP/sc"; mkdir -p "$B/etc/sysctl.d" "$B/usr/lib/sysctl.d" "$B/run/sysctl.d"
+# конфиг ядра — тоже временный: умолчание хоста (XanMod — bbr) не должно влиять
+# shellcheck disable=SC2034  # читает bbr_boot_value
+BBR_KCONFIG_DIR="$TMP/boot"; mkdir -p "$BBR_KCONFIG_DIR"
 # shellcheck disable=SC2034  # читает bbr_boot_value
 BBR_SYSCTL_DIRS=("$B/etc/sysctl.d" "$B/run/sysctl.d" "$B/usr/lib/sysctl.d")
 printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' > "$B/etc/sysctl.conf"
@@ -73,6 +76,18 @@ status_bbr >/dev/null; rc=$?
 rm -f "$B/usr/lib/sysctl.d/99-hoster.conf"
 status_bbr >/dev/null; rc=$?
 [ "$rc" -eq 0 ] && ok "наш 60-usfc-bbr.conf — применён" || bad "наш файл: rc=$rc"
+# файлы молчат — значит, умолчание ядра из /boot/config-<ядро> (XanMod: bbr)
+rm -f "$B"/etc/sysctl.d/*.conf
+read -r krel < /proc/sys/kernel/osrelease
+echo 'CONFIG_DEFAULT_TCP_CONG="bbr"' > "$BBR_KCONFIG_DIR/config-$krel"
+status_bbr >/dev/null; rc=$?
+[ "$rc" -eq 0 ] && ok "bbr — умолчание ядра, файлов нет: применён" || bad "умолчание ядра bbr: rc=$rc"
+echo 'CONFIG_DEFAULT_TCP_CONG="cubic"' > "$BBR_KCONFIG_DIR/config-$krel"
+status_bbr >/dev/null; rc=$?
+[ "$rc" -ne 0 ] && ok "bbr руками при умолчании cubic — не применён" || bad "sysctl -w без файлов считается применённым"
+rm -f "$BBR_KCONFIG_DIR/config-$krel"
+status_bbr >/dev/null; rc=$?
+[ "$rc" -ne 0 ] && ok "конфига ядра нет — честное «не знаю», не применён" || bad "без конфига ядра: rc=$rc"
 BBR_LIVE=cubic
 out="$(status_bbr)"; rc=$?
 { [ "$rc" -ne 0 ] && [[ "$out" == *"○ cubic"* ]]; } && ok "сейчас cubic — «○ cubic»" || bad "cubic: rc=$rc «$out»"

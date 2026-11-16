@@ -76,16 +76,32 @@ bbr_boot_value() {
             [ -n "${pick[$name]+x}" ] || pick[$name]="$f"
         done
     done
-    [ "${#pick[@]}" -gt 0 ] || return 0
-    while IFS= read -r name; do
-        f="${pick[$name]}"
-        # "-" в начале строки у systemd-sysctl — «не ругаться при ошибке»
-        while IFS= read -r line || [ -n "$line" ]; do
-            [[ $line =~ ^[-[:space:]]*net[./]ipv4[./]tcp_congestion_control[[:space:]]*=[[:space:]]*([A-Za-z0-9_]+) ]] || continue
-            v="${BASH_REMATCH[1]}"
-            REPLY_BBR_BOOT="$v"; REPLY_BBR_BOOT_FILE="$f"
-        done < "$f"
-    done < <(printf '%s\n' "${!pick[@]}" | LC_ALL=C sort)
+    if [ "${#pick[@]}" -gt 0 ]; then
+        while IFS= read -r name; do
+            f="${pick[$name]}"
+            # "-" в начале строки у systemd-sysctl — «не ругаться при ошибке»
+            while IFS= read -r line || [ -n "$line" ]; do
+                [[ $line =~ ^[-[:space:]]*net[./]ipv4[./]tcp_congestion_control[[:space:]]*=[[:space:]]*([A-Za-z0-9_]+) ]] || continue
+                v="${BASH_REMATCH[1]}"
+                REPLY_BBR_BOOT="$v"; REPLY_BBR_BOOT_FILE="$f"
+            done < "$f"
+        done < <(printf '%s\n' "${!pick[@]}" | LC_ALL=C sort)
+    fi
+    # Ни один файл алгоритм не задаёт — загрузка оставит умолчание ядра. Бывают
+    # сборки, где это и есть bbr (XanMod): его берём из конфига ядра, а если
+    # конфига нет, значение остаётся пустым — честное «не знаю»
+    if [ -z "$REPLY_BBR_BOOT" ]; then
+        local rel='' kc
+        read -r rel < /proc/sys/kernel/osrelease 2>/dev/null
+        kc="${BBR_KCONFIG_DIR:-/boot}/config-${rel}"
+        if [ -n "$rel" ] && [ -r "$kc" ]; then
+            while IFS= read -r line; do
+                [[ $line =~ ^CONFIG_DEFAULT_TCP_CONG=\"([A-Za-z0-9_]+)\" ]] || continue
+                REPLY_BBR_BOOT="${BASH_REMATCH[1]}"; REPLY_BBR_BOOT_FILE="$kc"
+                break
+            done < "$kc"
+        fi
+    fi
     return 0
 }
 
