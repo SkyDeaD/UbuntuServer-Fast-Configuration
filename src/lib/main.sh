@@ -37,6 +37,11 @@ run_noninteractive() {
     for k in "${REPLY_ITEM_NUMS[@]}"; do resolved_ids+=("${ITEM_IDS[$((k - 1))]}"); done
     check_cli_answer_items "${resolved_ids[@]}" || return 2
 
+    # Обёртка usfc в ~/.bashrc ставится и без меню: после `install.sh apply …`
+    # меню может не запускаться никогда, и голый `usfc` от пользователя падал
+    # без sudo. Для root функция сама ничего не делает
+    install_usfc_wrapper
+
     # UFW в списке без явного согласия не включается: вслепую включённый
     # файрвол рвёт VPN и прокси. Согласие — --ufw, UFW=Y, --yes или явный
     # список портов (--allow / UFW_ALLOW): кто перечислил порты, тот знает,

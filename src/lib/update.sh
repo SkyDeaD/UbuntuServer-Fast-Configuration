@@ -321,7 +321,10 @@ install_update() {
 "The update stopped while replacing files — ${VERSION} restored in full (modules, setup.sh, MODULES, VERSION); if usfc fails to start, reinstall: curl -fsSL ${USFC_INSTALL_URL} | sudo bash"
         rm -rf "$stage" "$old_files"; return 1
     fi
-    chmod +x "$SCRIPT_PATH"
+    # права — как в install.sh: файлы из mktemp приходят 0600
+    chmod 755 "$SCRIPT_PATH"
+    chmod -R u=rwX,go=rX "$live_lib"
+    chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION"
     rm -rf "$stage" "$old_lib" "$old_files"
     return 0
 }
