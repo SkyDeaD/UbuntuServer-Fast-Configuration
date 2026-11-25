@@ -66,7 +66,9 @@ cleanup_spinner() {
 }
 
 _spin_wait() {
-    local pid="$1" desc="$2" started="$3" offset="${4:-0}" i=0 frame note='' line
+    local pid="$1" desc="$2" started="$3" offset="${4:-0}" i=0 frame note_txt=''
+    local elapsed max_w base_len desc_len note_len max_desc want_desc max_note
+    local desc_t note_cur note_colored line pad
     tput civis 2>/dev/null && CURSOR_HIDDEN=true
     while kill -0 "$pid" 2>/dev/null; do
         # Раз в ~3 секунды заглядываем в свежий хвост лога. Установка, застрявшая
@@ -75,29 +77,62 @@ _spin_wait() {
         # («Waiting for cache lock: ... held by process N (unattended-upgr)»),
         # поэтому не гадаем, а читаем её оттуда.
         if [ $(( i % 20 )) -eq 0 ]; then
-            note=''
+            note_txt=''
             local lock_line holder
             lock_line="$(tail -c "+$((offset + 1))" "$USFC_LOG" 2>/dev/null \
                         | grep -F 'Waiting for cache lock' | tail -n1)"
             if [ -n "$lock_line" ]; then
                 holder="${lock_line##*\(}"; holder="${holder%%)*}"
                 t "— жду блокировку dpkg" "— waiting for the dpkg lock"
-                note=" ${YELLOW}${REPLY_T}${NC}"
+                note_txt="$REPLY_T"
                 if [ -n "$holder" ] && [ "$holder" != "$lock_line" ]; then
                     t "— жду: пакетный менеджер занят (${holder})" \
                       "— waiting: the package manager is busy (${holder})"
-                    note=" ${YELLOW}${REPLY_T}${NC}"
+                    note_txt="$REPLY_T"
                 fi
             fi
         fi
         frame="${SPINNER_FRAMES:$((i % SPINNER_N)):1}"
         now_s
-        # Строку добиваем до ширины терминала: примечание то появляется, то
-        # исчезает, и без добивки от длинного варианта оставались бы хвосты
-        line="${CYAN}${frame}${NC} ${desc}...  $((REPLY_NOW - started))s${note}"
-        truncate_colored "$line" "$((TERM_W - 2))"
-        pad_title "$REPLY_TRUNC" "$((TERM_W - 2))"
-        printf '\r  %b' "$REPLY_PAD"
+        elapsed=$((REPLY_NOW - started))
+        max_w=$((TERM_W - 2))
+        # Обрезаем plain-части ДО сборки цветов: truncate_colored рассчитана на
+        # один цвет на всю строку и иначе срезала бы внутренние цвета (жёлтый note).
+        # Добиваем пробелами вручную через visible_len — без +1 ловушки pad_title
+        visible_len "${frame} ...  ${elapsed}s"; base_len="$REPLY_LEN"
+        visible_len "$desc"; desc_len="$REPLY_LEN"
+        note_cur="$note_txt"
+        note_colored=''
+        if [ -n "$note_cur" ]; then
+            visible_len "$note_cur"; note_len="$REPLY_LEN"
+            max_desc=$((max_w - base_len - 1 - note_len))
+            want_desc="$desc_len"; [ "$want_desc" -gt 8 ] && want_desc=8
+            if [ "$max_desc" -lt "$want_desc" ]; then
+                max_note=$((max_w - base_len - want_desc - 1))
+                if [ "$max_note" -ge 4 ]; then
+                    truncate_colored "$note_cur" "$max_note"; note_cur="$REPLY_TRUNC"
+                    max_desc="$want_desc"
+                else
+                    note_cur=''
+                    max_desc=$((max_w - base_len))
+                fi
+            fi
+            [ -n "$note_cur" ] && note_colored=" ${YELLOW}${note_cur}${NC}"
+        else
+            max_desc=$((max_w - base_len))
+        fi
+        if [ "$max_desc" -ge 3 ]; then
+            truncate_colored "$desc" "$max_desc"; desc_t="$REPLY_TRUNC"
+        elif [ "$desc_len" -le "$max_desc" ] && [ "$max_desc" -gt 0 ]; then
+            desc_t="$desc"
+        else
+            desc_t=''
+        fi
+        line="${CYAN}${frame}${NC} ${desc_t}...  ${elapsed}s${note_colored}"
+        visible_len "$line"
+        pad=$((max_w - REPLY_LEN))
+        [ "$pad" -lt 0 ] && pad=0
+        printf '\r  %b%*s' "$line" "$pad" ''
         i=$((i + 1))
         sleep 0.15
     done
@@ -105,7 +140,11 @@ _spin_wait() {
         tput cnorm 2>/dev/null
         CURSOR_HIDDEN=false
     fi
-    printf '\r%*s\r' "$((TERM_W + 6))" ''
+    if [ "${USFC_NO_COLOR:-false}" = false ]; then
+        printf '\r\033[2K'
+    else
+        printf '\r%*s\r' "$TERM_W" ''
+    fi
 }
 
 # best-effort статистика из вывода apt → REPLY_STATS. Локаль форсирована в C.UTF-8,

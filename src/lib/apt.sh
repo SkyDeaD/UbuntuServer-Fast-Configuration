@@ -205,7 +205,11 @@ ensure_apt_updated() {
     mtime="$(stat -c %Y "$src" 2>/dev/null)" || mtime=0
     [[ "$mtime" =~ ^[0-9]+$ ]] || mtime=0
     age=$(( now - mtime ))
-    if [ "$mtime" -gt 0 ] && [ "$age" -lt "$APT_MAX_AGE" ]; then
+    # Свежий mtime ещё не гарантирует наличие списков: в контейнерах и свежих
+    # образах /var/lib/apt/lists чистят, оставляя свежую дату каталога
+    if [ "$mtime" -gt 0 ] && [ "$age" -lt "$APT_MAX_AGE" ] \
+       && { compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null \
+            || compgen -G '/var/lib/apt/lists/*_InRelease' >/dev/null; }; then
         APT_UPDATED=true
         return 0
     fi

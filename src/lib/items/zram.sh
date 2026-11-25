@@ -163,14 +163,15 @@ zram_uses_generator() {
 }
 
 zramswap_write_conf() {
-    local pct="$1" f=/etc/default/zramswap content
+    local pct="$1" algo="${2:-${ZRAM_ALGO_BULK:-lz4}}" f=/etc/default/zramswap content
+    case "$algo" in lz4|zstd) ;; *) algo=lz4 ;; esac
     content="$(cat "$f" 2>/dev/null)"
     # Два прохода: сперва узнать, у каких ключей есть активная строка. Новое
     # значение пишется в первую активную (а без неё — в первую закомментированную),
     # остальные активные комментируются: при `source` побеждает последняя, и
     # забытый ниже PERCENT=30 молча перебил бы наш
-    content="$(printf '%s\n' "$content" | awk -v pct="$pct" '
-        BEGIN { want["ALGO"] = "lz4"; want["PERCENT"] = pct; want["PRIORITY"] = "100" }
+    content="$(printf '%s\n' "$content" | awk -v pct="$pct" -v algo="$algo" '
+        BEGIN { want["ALGO"] = algo; want["PERCENT"] = pct; want["PRIORITY"] = "100" }
         { line[NR] = $0 }
         END {
             for (i = 1; i <= NR; i++) {
@@ -226,14 +227,16 @@ ZRAM_GENERATOR_CONF="${ZRAM_GENERATOR_CONF:-/etc/systemd/zram-generator.conf}"
 # внутри секции комментируется, нет ключа — дописывается в конец секции,
 # нет секции — дописывается секция
 zram_generator_write_conf() {
-    local pct="$1" f="$ZRAM_GENERATOR_CONF" cur=''
+    local pct="$1" algo="${2:-${ZRAM_ALGO_BULK:-lz4}}" f="$ZRAM_GENERATOR_CONF" cur=''
+    case "$algo" in lz4|zstd) ;; *) algo=lz4 ;; esac
     # Файл читается целиком до записи: чтение и запись в один путь через
-    # конвейер гоняются друг с другом
+    # конвейер гоняются друг с другом. Завершающий \n возвращаем явно (подстановка
+    # команд его съедает), чтобы новая секция не склеилась с последней строкой
     [ -f "$f" ] && cur="$(command cat "$f")"
-    printf '%s' "$cur" | awk -v pct="$pct" '
+    if [ -n "$cur" ]; then printf '%s\n' "$cur"; fi | awk -v pct="$pct" -v algo="$algo" '
         BEGIN { nk = 3
                 key[1] = "zram-size";             val[1] = "ram * " pct " / 100"
-                key[2] = "compression-algorithm"; val[2] = "lz4"
+                key[2] = "compression-algorithm"; val[2] = algo
                 key[3] = "swap-priority";         val[3] = "100" }
         function flush(   i) {
             for (i = 1; i <= nk; i++) if (!(key[i] in done)) print key[i] " = " val[i]
@@ -270,13 +273,14 @@ zram_generator_write_conf() {
         }' | write_file "$f"
 }
 
-# zram_configure <процент> — настроить и поднять zram; 0 — zram работает
+# zram_configure <процент> [алгоритм] — настроить и поднять zram; 0 — zram работает
 zram_configure() {
-    local pct="$1"
+    local pct="$1" algo="${2:-${ZRAM_ALGO_BULK:-lz4}}"
+    case "$algo" in lz4|zstd) ;; *) algo=lz4 ;; esac
     if zram_uses_generator; then
         log_info_t "zram управляется systemd-zram-generator — настраиваю его, zram-tools не ставлю" \
 "zram is managed by systemd-zram-generator — configuring it instead of installing zram-tools"
-        zram_generator_write_conf "$pct"
+        zram_generator_write_conf "$pct" "$algo"
         systemctl daemon-reload
         systemctl restart systemd-zram-setup@zram0.service 2>/dev/null
     else
@@ -284,7 +288,9 @@ zram_configure() {
             log_error_t "Установка zram-tools не удалась" "Installing zram-tools failed"; return 1; }
         systemctl stop zramswap 2>/dev/null
         swapoff /dev/zram0 2>/dev/null || true
-        zramswap_write_conf "$pct"
+        zramswap_write_conf "$pct" "$algo"
+        # После disable_zram или zram_stand_down юнит выключен — возвращаем в автозагрузку
+        systemctl enable zramswap >/dev/null 2>&1 || true
         if ! systemctl start zramswap; then
             sleep 2
             systemctl start zramswap
@@ -421,12 +427,38 @@ status_zram() {
 apply_zram() {
     read_swap_state
     local zram_active="$ZRAM_ACTIVE" zram_prio="$ZRAM_PRIO" \
-          swap_active="$SWAP_ACTIVE" swap_prio="$SWAP_PRIO" swap_path="$SWAP_PATH"
+          swap_active="$SWAP_ACTIVE" swap_prio="$SWAP_PRIO" swap_path="$SWAP_PATH" \
+          zram_algo="${ZRAM_ALGO_BULK:-lz4}"
+    case "$zram_algo" in lz4|zstd) ;; *) zram_algo=lz4 ;; esac
 
     if [ "$zram_active" = true ]; then
         if [ "$zram_prio" = "100" ]; then
-            log_success_t "zram уже настроен (приоритет 100) — пропускаю" \
+            local cur_algo=''
+            if [ -n "${ZRAM_ALGO_BULK:-}" ] && [ -r "${USFC_SYSFS}/block/zram0/comp_algorithm" ]; then
+                cur_algo="$(grep -oE '\[[^]]+\]' "${USFC_SYSFS}/block/zram0/comp_algorithm" 2>/dev/null | tr -d '[]')"
+            fi
+            if [ -n "${ZRAM_ALGO_BULK:-}" ] && [ -n "$cur_algo" ] && [ "$cur_algo" != "$zram_algo" ]; then
+                log_info_t "zram работает на ${cur_algo}, переключаю на ${zram_algo}" \
+"zram runs with ${cur_algo}, switching to ${zram_algo}"
+                if zram_swapoff_fits; then
+                    local cur_percent zram_percent
+                    if zram_uses_generator && [ -f "$ZRAM_GENERATOR_CONF" ]; then
+                        cur_percent="$(sed -n 's/^[[:space:]]*zram-size[[:space:]]*=.*ram[[:space:]]*\*[[:space:]]*\([0-9]\{1,\}\)[[:space:]]*\/[[:space:]]*100.*/\1/p' "$ZRAM_GENERATOR_CONF" 2>/dev/null | tail -n 1)"
+                    fi
+                    [ -z "${cur_percent:-}" ] && cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
+                    [ -z "$cur_percent" ] && cur_percent=75
+                    zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-$cur_percent}")"
+                    if zram_configure "$zram_percent" "$zram_algo"; then
+                        log_success_t "zram перенастроен (${zram_percent}% RAM, ${zram_algo})" \
+"zram reconfigured (${zram_percent}% of RAM, ${zram_algo})"
+                    else
+                        zram_report_start_failure
+                    fi
+                fi
+            else
+                log_success_t "zram уже настроен (приоритет 100) — пропускаю" \
 "zram is already configured (priority 100) — skipping"
+            fi
         else
             log_warn_t "zram активен, но приоритет ${zram_prio} (рекомендуется 100), похоже настраивали вручную" \
 "zram is active but its priority is ${zram_prio} (100 recommended) — looks hand-tuned"
@@ -436,24 +468,24 @@ apply_zram() {
                 cur_percent="$(grep -oP '^PERCENT=\K[0-9]+' /etc/default/zramswap 2>/dev/null)"
                 [ -z "$cur_percent" ] && cur_percent=75
                 zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-$cur_percent}")"
-                if zram_configure "$zram_percent"; then
-                    log_success_t "zram перенастроен (${zram_percent}% RAM)" \
-"zram reconfigured (${zram_percent}% of RAM)"
+                if zram_configure "$zram_percent" "$zram_algo"; then
+                    log_success_t "zram перенастроен (${zram_percent}% RAM, ${zram_algo})" \
+"zram reconfigured (${zram_percent}% of RAM, ${zram_algo})"
                 else
                     zram_report_start_failure
                 fi
             fi
         fi
-    elif ask_yn_t "Установить и настроить zram (lz4, приоритет 100)?" "Install and configure zram (lz4, priority 100)?"; then
+    elif ask_yn_t "Установить и настроить zram (${zram_algo}, приоритет 100)?" "Install and configure zram (${zram_algo}, priority 100)?"; then
         # Модуль проверяем ПЕРВЫМ делом: без него zram-tools встанет, служба
         # будет падать при каждой загрузке, а пользователь получит совет
         # «попробуйте вручную», который заведомо не поможет
         if zram_ensure_module; then
             local zram_percent
             zram_percent="$(ask_value_t "Размер zram в % от RAM?" "zram size, % of RAM?" "${ZRAM_BULK_PERCENT:-75}")"
-            if zram_configure "$zram_percent"; then
-                log_success_t "zram установлен и настроен (${zram_percent}% RAM)" \
-"zram installed and configured (${zram_percent}% of RAM)"
+            if zram_configure "$zram_percent" "$zram_algo"; then
+                log_success_t "zram установлен и настроен (${zram_percent}% RAM, ${zram_algo})" \
+"zram installed and configured (${zram_percent}% of RAM, ${zram_algo})"
             else
                 zram_report_start_failure
             fi
@@ -473,27 +505,33 @@ apply_zram() {
             log_success_t "Резервный своп: ${swap_path}, ${SWAP_SIZE_MB} МБ, приоритет 10 ${DIM}(занято ${SWAP_USED_MB} МБ)${NC}" \
 "Backup swap: ${swap_path}, ${SWAP_SIZE_MB} MB, priority 10 ${DIM}(${SWAP_USED_MB} MB used)${NC}"
 
+            local sw_target="${SWAP_BULK_MB:-$sw_suggest}"
             if [ "$SWAP_TYPE" != "file" ]; then
                 # раздел или LVM: менять его размер — это про parted/lvresize и
                 # риск для данных, такое не место в меню быстрой настройки
                 log_info_t "Тип свопа — ${SWAP_TYPE:-?}, размер разделов этот скрипт не меняет" \
 "Swap type is ${SWAP_TYPE:-?}; this script does not resize partitions"
-            elif swap_needs_resize "$SWAP_SIZE_MB" "$sw_suggest"; then
-                log_info_t "Рекомендуемый размер для этой машины: ${BOLD}${sw_suggest} МБ${NC} ${DIM}(min(RAM, свободно/4))${NC}" \
+            elif swap_needs_resize "$SWAP_SIZE_MB" "$sw_target"; then
+                if [ -n "${SWAP_BULK_MB:-}" ]; then
+                    log_info_t "Задан размер swap-файла: ${BOLD}${SWAP_BULK_MB} МБ${NC} (сейчас ${SWAP_SIZE_MB} МБ)" \
+"Requested swap file size: ${BOLD}${SWAP_BULK_MB} MB${NC} (currently ${SWAP_SIZE_MB} MB)"
+                else
+                    log_info_t "Рекомендуемый размер для этой машины: ${BOLD}${sw_suggest} МБ${NC} ${DIM}(min(RAM, свободно/4))${NC}" \
 "Recommended size for this machine: ${BOLD}${sw_suggest} MB${NC} ${DIM}(min(RAM, free/4))${NC}"
+                fi
                 # В пакетном режиме ask_yn всегда вернёт дефолт N, поэтому
                 # согласием считаем сам факт того, что размер уже спросили
                 # заранее в main() — иначе предзаданное значение пропало бы зря
                 local want_resize=false
                 if [ "$BULK_MODE" = true ]; then
-                    [ -n "$SWAP_BULK_MB" ] && want_resize=true
+                    [ -n "${SWAP_BULK_MB:-}" ] && want_resize=true
                 # bulk-ok: пакетная ветка — строкой выше
                 elif ask_yn_t "Изменить размер swap-файла?" "Resize the swap file?" N; then
                     want_resize=true
                 fi
                 if [ "$want_resize" = true ]; then
                     local new_mb
-                    new_mb="$(ask_value_t "Размер swap-файла, МБ?" "Swap file size, MB?" "${SWAP_BULK_MB:-$sw_suggest}")"
+                    new_mb="$(ask_value_t "Размер swap-файла, МБ?" "Swap file size, MB?" "$sw_target")"
                     if [ "$new_mb" -lt 64 ]; then
                         log_error_t "Слишком мало (${new_mb} МБ) — размер не меняю" \
 "Too small (${new_mb} MB) — leaving the size alone"
@@ -502,8 +540,8 @@ apply_zram() {
                     fi
                 fi
             else
-                log_success_t "Размер близок к рекомендуемому (${sw_suggest} МБ) — оставляю как есть" \
-"Close enough to the recommendation (${sw_suggest} MB) — leaving it as is"
+                log_success_t "Размер близок к целевому (${sw_target} МБ) — оставляю как есть" \
+"Close enough to the target (${sw_target} MB) — leaving it as is"
             fi
         fi
     else

@@ -135,7 +135,7 @@ if [ ! -f "$USFC_MANIFEST" ]; then
         echo "  curl -fsSL ${USFC_INSTALL_URL} | sudo bash" >&2
         exit 1
     fi
-    mv "$_tmp_manifest" "$USFC_MANIFEST"
+    mv "$_tmp_manifest" "$USFC_MANIFEST" && chmod 644 "$USFC_MANIFEST"
     unset _tmp_manifest
 fi
 
@@ -194,6 +194,8 @@ unset _usfc_m
 
 # USFC_SOURCE_ONLY=1 — загрузить функции, не запуская меню. Нужно тестам,
 # заодно защищает от случайного `source setup.sh`
+# shellcheck disable=SC2034  # читается в lib/update.sh при перезапуске
+USFC_ORIG_ARGS=("$@")
 if [ -z "${USFC_SOURCE_ONLY:-}" ]; then
     parse_args "$@"
     main

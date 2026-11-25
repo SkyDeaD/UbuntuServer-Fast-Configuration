@@ -74,6 +74,17 @@ status_newuser() {
 
 apply_newuser() {
     if [ "$BULK_MODE" = true ]; then
+        if [ -n "${SSH_KEYS_BULK:-}" ]; then
+            ensure_ssh_dir "$TARGET_USER" "$TARGET_HOME" || {
+                log_error_t "Не удалось подготовить ~/.ssh для ${TARGET_USER}" \
+"Could not prepare ~/.ssh for ${TARGET_USER}"; return 1; }
+            local bulk_auth="$REPLY_AUTHKEYS" bulk_gid
+            sshkeys_import_spec "$bulk_auth" "$SSH_KEYS_BULK" || return 1
+            bulk_gid="$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")"
+            chown "${TARGET_USER}:${bulk_gid}" "$bulk_auth" 2>/dev/null
+            chmod 600 "$bulk_auth" 2>/dev/null
+            return 0
+        fi
         log_warn_t "Создание пользователя требует ввода имени и пароля — пропущено в пакетном режиме." \
 "Creating a user needs a name and a password — skipped in batch mode."
         log_warn_t "Настройте отдельно пунктом $(item_number newuser)." \
@@ -145,15 +156,16 @@ apply_newuser() {
         log_error_t "Не удалось подготовить ~/.ssh для ${name}" \
 "Could not prepare ~/.ssh for ${name}"; return 1; }
     local auth_keys="$REPLY_AUTHKEYS"
-    [ -s "$auth_keys" ] && key_ok=true
+    authkeys_count "$auth_keys"
+    [ "$REPLY_AUTHKEYS_COUNT" -gt 0 ] && key_ok=true
 
-    # Один и тот же шаблон и для счёта, и для копирования: иначе легко получить
-    # «найдено 0» с одновременным предложением их скопировать
-    local key_re='^(ssh-|ecdsa-|sk-)'
+    # Один и тот же разбор (sshkeys_line_matches) и для счёта, и для копирования:
+    # учитывает и ключи с ведущими опциями провайдеров (no-port-forwarding, restrict...)
     local root_keys="/root/.ssh/authorized_keys" n_keys=0 line
     if [ -f "$root_keys" ]; then
-        while IFS= read -r line; do
-            [[ "$line" =~ $key_re ]] && n_keys=$((n_keys + 1))
+        while IFS= read -r line || [ -n "$line" ]; do
+            line="${line%$'\r'}"
+            sshkeys_line_matches "$line" && n_keys=$((n_keys + 1))
         done < "$root_keys"
     fi
     # Условие именно на счётчике, а не на размере файла: файл из одной пустой
@@ -166,23 +178,35 @@ apply_newuser() {
 "If you reach this server by key, ${name} will not be able to log in at all without copying them"
         if ask_yn_t "Скопировать эти ключи для ${name}?" "Copy these keys for ${name}?" Y; then
             local copied=0
-            while IFS= read -r line; do
-                [[ "$line" =~ $key_re ]] || continue
+            while IFS= read -r line || [ -n "$line" ]; do
+                line="${line%$'\r'}"
+                sshkeys_line_matches "$line" || continue
                 grep -qxF -- "$line" "$auth_keys" 2>/dev/null && continue
                 authkeys_add "$auth_keys" "$line"
                 copied=$((copied + 1))
             done < "$root_keys"
             log_success_t "Скопировано ключей: ${copied}" \
 "Keys copied: ${copied}"
-            [ -s "$auth_keys" ] && key_ok=true
+            [ "$copied" -gt 0 ] && key_ok=true
+            authkeys_count "$auth_keys"
+            [ "$REPLY_AUTHKEYS_COUNT" -gt 0 ] && key_ok=true
         fi
     elif [ -f "$root_keys" ]; then
         log_info_t "В /root/.ssh/authorized_keys ключей нет — копировать нечего" \
 "There are no keys in /root/.ssh/authorized_keys — nothing to copy"
     fi
-    # bulk-ok: пункт целиком пропускается в пакете
-    if ask_yn_t "Добавить ещё один публичный ключ вручную?" "Add another public key by hand?" N; then
-        add_pubkey_interactive "$auth_keys" && key_ok=true
+    local bulk_keys_ok=false
+    if [ -n "${SSH_KEYS_BULK:-}" ]; then
+        if sshkeys_import_spec "$auth_keys" "$SSH_KEYS_BULK"; then
+            key_ok=true
+            bulk_keys_ok=true
+        fi
+    fi
+    if [ "$bulk_keys_ok" != true ]; then
+        # bulk-ok: пункт целиком пропускается в пакете
+        if ask_yn_t "Добавить ещё один публичный ключ вручную?" "Add another public key by hand?" N; then
+            add_pubkey_interactive "$auth_keys" && key_ok=true
+        fi
     fi
     # права могли уехать после дозаписи от root
     local gid; gid="$(id -g "$name" 2>/dev/null || echo "$name")"

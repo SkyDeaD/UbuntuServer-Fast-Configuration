@@ -7,6 +7,7 @@ usfc_item journald защита "Лимит журнала systemd" \
     "systemd journal cap" \
     "caps journald size so it cannot eat the disk"
 usfc_item_toggle journald
+usfc_item_reconf journald
 
 usfc_item_full journald "Ограничивает объём журнала systemd (journald).
 

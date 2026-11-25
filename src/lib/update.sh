@@ -11,6 +11,18 @@
 # а не их сумма, как было раньше.
 UPDATE_CHECK_FILE=""
 UPDATE_CHECK_PID=""
+USFC_UPDATE_CHECK_ONLY=false
+
+# Убрать временный файл и фоновый curl проверки обновлений (зовётся в trap EXIT)
+cleanup_update_check() {
+    if [ -n "$UPDATE_CHECK_PID" ] && kill -0 "$UPDATE_CHECK_PID" 2>/dev/null; then
+        kill -CONT "$UPDATE_CHECK_PID" 2>/dev/null
+        kill -TERM "$UPDATE_CHECK_PID" 2>/dev/null
+    fi
+    UPDATE_CHECK_PID=""
+    [ -n "$UPDATE_CHECK_FILE" ] && rm -f "$UPDATE_CHECK_FILE"
+    UPDATE_CHECK_FILE=""
+}
 
 # Проверка уходит в ОТДЕЛЬНУЮ СЕССИЮ, и это не перестраховка, а лечение
 # зависания. Симптом: `curl … | sudo bash` на чистой машине доходил до
@@ -219,10 +231,53 @@ usfc_rollback_install() {
 }
 
 # install_update <новая версия> — 0 если установили и можно перезапускаться
+# _usfc_release_base <версия> → REPLY_RELEASE_BASE
+# Если идём из основного main (без USFC_REPO_RAW_BASE) и в репозитории есть
+# иммутабельный тег v<версия> — качаем весь релиз с тега: это исключает
+# смешивание старых и новых модулей в 5-минутном окне кэша Fastly CDN.
+REPLY_RELEASE_BASE=""
+_usfc_release_base() {
+    local ver="$1" tag_base tag_ver
+    REPLY_RELEASE_BASE="$REPO_RAW_BASE"
+    [ -n "${USFC_REPO_RAW_BASE:-}" ] && return 0
+    case "$REPO_RAW_BASE" in
+        */main/src)
+            tag_base="${REPO_RAW_BASE%/main/src}/v${ver}/src"
+            tag_ver="$(curl -fsSL --connect-timeout 3 --max-time 6 "${tag_base}/VERSION" 2>/dev/null | tr -d '[:space:]')"
+            [ "$tag_ver" = "$ver" ] && REPLY_RELEASE_BASE="$tag_base"
+            ;;
+    esac
+}
+
+# Краткий список изменений между текущей и новой версией из CHANGELOG (best-effort)
+usfc_show_changelog_diff() {
+    local from_ver="$1" to_ver="$2" base cl_file out line
+    _usfc_release_base "$to_ver"
+    base="${REPLY_RELEASE_BASE%/src}"
+    if [ "$USFC_LANG" = en ]; then cl_file="CHANGELOG.en.md"; else cl_file="CHANGELOG.md"; fi
+    out="$(curl -fsSL --connect-timeout 3 --max-time 6 "${base}/${cl_file}" 2>/dev/null | awk -v to="$to_ver" -v from="$from_ver" '
+        /^## \[/ {
+            ver = $0; sub(/^## \[/, "", ver); sub(/\].*/, "", ver)
+            if (ver == to) { on = 1 }
+            else if (on && ver == from) { exit }
+        }
+        on && n < 25 { print; n++ }
+    ')"
+    [ -n "$out" ] || return 0
+    echo ""
+    log_info_t "Что изменилось (${from_ver} → ${to_ver}):" "What changed (${from_ver} → ${to_ver}):"
+    while IFS= read -r line; do
+        printf '    %b%s%b\n' "$DIM" "$line" "$NC"
+    done <<< "$out"
+    echo ""
+}
+
 install_update() {
     local new_version="$1"
     local stage="${USFC_ROOT}/.usfc-stage"
     local live_lib="${USFC_ROOT}/lib"
+    _usfc_release_base "$new_version"
+    local REPO_RAW_BASE="$REPLY_RELEASE_BASE"
 
     # хвост прерванной попытки нам не нужен
     rm -rf "$stage"
@@ -269,6 +324,9 @@ install_update() {
     fi
     [ "$(tr -d '[:space:]' < "${stage}/VERSION")" = "$new_version" ] || \
         new_version="$(tr -d '[:space:]' < "${stage}/VERSION")"
+
+    # config.jsonc — необязательный ассет для fastfetch (не валит обновление, если его нет в ветке/фикстуре)
+    usfc_fetch_to "config.jsonc" "${stage}/config.jsonc" 2>/dev/null || rm -f "${stage}/config.jsonc"
 
     # Синтаксис каждого модуля проверен, но этого мало: модуль с ошибкой на
     # верхнем уровне (не та функция, не тот порядок) проходит bash -n. Новый
@@ -322,6 +380,9 @@ install_update() {
         rm -rf "$stage" "$old_files"; return 1
     fi
     # права — как в install.sh: файлы из mktemp приходят 0600
+    if [ -f "${stage}/config.jsonc" ]; then
+        mv "${stage}/config.jsonc" "${USFC_ROOT}/config.jsonc" 2>/dev/null && chmod 644 "${USFC_ROOT}/config.jsonc" 2>/dev/null || true
+    fi
     chmod 755 "$SCRIPT_PATH"
     chmod -R u=rwX,go=rX "$live_lib"
     chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION"
@@ -338,6 +399,7 @@ usfc_fix_install_perms() {
     chmod 755 "${USFC_ROOT}/setup.sh" 2>/dev/null
     chmod -R u=rwX,go=rX "${USFC_ROOT}/lib" 2>/dev/null
     chmod 644 "${USFC_ROOT}/MODULES" "${USFC_ROOT}/VERSION" 2>/dev/null
+    [ -f "${USFC_ROOT}/config.jsonc" ] && chmod 644 "${USFC_ROOT}/config.jsonc" 2>/dev/null
     return 0
 }
 
@@ -402,12 +464,53 @@ check_for_update() {
 
     log_info_t "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}" \
 "New version available: ${BOLD}${remote_version}${NC} ${DIM}(you have ${VERSION})${NC}"
+    usfc_show_changelog_diff "$VERSION" "$remote_version"
     if ask_yn_t "Обновить usfc до ${remote_version} сейчас?" "Update usfc to ${remote_version} now?"; then
         if install_update "$remote_version"; then
             log_success_t "Обновлено до ${remote_version}, перезапускаю..." \
 "Updated to ${remote_version}, restarting..."
-            exec "$SCRIPT_PATH"
+            exec "$SCRIPT_PATH" "${USFC_ORIG_ARGS[@]+"${USFC_ORIG_ARGS[@]}"}"
         fi
     fi
     return 0
+}
+
+# Команда `usfc update [--check] [--yes]`
+update_cmd() {
+    local remote_version="" newest
+    if ! fetch_remote_version; then
+        log_error_t "Не удалось проверить обновления (проверьте сеть и доступность github.com)" "Could not check for updates (check network access to github.com)"
+        return 1
+    fi
+    remote_version="$REPLY_REMOTE_VERSION"
+    if ! usfc_valid_version "$remote_version"; then
+        log_error_t "Ответ сервера не похож на номер версии: ${remote_version}" "The server reply does not look like a version number: ${remote_version}"
+        return 1
+    fi
+    if [ "$remote_version" = "$VERSION" ]; then
+        log_success_t "Установлена актуальная версия: ${VERSION}" "Already on the latest version: ${VERSION}"
+        return 0
+    fi
+    newest="$(printf '%s\n%s\n' "$VERSION" "$remote_version" | sort -V | tail -n1)"
+    if [ "$newest" = "$VERSION" ]; then
+        log_info_t "В репозитории ${remote_version}, у вас ${VERSION} — обновляться некуда" "Repository has ${remote_version}, you have ${VERSION} — nothing to update to"
+        return 0
+    fi
+    log_info_t "Доступна новая версия: ${BOLD}${remote_version}${NC} ${DIM}(у вас ${VERSION})${NC}" "New version available: ${BOLD}${remote_version}${NC} ${DIM}(you have ${VERSION})${NC}"
+    usfc_show_changelog_diff "$VERSION" "$remote_version"
+    if [ "$USFC_UPDATE_CHECK_ONLY" = true ]; then
+        log_info_t "Обновить: ${BOLD}sudo usfc update${NC}" "Update with: ${BOLD}sudo usfc update${NC}"
+        return 0
+    fi
+    if [ "$USFC_ASSUME_YES" != true ]; then
+        ask_yn_t "Обновить usfc до ${remote_version} сейчас?" "Update usfc to ${remote_version} now?" || {
+            log_info_t "Отменено" "Cancelled"
+            return 0
+        }
+    fi
+    if install_update "$remote_version"; then
+        log_success_t "usfc обновлён до ${remote_version}" "usfc updated to ${remote_version}"
+        return 0
+    fi
+    return 1
 }

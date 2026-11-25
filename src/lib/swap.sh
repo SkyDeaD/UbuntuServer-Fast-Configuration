@@ -134,7 +134,9 @@ human_to_mb() {
 # реально поднялся.
 create_swapfile() {
     local path="$1" mb="$2"
-    rm -f "$path"
+    # remove_file здесь нельзя: backup_file скопировал бы многогигабайтный
+    # swap-файл в /var/backups/usfc. Зато сухой прогон проверяем явно
+    if [ "$USFC_DRY_RUN" = true ]; then _dry_say "rm -f $path"; else rm -f "$path"; fi
     if ! fallocate -l "${mb}M" "$path" 2>/dev/null; then
         log_info_t "fallocate не сработал — выделяю файл через dd (дольше)" \
 "fallocate did not work — allocating with dd instead (slower)"
@@ -144,7 +146,7 @@ create_swapfile() {
     if ! mkswap "$path" >/dev/null 2>&1; then
         log_info_t "mkswap не принял файл — переделываю через dd" \
 "mkswap rejected the file — redoing it with dd"
-        rm -f "$path"
+        if [ "$USFC_DRY_RUN" = true ]; then _dry_say "rm -f $path"; else rm -f "$path"; fi
         dd if=/dev/zero of="$path" bs=1M count="$mb" status=none 2>/dev/null || return 1
         chmod 600 "$path"
         mkswap "$path" >/dev/null 2>&1 || return 1

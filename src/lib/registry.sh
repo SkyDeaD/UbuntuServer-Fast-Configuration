@@ -10,16 +10,27 @@
 # Теперь каждый файл lib/items/*.sh регистрирует себя сам, а массивы ниже
 # собираются из этих вызовов — рассинхронизировать больше нечего.
 #
-# Массивы сохранены как есть: их читают show_menu, show_item_help,
-# item_number и режим A. Меняется только способ их наполнения.
+# Оба языка (ru/en) хранятся рядом, а usfc_registry_apply_lang() переключает
+# активные массивы без перезапуска скрипта. Благодаря этому `--lang en`,
+# выбор English на первом запуске и смена языка клавишей L сразу переводят
+# названия, описания и подсказки отката — без полурусского экрана и без
+# потери флагов запуска.
 #
 # Порядок пунктов в меню = порядок модулей items/* в src/MODULES.
 ITEM_IDS=()
 ITEM_TITLES=()
+ITEM_TITLES_RU=()
+ITEM_TITLES_EN=()
 ITEM_SECTIONS=()
 ITEM_SHORT=()
+ITEM_SHORT_RU=()
+ITEM_SHORT_EN=()
 ITEM_FULL=()
+ITEM_FULL_RU=()
+ITEM_FULL_EN=()
 ROLLBACK_NOTES=()
+ROLLBACK_NOTES_RU=()
+ROLLBACK_NOTES_EN=()
 DISABLE_SUPPORTED=()
 RECONF_SUPPORTED=()
 
@@ -29,6 +40,10 @@ RECONF_SUPPORTED=()
 usfc_item() {
     ITEM_IDS+=("$1")
     ITEM_SECTIONS+=("$2")
+    ITEM_TITLES_RU+=("$3")
+    ITEM_TITLES_EN+=("${5:-$3}")
+    ITEM_SHORT_RU+=("$4")
+    ITEM_SHORT_EN+=("${6:-$4}")
     if [ "$USFC_LANG" = en ]; then
         ITEM_TITLES+=("${5:-$3}")
         ITEM_SHORT+=("${6:-$4}")
@@ -36,8 +51,28 @@ usfc_item() {
         ITEM_TITLES+=("$3")
         ITEM_SHORT+=("$4")
     fi
-    ITEM_FULL+=("")
-    ROLLBACK_NOTES+=("")
+    ITEM_FULL+=(""); ITEM_FULL_RU+=(""); ITEM_FULL_EN+=("")
+    ROLLBACK_NOTES+=(""); ROLLBACK_NOTES_RU+=(""); ROLLBACK_NOTES_EN+=("")
+}
+
+# Пересобрать активные массивы под текущий $USFC_LANG (ноль форков).
+usfc_registry_apply_lang() {
+    local i
+    if [ "$USFC_LANG" = en ]; then
+        for i in "${!ITEM_IDS[@]}"; do
+            ITEM_TITLES[$i]="${ITEM_TITLES_EN[$i]}"
+            ITEM_SHORT[$i]="${ITEM_SHORT_EN[$i]}"
+            ITEM_FULL[$i]="${ITEM_FULL_EN[$i]}"
+            ROLLBACK_NOTES[$i]="${ROLLBACK_NOTES_EN[$i]}"
+        done
+    else
+        for i in "${!ITEM_IDS[@]}"; do
+            ITEM_TITLES[$i]="${ITEM_TITLES_RU[$i]}"
+            ITEM_SHORT[$i]="${ITEM_SHORT_RU[$i]}"
+            ITEM_FULL[$i]="${ITEM_FULL_RU[$i]}"
+            ROLLBACK_NOTES[$i]="${ROLLBACK_NOTES_RU[$i]}"
+        done
+    fi
 }
 
 # Названия разделов. Раздел хранится по-русски (он же ключ для букв C/B/S/P),
@@ -69,6 +104,8 @@ _usfc_item_idx() {
 # пока его нет, показывается русский: пустой экран хуже непереведённого.
 usfc_item_full() {
     _usfc_item_idx "$1" || return 1
+    ITEM_FULL_RU[$REPLY_ITEM_IDX]="$2"
+    ITEM_FULL_EN[$REPLY_ITEM_IDX]="${3:-$2}"
     if [ "$USFC_LANG" = en ]; then ITEM_FULL[$REPLY_ITEM_IDX]="${3:-$2}"
     else                           ITEM_FULL[$REPLY_ITEM_IDX]="$2"; fi
 }
@@ -77,6 +114,8 @@ usfc_item_full() {
 # переводятся только комментарии внутри них
 usfc_item_rollback() {
     _usfc_item_idx "$1" || return 1
+    ROLLBACK_NOTES_RU[$REPLY_ITEM_IDX]="$2"
+    ROLLBACK_NOTES_EN[$REPLY_ITEM_IDX]="${3:-$2}"
     if [ "$USFC_LANG" = en ]; then ROLLBACK_NOTES[$REPLY_ITEM_IDX]="${3:-$2}"
     else                           ROLLBACK_NOTES[$REPLY_ITEM_IDX]="$2"; fi
 }
@@ -87,8 +126,8 @@ usfc_item_toggle() {
 }
 
 # ⇄-пункт, у которого есть что настроить заново (окно перезагрузки,
-# получатель уведомлений): повторный выбор в меню сначала спрашивает
-# «настроить заново?» и только на «нет» ведёт к disable_<id>
+# получатель уведомлений, UFW, journald, Docker): повторный выбор в меню
+# сначала спрашивает «настроить заново?» и только на «нет» ведёт к disable_<id>
 usfc_item_reconf() {
     RECONF_SUPPORTED+=("$1")
 }

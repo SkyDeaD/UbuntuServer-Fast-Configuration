@@ -138,8 +138,14 @@ apply_fastfetch() {
     if [ ! -f "$cfg" ]; then
         write_cfg=true
     elif grep -F "$FF_CONFIG_MARK" "$cfg" >/dev/null 2>&1; then
-        log_info_t "config.jsonc уже актуальной версии" \
+        # На Debian прежняя установка могла положить наш v2-конфиг с логотипом
+        # Ubuntu — обновляем его на debian_small; правленый файл без метки не трогаем
+        if os_is_debian && grep -F '"ubuntu_small"' "$cfg" >/dev/null 2>&1; then
+            write_cfg=true
+        else
+            log_info_t "config.jsonc уже актуальной версии" \
 "config.jsonc is already up to date"
+        fi
     elif [ "$(sha256sum "$cfg" 2>/dev/null | cut -d' ' -f1)" = "$FF_OLD_CONFIG_SHA" ]; then
         # байт-в-байт наш прежний конфиг — правок пользователя нет, обновляем
         write_cfg=true
@@ -152,22 +158,39 @@ apply_fastfetch() {
 "Fresh sample: ${REPO_RAW_BASE}/config.jsonc"
     fi
     if [ "$write_cfg" = true ]; then
-        # Во временный файл, а на место — через write_file (снимок, сухой
-        # прогон). Прямой curl -o оставлял обрубок при оборванной закачке,
-        # и дальше пункт считал «config.jsonc уже есть»
-        local tmp
-        tmp="$(mktemp)"
-        if curl -fsSL --max-time 30 "${REPO_RAW_BASE}/config.jsonc" -o "$tmp" 2>/dev/null \
-           && grep '"modules"' "$tmp" >/dev/null; then
-            write_file "$cfg" < "$tmp"
+        if [ "$USFC_DRY_RUN" = true ]; then
+            write_file "$cfg" </dev/null
             chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$cfg"
             log_success_t "config.jsonc установлен" \
 "config.jsonc installed"
         else
-            log_warn_t "Не удалось скачать config.jsonc из ${REPO_RAW_BASE}" \
+            # Сначала локальный config.jsonc рядом с setup.sh (без сети),
+            # если его нет — скачиваем во временный файл, чтобы обрыв не оставил обрубок
+            local local_cfg="${SCRIPT_DIR:-}/config.jsonc" src_cfg="" tmp=""
+            if [ -r "$local_cfg" ] && grep '"modules"' "$local_cfg" >/dev/null 2>&1; then
+                src_cfg="$local_cfg"
+            else
+                tmp="$(mktemp)"
+                if curl -fsSL --max-time 30 "${REPO_RAW_BASE}/config.jsonc" -o "$tmp" 2>/dev/null \
+                   && grep '"modules"' "$tmp" >/dev/null; then
+                    src_cfg="$tmp"
+                fi
+            fi
+            if [ -n "$src_cfg" ]; then
+                if os_is_debian; then
+                    sed 's/"ubuntu_small"/"debian_small"/g' "$src_cfg" | write_file "$cfg"
+                else
+                    write_file "$cfg" < "$src_cfg"
+                fi
+                chown "${TARGET_USER}:$(id -g "$TARGET_USER" 2>/dev/null || echo "$TARGET_USER")" "$cfg"
+                log_success_t "config.jsonc установлен" \
+"config.jsonc installed"
+            else
+                log_warn_t "Не удалось скачать config.jsonc из ${REPO_RAW_BASE}" \
 "Could not download config.jsonc from ${REPO_RAW_BASE}"
+            fi
+            [ -n "$tmp" ] && rm -f "$tmp"
         fi
-        rm -f "$tmp"
     fi
 
     local BASHRC="${TARGET_HOME}/.bashrc" need_fastfetch_block=false

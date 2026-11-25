@@ -35,18 +35,25 @@ status_dockerlog() {
     if ! command -v docker &>/dev/null; then
         st "$DIM" "— (нужен Docker)" "— (needs Docker)"; return 1
     fi
-    if [ -f "$DOCKER_DAEMON_JSON" ] && python3 -c "
-import json,sys
-try:
-    d=json.load(open(sys.argv[1]))
-    sys.exit(0 if d.get('log-opts',{}).get('max-size')=='10m' else 1)
-except Exception:
-    sys.exit(1)
-" "$DOCKER_DAEMON_JSON" 2>/dev/null; then
-        st "$GREEN" "✓ настроено (max-size=10m)" "✓ configured (max-size=10m)"; return 0
-    else
+    if [ ! -f "$DOCKER_DAEMON_JSON" ] || [ ! -r "$DOCKER_DAEMON_JSON" ]; then
         st "$DIM" "○ не настроено" "○ not configured"; return 1
     fi
+    # Читаем daemon.json без форка python3: статус пересчитывается на каждой
+    # отрисовке меню. Любой непустой max-size или драйвер с ротацией
+    # (journald/local) считаются настроенными
+    local raw='' max_size drv
+    local re_size='"max-size"[[:space:]]*:[[:space:]]*"([^"]+)"'
+    local re_drv='"log-driver"[[:space:]]*:[[:space:]]*"(journald|local)"'
+    raw="$(<"$DOCKER_DAEMON_JSON")" 2>/dev/null || raw=''
+    if [[ "$raw" =~ $re_size ]]; then
+        max_size="${BASH_REMATCH[1]}"
+        st "$GREEN" "✓ настроено (max-size=${max_size})" "✓ configured (max-size=${max_size})"; return 0
+    fi
+    if [[ "$raw" =~ $re_drv ]]; then
+        drv="${BASH_REMATCH[1]}"
+        st "$GREEN" "✓ настроено (${drv})" "✓ configured (${drv})"; return 0
+    fi
+    st "$DIM" "○ не настроено" "○ not configured"; return 1
 }
 
 # Вопросы пакетного режима (см. lib/bulk.sh)
@@ -153,8 +160,15 @@ try:
     data = json.load(open(path))
 except Exception:
     sys.exit(3)
-data.pop("log-opts", None)
-if data.get("log-driver") == "json-file":
+if not isinstance(data, dict):
+    sys.exit(3)
+opts = data.get("log-opts")
+if isinstance(opts, dict):
+    opts.pop("max-size", None)
+    opts.pop("max-file", None)
+    if not opts:
+        data.pop("log-opts", None)
+if data.get("log-driver") == "json-file" and "log-opts" not in data:
     data.pop("log-driver", None)
 print(json.dumps(data, indent=2))
 PYEOF

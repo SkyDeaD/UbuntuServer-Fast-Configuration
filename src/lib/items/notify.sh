@@ -73,20 +73,24 @@ NOTIFY_ALL_EVENTS="ssh,ban,reboot"
 
 # ── Чтение конфига ──────────────────────────────────────────────────────────
 # Парсим построчно, а не через source: конфиг — данные, не код.
-# → REPLY_NF_CHAT, REPLY_NF_EVENTS, REPLY_NF_HAS (1 — токен в файле есть);
+# → REPLY_NF_CHAT, REPLY_NF_EVENTS, REPLY_NF_IGNORE, REPLY_NF_HAS (1 — токен есть);
 #   REPLY_NF_TOKEN заполняется только при keep — иначе секрет зря не выносим
 #   в переменную (status_ дёргается при каждой отрисовке меню)
-REPLY_NF_TOKEN=''; REPLY_NF_CHAT=''; REPLY_NF_EVENTS=''; REPLY_NF_HAS=0
+REPLY_NF_TOKEN=''; REPLY_NF_CHAT=''; REPLY_NF_EVENTS=''; REPLY_NF_IGNORE=''; REPLY_NF_HAS=0
 _notify_read_conf() {
     local nf_file="$1" nf_keep="${2:-}" nf_k nf_v
-    REPLY_NF_TOKEN=''; REPLY_NF_CHAT=''; REPLY_NF_EVENTS=''; REPLY_NF_HAS=0
+    REPLY_NF_TOKEN=''; REPLY_NF_CHAT=''; REPLY_NF_EVENTS=''; REPLY_NF_IGNORE=''; REPLY_NF_HAS=0
     [ -r "$nf_file" ] || return 1
     while IFS='=' read -r nf_k nf_v || [ -n "$nf_k" ]; do
         case "$nf_k" in
-            TG_TOKEN) [ -n "$nf_v" ] && REPLY_NF_HAS=1
-                      [ -n "$nf_keep" ] && REPLY_NF_TOKEN="$nf_v" ;;
-            TG_CHAT)  REPLY_NF_CHAT="$nf_v" ;;
-            EVENTS)   REPLY_NF_EVENTS="$nf_v" ;;
+            TG_TOKEN)   [ -n "$nf_v" ] && REPLY_NF_HAS=1
+                        [ -n "$nf_keep" ] && REPLY_NF_TOKEN="$nf_v" ;;
+            TG_CHAT)    REPLY_NF_CHAT="$nf_v" ;;
+            EVENTS)     REPLY_NF_EVENTS="$nf_v" ;;
+            IGNORE_IPS) nf_v="${nf_v%$'\r'}"
+                        nf_v="${nf_v//\"/}"
+                        nf_v="${nf_v//\'/}"
+                        REPLY_NF_IGNORE="$nf_v" ;;
         esac
     done < "$nf_file"
     return 0
@@ -149,12 +153,12 @@ EOS
 # Обёртка для pam_exec: ВСЕГДА выходит 0 и сразу. Реагирует только на
 # открытие сеанса; отправка уходит в фон, чтобы таймаут сети не держал вход.
 notify_ssh_script() {
-    local nf_bin="${1:-$NOTIFY_BIN}"
+    local nf_bin="${1:-$NOTIFY_BIN}" nf_conf="${2:-$NOTIFY_CONF}"
     printf '%s\n' '#!/bin/bash'
     t "# Создано usfc (пункт «Уведомления в Telegram»). Не редактируйте: usfc перезапишет файл." \
 "# Created by usfc (item \"Telegram alerts\"). Do not edit: usfc will overwrite it."
     printf '%s\n' "$REPLY_T"
-    printf "BIN='%s'\n" "$nf_bin"
+    printf "BIN='%s'\nCONF='%s'\n" "$nf_bin" "$nf_conf"
     t "SSH: вход" "SSH login"; _notify_bake L_LOGIN
     t "локально" "local"; _notify_bake L_LOCAL
     cat <<'EOS'
@@ -162,6 +166,29 @@ notify_ssh_script() {
 [ -x "$BIN" ] || exit 0
 user="${PAM_USER:-?}"
 from="${PAM_RHOST:-}"
+if [ -n "$from" ] && [ -r "$CONF" ]; then
+    ignore_ips=''
+    while IFS='=' read -r k v || [ -n "$k" ]; do
+        if [ "$k" = IGNORE_IPS ]; then
+            v="${v%$'\r'}"
+            v="${v//\"/}"
+            v="${v//\'/}"
+            ignore_ips="$v"
+        fi
+    done < "$CONF"
+    if [ -n "$ignore_ips" ]; then
+        pats=()
+        IFS=$' \t' read -ra pats <<< "${ignore_ips//,/ }"
+        for pat in "${pats[@]}"; do
+            [ -n "$pat" ] || continue
+            case "$pat" in
+                *.) [[ "$from" == "$pat"* ]] && exit 0 ;;
+                *:) [[ "$from" == "$pat"* ]] && exit 0 ;;
+                *)  [ "$from" = "$pat" ] && exit 0 ;;
+            esac
+        done
+    fi
+fi
 [ -n "$from" ] || from="$L_LOCAL"
 "$BIN" --bg "${L_LOGIN}: ${user:0:60} <- ${from:0:100}, $(date '+%F %T %Z')" </dev/null >/dev/null 2>&1
 exit 0
@@ -334,12 +361,23 @@ status_notify() {
 # чтобы маска не утекла на остаток прогона). Копию для отката write_file
 # делает cp -p в каталог снимков с правами 700, так что секрет не расширяется.
 _notify_write_conf() {
-    local nf_tok="$1" nf_chat="$2" nf_ev="$3"
+    local nf_tok="$1" nf_chat="$2" nf_ev="$3" nf_ignore="${4:-}"
+    if [ -n "$nf_ignore" ]; then
+        local -a nf_ips=()
+        IFS=$' \t' read -ra nf_ips <<< "${nf_ignore//,/ }"
+        if [ "${#nf_ips[@]}" -gt 0 ]; then
+            local IFS=' '
+            nf_ignore="${nf_ips[*]}"
+        else
+            nf_ignore=''
+        fi
+    fi
     mkdir -p "$(dirname "$NOTIFY_CONF")"
     [ -e "$NOTIFY_CONF" ] && chmod 600 "$NOTIFY_CONF"
     ( umask 077
       printf '%s\n' "# usfc: Telegram alerts. Mode 600: holds the bot token. Edit via usfc."
       printf 'TG_TOKEN=%s\nTG_CHAT=%s\nEVENTS=%s\n' "$nf_tok" "$nf_chat" "$nf_ev"
+      if [ -n "$nf_ignore" ]; then printf 'IGNORE_IPS="%s"\n' "$nf_ignore"; fi
     ) | ( umask 077; write_file "$NOTIFY_CONF" ) || return 1
     chmod 600 "$NOTIFY_CONF" && chown root:root "$NOTIFY_CONF" 2>/dev/null
     return 0
@@ -502,7 +540,7 @@ _notify_install_ssh() {
         esac
     fi
     # обёртка должна лежать на месте ДО строки в PAM
-    _notify_write_exec "$NOTIFY_SSH_BIN" notify_ssh_script "$NOTIFY_BIN" || return 1
+    _notify_write_exec "$NOTIFY_SSH_BIN" notify_ssh_script "$NOTIFY_BIN" "$NOTIFY_CONF" || return 1
     notify_pam_add "$NOTIFY_PAM" "$NOTIFY_SSH_BIN" || return 1
     log_success_t "Вход по SSH: строка pam_exec добавлена в ${NOTIFY_PAM}" \
 "SSH logins: pam_exec line added to ${NOTIFY_PAM}"
@@ -571,14 +609,59 @@ _notify_install_reboot() {
 "Reboot: ${NOTIFY_TIMER_NAME} enabled (daily)"
 }
 
+# ── Снятие отдельных частей ─────────────────────────────────────────────────
+# Используются и в disable_notify, и при перенастройке в apply_notify для
+# отключённых событий. В сухом прогоне все удаления идут через remove_file /
+# write_file и подменённый systemctl.
+
+_notify_remove_ssh() {
+    notify_pam_remove "$NOTIFY_PAM" "$NOTIFY_SSH_BIN"
+    remove_file "$NOTIFY_SSH_BIN"
+    return 0
+}
+
+_notify_remove_ban() {
+    if [ -e "$NOTIFY_ACTION" ] || [ -e "$NOTIFY_JAIL" ]; then
+        remove_file "$NOTIFY_ACTION"
+        remove_file "$NOTIFY_JAIL"
+        if systemctl is-active fail2ban >/dev/null 2>&1; then
+            if [ "$USFC_DRY_RUN" = true ]; then
+                systemctl restart fail2ban
+            else
+                systemctl restart fail2ban >/dev/null 2>&1
+            fi
+        fi
+    fi
+    return 0
+}
+
+_notify_remove_reboot() {
+    if [ -e "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}" ] || [ -e "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}" ]; then
+        if [ "$USFC_DRY_RUN" = true ]; then
+            systemctl disable --now "$NOTIFY_TIMER_NAME"
+        else
+            systemctl disable --now "$NOTIFY_TIMER_NAME" >/dev/null 2>&1
+        fi
+        remove_file "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}"
+        remove_file "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}"
+        if [ "$USFC_DRY_RUN" = true ]; then
+            systemctl daemon-reload
+        else
+            systemctl daemon-reload >/dev/null 2>&1
+        fi
+    fi
+    remove_file "$NOTIFY_REBOOT_BIN"
+    return 0
+}
+
 apply_notify() {
-    local nf_tok nf_chat nf_ev nf_cur_t nf_cur_c nf_cur_e nf_e nf_rc nf_done='' nf_failed=false nf_out nf_msg nf_dry=false
+    local nf_tok nf_chat nf_ev nf_ignore nf_cur_t nf_cur_c nf_cur_e nf_cur_i nf_e nf_rc nf_done='' nf_failed=false nf_out nf_msg nf_dry=false
     [ "$USFC_DRY_RUN" = true ] && nf_dry=true
 
     _notify_read_conf "$NOTIFY_CONF" keep
-    nf_cur_t="$REPLY_NF_TOKEN"; nf_cur_c="$REPLY_NF_CHAT"; nf_cur_e="$REPLY_NF_EVENTS"
+    nf_cur_t="$REPLY_NF_TOKEN"; nf_cur_c="$REPLY_NF_CHAT"; nf_cur_e="$REPLY_NF_EVENTS"; nf_cur_i="$REPLY_NF_IGNORE"
     REPLY_NF_TOKEN=''
-    nf_tok="$TG_TOKEN_BULK"; nf_chat="$TG_CHAT_BULK"; nf_ev="$NOTIFY_EVENTS_BULK"
+    nf_tok="$TG_TOKEN_BULK"; nf_chat="$TG_CHAT_BULK"; nf_ev="$NOTIFY_EVENTS_BULK"; nf_ignore="${NOTIFY_IGNORE_BULK:-}"
     # токен живёт один прогон (как CF_TOKEN_BULK у certbot)
     TG_TOKEN_BULK=''
 
@@ -587,10 +670,12 @@ apply_notify() {
         [ -n "$nf_tok" ] || nf_tok="${nf_cur_t:-000000:dry-run}"
         [ -n "$nf_chat" ] || nf_chat="${nf_cur_c:-0}"
         [ -n "$nf_ev" ] || nf_ev="${nf_cur_e:-$NOTIFY_ALL_EVENTS}"
+        [ -n "$nf_ignore" ] || nf_ignore="$nf_cur_i"
     elif [ "$BULK_MODE" = true ]; then
         [ -n "$nf_tok" ] || nf_tok="$nf_cur_t"
         [ -n "$nf_chat" ] || nf_chat="$nf_cur_c"
         [ -n "$nf_ev" ] || nf_ev="${nf_cur_e:-$NOTIFY_ALL_EVENTS}"
+        [ -n "$nf_ignore" ] || nf_ignore="$nf_cur_i"
         if [ -z "$nf_tok" ] || [ -z "$nf_chat" ]; then
             log_error_t "Уведомления в Telegram пропущены: не задан токен бота (TG_TOKEN в файле ответов) или chat_id (--tg-chat / TG_CHAT)" \
 "Telegram alerts skipped: no bot token (TG_TOKEN in the answers file) or chat_id (--tg-chat / TG_CHAT)"
@@ -623,6 +708,7 @@ apply_notify() {
             _notify_ask_events "${nf_cur_e:-$NOTIFY_ALL_EVENTS}" || { nf_tok=''; nf_cur_t=''; return 1; }
             nf_ev="$REPLY_NOTIFY_EV"
         fi
+        [ -n "$nf_ignore" ] || nf_ignore="$nf_cur_i"
     fi
     nf_cur_t=''
 
@@ -639,7 +725,7 @@ apply_notify() {
     fi
 
     # 1. конфиг и отправитель; 2. проверка доставки; 3. хуки
-    _notify_write_conf "$nf_tok" "$nf_chat" "$nf_ev" || { nf_tok=''; log_error_t "Не удалось записать ${NOTIFY_CONF}" "Could not write ${NOTIFY_CONF}"; return 1; }
+    _notify_write_conf "$nf_tok" "$nf_chat" "$nf_ev" "$nf_ignore" || { nf_tok=''; log_error_t "Не удалось записать ${NOTIFY_CONF}" "Could not write ${NOTIFY_CONF}"; return 1; }
     nf_tok=''
     _notify_write_exec "$NOTIFY_BIN" notify_send_script || return 1
     log_success_t "Настройки сохранены: ${NOTIFY_CONF} (права 600)" "Settings saved: ${NOTIFY_CONF} (mode 600)"
@@ -669,11 +755,30 @@ apply_notify() {
             *) nf_failed=true ;;
         esac
     done
+
+    # При перенастройке снимаем ранее установленные (в т.ч. частично) хуки отключённых событий
+    for nf_e in ssh ban reboot; do
+        [[ ",${nf_ev}," == *",${nf_e},"* ]] && continue
+        case "$nf_e" in
+            ssh)
+                [ -e "$NOTIFY_SSH_BIN" ] || _notify_file_has_line "$NOTIFY_PAM" "$NOTIFY_PAM_MARK" || continue
+                _notify_remove_ssh ;;
+            ban)
+                [ -e "$NOTIFY_ACTION" ] || [ -e "$NOTIFY_JAIL" ] || continue
+                _notify_remove_ban ;;
+            reboot)
+                [ -e "$NOTIFY_REBOOT_BIN" ] || [ -e "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}" ] || [ -e "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}" ] || continue
+                _notify_remove_reboot ;;
+        esac
+        log_info_t "Отключено уведомление: ${nf_e}" \
+"Disabled alert: ${nf_e}"
+    done
+
     # в конфиге остаются только реально подключённые события, иначе статус врал бы
     if [ "$nf_done" != "$nf_ev" ] && [ "$nf_dry" != true ]; then
         _notify_read_conf "$NOTIFY_CONF" keep
         nf_tok="$REPLY_NF_TOKEN"; REPLY_NF_TOKEN=''
-        _notify_write_conf "$nf_tok" "$nf_chat" "${nf_done:-$nf_ev}"
+        _notify_write_conf "$nf_tok" "$nf_chat" "${nf_done:-$nf_ev}" "$nf_ignore"
         nf_tok=''
         [ -z "$nf_done" ] && log_warn_t "Ни одно событие не подключено — отправитель готов, но слать нечему" \
 "No event is attached — the sender is ready, but nothing triggers it"
@@ -694,19 +799,9 @@ disable_notify() {
     ask_yn_t "Убрать уведомления в Telegram (вход по SSH, баны, таймер, скрипты и конфиг с токеном)?" \
 "Remove Telegram alerts (SSH logins, bans, timer, scripts and the config with the token)?" N || return 0
 
-    notify_pam_remove "$NOTIFY_PAM" "$NOTIFY_SSH_BIN"
-    if [ -e "$NOTIFY_ACTION" ] || [ -e "$NOTIFY_JAIL" ]; then
-        remove_file "$NOTIFY_ACTION"; remove_file "$NOTIFY_JAIL"
-        systemctl is-active fail2ban >/dev/null 2>&1 && systemctl restart fail2ban >/dev/null 2>&1
-    fi
-    if [ -e "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}" ]; then
-        systemctl disable --now "$NOTIFY_TIMER_NAME" >/dev/null 2>&1
-        remove_file "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}"
-        remove_file "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}"
-        systemctl daemon-reload >/dev/null 2>&1
-    fi
-    remove_file "$NOTIFY_SSH_BIN"
-    remove_file "$NOTIFY_REBOOT_BIN"
+    _notify_remove_ssh
+    _notify_remove_ban
+    _notify_remove_reboot
     remove_file "$NOTIFY_BIN"
     remove_file "$NOTIFY_CONF"
     [ "$USFC_DRY_RUN" = true ] || rmdir "$(dirname "$NOTIFY_CONF")" 2>/dev/null

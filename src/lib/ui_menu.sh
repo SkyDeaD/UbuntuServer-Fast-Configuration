@@ -5,20 +5,9 @@
 # Сообщение для следующей отрисовки меню (ошибка ввода); show_menu его гасит
 MENU_NOTICE=''
 
-show_menu() {
-    refresh_term_width
-    refresh_statuses
-    show_header
-    t "Пользователь:" "User:";   local _lu="$REPLY_T"
-    t "SSH-порт:"     "SSH port:"; local _lp="$REPLY_T"
-    echo -e "  ${DIM}${_lu}${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}${_lp}${NC} ${BOLD}${SSH_PORT}${NC}"
-    if [ "$TARGET_USER" = "root" ]; then
-        t "Работа из-под root: часть настроек ляжет в /root и пропадёт после перелогина" \
-          "Running as root: some settings land in /root and vanish after you re-login"
-        echo -e "  ${YELLOW}${BOLD}!${NC} ${YELLOW}${REPLY_T}${NC}"
-    fi
-    echo ""
-
+# Общая таблица пунктов (# / Пункт / Статус) — рисуется и в интерактивном меню,
+# и в неинтерактивной команде `usfc status`
+_render_items_table() {
     # Колонки: # / Пункт / Статус. Отдельной колонки «Раздел» больше нет —
     # название раздела печатается один раз строкой-подзаголовком, а не
     # повторяется в каждой строке. Освободившиеся ~13 колонок уходят статусу:
@@ -38,13 +27,17 @@ show_menu() {
     # столбике справа, а не приклеена к названию (иначе край рваный)
     name_w=$(( title_w - 2 )); [ "$name_w" -lt 1 ] && name_w=1
 
-    local c_idx c_title c_status
+    local c_idx c_title c_status c_status_pad
     box_line "$DIM" '╭' '┬' '╮' "$idx_w" "$title_w" "$status_w"
     printf -v c_idx "%${idx_w}s" "#"
     t "Пункт" "Item"; pad_title "$REPLY_T" "$title_w";  c_title="$REPLY_PAD"
-    t "Статус" "Status"; pad_title "$REPLY_T" "$status_w"; c_status="$REPLY_PAD"
-    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC}\n" \
-        "$c_idx" "$c_title" "$c_status"
+    # Заголовок «Статус»/«Status» ровно 6 символов: при status_w=6 pad_title
+    # принудительно добавил бы +1 пробел и сдвинул правую рамку
+    t "Статус" "Status"
+    truncate_colored "$REPLY_T" "$status_w"; c_status="$REPLY_TRUNC"
+    visible_len "$c_status"; c_status_pad=$((status_w - REPLY_LEN)); [ "$c_status_pad" -lt 0 ] && c_status_pad=0
+    printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
+        "$c_idx" "$c_title" "$c_status" "$c_status_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$idx_w" "$title_w" "$status_w"
 
     local i=1 id section section_color prev_section=""
@@ -90,12 +83,29 @@ show_menu() {
         i=$((i+1))
     done
     box_line "$DIM" '╰' '┴' '╯' "$idx_w" "$title_w" "$status_w"
+}
+
+show_menu() {
+    refresh_term_width
+    refresh_statuses
+    show_header
+    t "Пользователь:" "User:";   local _lu="$REPLY_T"
+    t "SSH-порт:"     "SSH port:"; local _lp="$REPLY_T"
+    echo -e "  ${DIM}${_lu}${NC} ${BOLD}${TARGET_USER}${NC}   ${DIM}${_lp}${NC} ${BOLD}${SSH_PORT}${NC}"
+    if [ "$TARGET_USER" = "root" ]; then
+        t "Работа из-под root: часть настроек ляжет в /root и пропадёт после перелогина" \
+          "Running as root: some settings land in /root and vanish after you re-login"
+        echo -e "  ${YELLOW}${BOLD}!${NC} ${YELLOW}${REPLY_T}${NC}"
+    fi
+    echo ""
+
+    _render_items_table
 
     echo ""
-    # legend_w = inner_w - 4: box_line/рамка сама добавляет 2 бордюрных символа
+    # legend_w = TERM_W - 4: box_line/рамка сама добавляет 2 бордюрных символа
     # (┌/┐ или │/│) + 2 паддинга вокруг содержимого одной колонки — если отдать
-    # ей inner_w напрямую, итоговая рамка окажется на 4 символа шире терминала
-    local legend_w=$((inner_w - 4)) line
+    # ей TERM_W напрямую, итоговая рамка окажется на 4 символа шире терминала
+    local legend_w=$((TERM_W - 4)) line
     # Три строки одной грамматики «метка  клавиша слово · …» вместо шести.
     # Ячейки идут по естественной ширине через два пробела, а не сеткой:
     # сетка требовала заранее мерить все подписи, и это стоило девяти форков
@@ -141,8 +151,15 @@ show_menu() {
     box_line "$DIM" '╭' '┬' '╮' "$legend_w"
     for line in "$legend1" "$legend2" "$legend3"; do
         local ltrunc lpad
-        truncate_colored "$line" "$legend_w"; ltrunc="$REPLY_TRUNC"
-        visible_len "$ltrunc"
+        visible_len "$line"
+        if [ "$REPLY_LEN" -gt "$legend_w" ]; then
+            # Многоцветная строка при прямой обрезке переняла бы стартовый
+            # ${BOLD} на всю длину — спокойный DIM читается аккуратнее
+            truncate_colored "${DIM}${REPLY_PLAIN}${NC}" "$legend_w"; ltrunc="$REPLY_TRUNC"
+            visible_len "$ltrunc"
+        else
+            ltrunc="$line"
+        fi
         lpad=$((legend_w - REPLY_LEN))
         [ "$lpad" -lt 0 ] && lpad=0
         printf "  ${DIM}│${NC} %b%*s ${DIM}│${NC}\n" "$ltrunc" "$lpad" ""
@@ -155,6 +172,61 @@ show_menu() {
         MENU_NOTICE=''
     fi
     echo ""
+}
+
+# Компактная таблица статусов для `usfc status` — только чтение, без очистки
+# экрана, шапки, легенды и приглашения
+show_status_table() {
+    refresh_term_width
+    refresh_pkg_cache
+    refresh_statuses
+    _render_items_table
+    local id done=0 total="${#ITEM_IDS[@]}"
+    for id in "${ITEM_IDS[@]}"; do
+        [ "${STATUS_RC[$id]:-1}" -eq 0 ] && done=$((done + 1))
+    done
+    echo ""
+    t "Применено ${done} из ${total}" "Applied ${done} of ${total}"
+    echo -e "  ${BOLD}${REPLY_T}${NC}"
+}
+
+# Машинный вывод для `usfc status --json` — только чтение, валидный JSON в stdout.
+# _json_esc объявлена в lib/audit.sh (уже загружен к моменту вызова) и сама
+# снимает ANSI-коды через strip_ansi.
+status_emit_json() {
+    refresh_pkg_cache
+    refresh_statuses
+    local i id sec applied done=0 total="${#ITEM_IDS[@]}"
+    for id in "${ITEM_IDS[@]}"; do
+        [ "${STATUS_RC[$id]:-1}" -eq 0 ] && done=$((done + 1))
+    done
+
+    printf '{\n'
+    _json_esc "${VERSION:-}";            printf '  "usfc": "%s",\n' "$REPLY_JSON"
+    _json_esc "$(hostname 2>/dev/null)"; printf '  "host": "%s",\n' "$REPLY_JSON"
+    _json_esc "${OS_PRETTY:-}";          printf '  "os": "%s",\n'   "$REPLY_JSON"
+    _json_esc "${USFC_LANG:-ru}";        printf '  "lang": "%s",\n' "$REPLY_JSON"
+    printf '  "summary": { "applied": %d, "total": %d },\n' "$done" "$total"
+    printf '  "items": [\n'
+    for ((i = 0; i < total; i++)); do
+        id="${ITEM_IDS[$i]}"
+        case "${ITEM_SECTIONS[$i]}" in
+            система) sec=system ;;
+            база)    sec=base ;;
+            сервисы) sec=services ;;
+            защита)  sec=security ;;
+            *)       sec="${ITEM_SECTIONS[$i]}" ;;
+        esac
+        if [ "${STATUS_RC[$id]:-1}" -eq 0 ]; then applied=true; else applied=false; fi
+        printf '    {'
+        _json_esc "$id";                   printf '"id": "%s", '      "$REPLY_JSON"
+        _json_esc "$sec";                  printf '"section": "%s", ' "$REPLY_JSON"
+        _json_esc "${ITEM_TITLES[$i]}";    printf '"title": "%s", '   "$REPLY_JSON"
+        printf '"applied": %s, '           "$applied"
+        _json_esc "${STATUS_TEXT[$id]:-}"; printf '"status": "%s"'    "$REPLY_JSON"
+        if [ "$i" -lt "$((total - 1))" ]; then printf '},\n'; else printf '}\n'; fi
+    done
+    printf '  ]\n}\n'
 }
 
 # process_item <номер> [позиция-в-пачке] [всего-в-пачке]
@@ -175,7 +247,12 @@ show_menu() {
 # и честный предпросмотр обязан показать ту ветку, которая реально сработала бы.
 preview_item() {
     local idx="$1"
-    if ! [[ "$idx" =~ ^[0-9]+$ ]] || [ "$idx" -lt 1 ] || [ "$idx" -gt "${#ITEM_IDS[@]}" ]; then
+    if [[ "$idx" =~ ^[0-9]+$ ]]; then
+        idx=$((10#$idx))
+    else
+        idx=0
+    fi
+    if [ "$idx" -lt 1 ] || [ "$idx" -gt "${#ITEM_IDS[@]}" ]; then
         log_warn_t "Нужен номер пункта от 1 до ${#ITEM_IDS[@]}" \
 "Give an item number between 1 and ${#ITEM_IDS[@]}"
         return 1
@@ -304,13 +381,14 @@ show_summary() {
     local -a cols=("$name_w" "$res_w" "$time_w")
     [ "$why_w" -gt 0 ] && cols+=("$why_w")
     box_line "$DIM" '╭' '┬' '╮' "${cols[@]}"
+    local t_pad
     for i in "${!SUMMARY_TITLES[@]}"; do
         truncate_colored "${SUMMARY_TITLES[$i]}" "$name_w"; t="$REPLY_TRUNC"
-        pad_title "$t" "$name_w"; t="$REPLY_PAD"
+        visible_len "$t"; t_pad=$((name_w - REPLY_LEN)); [ "$t_pad" -lt 0 ] && t_pad=0
         truncate_colored "${SUMMARY_RESULTS[$i]}" "$res_w"; r="$REPLY_TRUNC"
         visible_len "$r"; pad=$((res_w - REPLY_LEN)); [ "$pad" -lt 0 ] && pad=0
-        printf "  ${DIM}│${NC} %s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}" \
-            "$t" "$r" "$pad" "" "${SUMMARY_TIMES[$i]}"
+        printf "  ${DIM}│${NC} %s%*s ${DIM}│${NC} %b%*s ${DIM}│${NC} %${time_w}s ${DIM}│${NC}" \
+            "$t" "$t_pad" "" "$r" "$pad" "" "${SUMMARY_TIMES[$i]}"
         if [ "$why_w" -gt 0 ]; then
             truncate_colored "${SUMMARY_WHY[$i]}" "$why_w"; w="$REPLY_TRUNC"
             visible_len "$w"; pad=$((why_w - REPLY_LEN)); [ "$pad" -lt 0 ] && pad=0

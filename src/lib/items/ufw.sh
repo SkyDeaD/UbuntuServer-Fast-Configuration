@@ -8,6 +8,7 @@ usfc_item ufw защита "UFW firewall" \
     "UFW firewall" \
     "closes everything except what is needed"
 usfc_item_toggle ufw
+usfc_item_reconf ufw
 
 usfc_item_full ufw "Файрвол: закрывает входящие подключения ко всем портам, кроме SSH и тех,
 что вы разрешили. Список предлагается по тому, что сервер слушает сейчас —
@@ -160,10 +161,14 @@ _ufw_extras() {
 }
 
 apply_ufw() {
-    # UFW уже включён, а в пакет пришли явные порты, ping или Docker —
-    # filter_pending пропускает пункт дальше именно ради них. Включать нечего
-    # и согласия не нужно: только добавить правила, ничего не закрывая
-    if [ "$BULK_MODE" = true ] && ufw_active; then
+    # UFW уже включён: в меню без явных ответов открываем интерактивное
+    # управление; при явных ответах (или в пакете) — только добавляем правила,
+    # ничего не закрывая и не переспрашивая согласие
+    if ufw_active; then
+        if [ "$BULK_MODE" != true ] && ! fw_has_answers; then
+            fw_interactive_manage
+            return $?
+        fi
         local rc=0
         if [ -n "$UFW_ALLOW_BULK" ]; then
             fw_parse_ports "$UFW_ALLOW_BULK" || { log_error "$REPLY_FW_ERR"; return 1; }
@@ -175,7 +180,14 @@ apply_ufw() {
                 rc=1
             fi
         fi
-        _ufw_extras || rc=1
+        if [ "$BULK_MODE" = true ]; then
+            _ufw_extras || rc=1
+        else
+            case "$UFW_PING_BULK" in Y) fw_ping_set on || rc=1 ;; N) fw_ping_set off || rc=1 ;; esac
+            if command -v docker >/dev/null 2>&1; then
+                case "$UFW_DOCKER_BULK" in Y) fw_docker_set on || rc=1 ;; N) fw_docker_set off || rc=1 ;; esac
+            fi
+        fi
         return "$rc"
     fi
     _ufw_show_listening
