@@ -100,20 +100,113 @@ run_noninteractive() {
     return 0
 }
 
+# После экрана аудита (D) в меню: если есть пункты, которыми можно закрыть
+# замечания — предлагаем сразу применить их одной пачкой
+_menu_post_audit() {
+    if [ "${#AUDIT_FIX_ITEMS[@]}" -eq 0 ]; then
+        pause
+        return 0
+    fi
+    local -a fix_nums=()
+    local id num
+    for id in "${AUDIT_FIX_ITEMS[@]}"; do
+        num="$(item_number "$id")"
+        [ -n "$num" ] && fix_nums+=("$num")
+    done
+    if [ "${#fix_nums[@]}" -eq 0 ]; then
+        pause
+        return 0
+    fi
+    filter_pending "${fix_nums[@]}"
+    if [ "${#REPLY_PENDING[@]}" -eq 0 ]; then
+        if [ "${#REPLY_SKIPPED[@]}" -eq 1 ]; then
+            local s_id="${REPLY_SKIPPED[0]}" s_num s_title
+            s_num="$(item_number "$s_id")"
+            s_title="${ITEM_TITLES[$((s_num - 1))]}"
+            t "F — настроить «${s_title}» · Enter — назад" \
+              "F — configure \"${s_title}\" · Enter — back"
+            ui_prompt "$REPLY_T"
+            local ans
+            read -r ans </dev/tty || return 0
+            case "$ans" in
+                [Ff])
+                    local t0 rc1
+                    now_s; t0="$REPLY_NOW"
+                    process_item "$s_num"; rc1=$?
+                    now_s
+                    item_result_line "$s_num" "$rc1" "$((REPLY_NOW - t0))"
+                    pause ;;
+            esac
+            return 0
+        fi
+        pause
+        return 0
+    fi
+    t "F — исправить найденное (${#REPLY_PENDING[@]} шт.) · Enter — назад" \
+      "F — fix found issues (${#REPLY_PENDING[@]}) · Enter — back"
+    ui_prompt "$REPLY_T"
+    local ans
+    read -r ans </dev/tty || return 0
+    case "$ans" in
+        [Ff])
+            local -a p_ids=() p_titles=()
+            local k
+            for k in "${REPLY_PENDING[@]}"; do
+                p_ids+=("${ITEM_IDS[$((k - 1))]}")
+                p_titles+=("${ITEM_TITLES[$((k - 1))]}")
+            done
+            echo ""
+            log_info_t "Будет применено (${#REPLY_PENDING[@]}):" "To be applied (${#REPLY_PENDING[@]}):"
+            for k in "${p_titles[@]}"; do printf '      %s\n' "$k"; done
+            for id in "${REPLY_SKIPPED[@]+"${REPLY_SKIPPED[@]}"}"; do
+                num="$(item_number "$id")"
+                log_warn_t "«${ITEM_TITLES[$((num - 1))]}» требует отдельного подтверждения — настрой отдельно, пункт ${num}" \
+"\"${ITEM_TITLES[$((num - 1))]}\" needs explicit confirmation — run it separately as item ${num}"
+            done
+            echo ""
+            if ask_yn_t "Применить эти пункты сейчас?" "Apply these items now?"; then
+                preask_bulk_answers "${p_ids[@]}"
+                run_items "${REPLY_PENDING[@]}"
+                reset_bulk_answers
+                pause
+            fi ;;
+    esac
+}
+
 main() {
-    # curl за VERSION стартует ПЕРВЫМ и крутится в фоне, пока идёт вся локальная
-    # работа ниже — так проверка обновлений остаётся на каждом запуске, но
-    # перестаёт быть последовательной задержкой перед первым экраном
+    # --lang разбирается уже после загрузки модулей, поэтому нормализуем
+    # значение здесь и сразу пересобираем реестр пунктов под выбранный язык
+    case "$USFC_LANG" in ru|en) ;; *) log_warn_t "Неизвестный язык «${USFC_LANG}», беру ru" \
+"Unknown language ${USFC_LANG}, falling back to ru"; USFC_LANG=ru ;; esac
+    usfc_registry_apply_lang
+
+    # Справочный list не требует прав root и не трогает диск
+    if [ "$USFC_CMD" = list ]; then
+        profile_list
+        exit 0
+    fi
+
+    usfc_require_root
+
+    # Чисто читающие команды и сухой прогон не должны писать в /var/log/usfc.log
+    # и менять права установки
+    local is_readonly=false
+    case "$USFC_CMD" in
+        audit|export|status) is_readonly=true ;;
+        backups) [ "$USFC_BACKUPS_ACTION" != prune ] && is_readonly=true ;;
+        restore) [ "$USFC_RESTORE_DIFF" = true ] && is_readonly=true ;;
+        update)  [ "$USFC_UPDATE_CHECK_ONLY" = true ] && is_readonly=true ;;
+    esac
+    [ "$USFC_DRY_RUN" = true ] && is_readonly=true
+
+    # curl за VERSION стартует ПЕРВЫМ (только для меню, у команд USFC_NO_UPDATE=1)
+    # и крутится в фоне, пока идёт локальная работа ниже
     start_update_check
-    log_init
+    [ "$is_readonly" = true ] || log_init
 
     # Проверяем ДО того, как что-то делать: раньше на чужой системе скрипт
     # доходил до середины и падал на apt (сам detect_os отработал при загрузке)
     require_supported_os || exit 1
-    # --lang разбирается уже после загрузки модулей, поэтому нормализуем
-    # значение здесь ещё раз: «--lang de» не должен молча ломать вывод
-    case "$USFC_LANG" in ru|en) ;; *) log_warn_t "Неизвестный язык «${USFC_LANG}», беру ru" \
-"Unknown language ${USFC_LANG}, falling back to ru"; USFC_LANG=ru ;; esac
 
     # Язык спрашиваем только при первом интерактивном запуске: если выбор уже
     # сохранён, задан флагом или нас позвали неинтерактивно (cloud-init,
@@ -129,24 +222,33 @@ main() {
         usfc_ask_language
     fi
 
-    # до dry_run_enable: там chmod уже подменён. Аудит обязан только читать,
-    # сухой прогон — ничего не менять, поэтому в них права не трогаем
-    if [ "$USFC_DRY_RUN" != true ] && [ "$USFC_CMD" != audit ]; then
+    # до dry_run_enable: там chmod уже подменён. Чисто читающие команды и
+    # сухой прогон не меняют права на диске
+    if [ "$is_readonly" != true ]; then
         usfc_fix_install_perms
     fi
     dry_run_enable
 
     case "$USFC_CMD" in
-        list)    profile_list; exit 0 ;;
         audit)
             if [ "$USFC_AUDIT_JSON" = true ]; then audit_emit_json; else show_audit; fi
             # код возврата пригоден для мониторинга: 1 — есть важные проблемы
             [ "$AUDIT_CRIT" -eq 0 ]; exit $? ;;
-        backups) backup_list; exit $? ;;
+        status)
+            if [ "$USFC_AUDIT_JSON" = true ]; then status_emit_json; else show_status_table; fi
+            exit 0 ;;
+        backups)
+            if [ "$USFC_BACKUPS_ACTION" = prune ]; then
+                backup_prune "$USFC_BACKUPS_KEEP"
+            else
+                backup_list
+            fi
+            exit $? ;;
         restore) backup_restore "$USFC_RESTORE_STAMP"; exit $? ;;
         apply)   run_noninteractive; exit $? ;;
         firewall) firewall_cmd; exit $? ;;
         export)  export_cmd; exit $? ;;
+        update)  update_cmd; exit $? ;;
     esac
 
     # Пользователь и SSH-порт здесь больше не печатаются: они стоят строкой
@@ -212,17 +314,16 @@ main() {
         show_menu
         t "Выбор" "Choose"; ui_prompt "$REPLY_T"
         local choice
-        read -r choice </dev/tty
+        read -r choice </dev/tty || break
         case "$choice" in
             [Qq]) echo ""; log_info_t "Пока. Повторный запуск: usfc" \
 "Bye. Run it again with: usfc"; break ;;
             [Hh]) show_aliases_help ;;
             # "?" как синоним I: привычнее для тех, кто ищет справку вслепую
-            [Dd]) show_audit; pause ;;
-            # Переключение языка перезапускает скрипт — см. usfc_switch_language
-            # pause отработает только когда язык НЕ сменился: при успешной
-            # смене usfc_switch_language уходит в exec и не возвращается
-            [Ll]) usfc_switch_language; pause ;;
+            [Dd]) show_audit; _menu_post_audit ;;
+            # Смена языка обновляет реестр на лету без exec; пауза нужна только
+            # при отмене/ошибке, чтобы успеть прочитать сообщение
+            [Ll]) usfc_switch_language || pause ;;
             [Ii]|'?') show_item_help ;;
             # R когда-то открывала отдельный экран отката. Теперь откат живёт
             # в той же справке, но клавишу принимаем — она у людей в пальцах
@@ -236,7 +337,7 @@ main() {
                     t "Номер пункта для предпросмотра" "Item number to preview"
                     local _h="$REPLY_T"; t "Enter — отмена" "Enter cancels"
                     ui_prompt "$_h" "$REPLY_T"
-                    read -r vnum </dev/tty
+                    read -r vnum </dev/tty || vnum=""
                 fi
                 [ -n "$vnum" ] && { preview_item "$vnum"; pause; }
                 ;;
@@ -258,8 +359,13 @@ main() {
                         # добавление пункта больше не может разойтись с буквами
                         # shellcheck disable=SC2206
                         valid+=($REPLY_SECTION_ITEMS)
-                    elif [[ "$tok" =~ ^[0-9]+$ ]] && [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
-                        valid+=("$tok")
+                    elif [[ "$tok" =~ ^[0-9]+$ ]]; then
+                        tok=$((10#$tok))
+                        if [ "$tok" -ge 1 ] && [ "$tok" -le "${#ITEM_IDS[@]}" ]; then
+                            valid+=("$tok")
+                        else
+                            bad_tok="$tok"; break
+                        fi
                     elif [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
                         # 10# — иначе «08» читается как восьмеричное и падает
                         lo=$((10#${BASH_REMATCH[1]})); hi=$((10#${BASH_REMATCH[2]}))
@@ -300,18 +406,17 @@ main() {
                     item_result_line "${valid[0]}" "$rc1" "$((REPLY_NOW - t0))"
                     pause
                 else
-                    # несколько пунктов разом — сначала убираем то, что уже применено
-                    # (иначе "B,S" при частично готовой системе будет зря переспрашивать про то, что и так стоит)
-                    local -a pending=() pending_ids=() done_titles=()
+                    # несколько пунктов разом — отсеиваем через общий filter_pending:
+                    # убираем уже применённое и предупреждаем про sshhardening заранее
+                    filter_pending "${valid[@]}"
+                    local -a pending=("${REPLY_PENDING[@]+"${REPLY_PENDING[@]}"}")
+                    local -a pending_ids=() done_titles=()
                     local id
-                    for n in "${valid[@]}"; do
-                        id="${ITEM_IDS[$((n-1))]}"
-                        if item_applied "$id"; then
-                            done_titles+=("${ITEM_TITLES[$((n-1))]}")
-                        else
-                            pending+=("$n")
-                            pending_ids+=("$id")
-                        fi
+                    for n in "${pending[@]+"${pending[@]}"}"; do
+                        pending_ids+=("${ITEM_IDS[$((n-1))]}")
+                    done
+                    for id in "${REPLY_ALREADY[@]+"${REPLY_ALREADY[@]}"}"; do
+                        done_titles+=("${ITEM_TITLES[$(( $(item_number "$id") - 1 ))]}")
                     done
 
                     echo ""
@@ -321,9 +426,16 @@ main() {
 "Already applied, skipping: ${DIM}${done_titles[*]}${NC}"
                         IFS="$IFS_SAVE"
                     fi
+                    for id in "${REPLY_SKIPPED[@]+"${REPLY_SKIPPED[@]}"}"; do
+                        local stitle="${ITEM_TITLES[$(( $(item_number "$id") - 1 ))]}"
+                        log_warn_t "«${stitle}» требует отдельного подтверждения — настрой отдельно, пункт $(item_number "$id")" \
+"\"${stitle}\" needs explicit confirmation — run it separately as item $(item_number "$id")"
+                    done
                     if [ "${#pending[@]}" -eq 0 ]; then
-                        log_info_t "Из выбранного уже всё применено" \
+                        if [ "${#done_titles[@]}" -gt 0 ]; then
+                            log_info_t "Из выбранного уже всё применено" \
 "Everything selected is already applied"
+                        fi
                         pause
                     else
                         local titles=() k

@@ -26,17 +26,40 @@ export_answer() {
             v="$(stat -c %s /swapfile 2>/dev/null)" || return 1
             REPLY_EXPORT="$((v / 1024 / 1024))" ;;
         ZRAM_PERCENT)
-            f=/etc/default/zramswap
-            [ -f "$f" ] || return 1
-            v="$(sed -n 's/^[[:space:]]*PERCENT=["'\'']\{0,1\}\([0-9]\{1,\}\).*/\1/p' "$f" | tail -n 1)"
+            if [ -f /etc/systemd/zram-generator.conf ]; then
+                v="$(sed -n 's/^[[:space:]]*zram-size[[:space:]]*=.*ram[[:space:]]*\*[[:space:]]*\([0-9]\{1,\}\)[[:space:]]*\/[[:space:]]*100.*/\1/p' /etc/systemd/zram-generator.conf | tail -n 1)"
+            else
+                v=""
+            fi
+            if [ -z "$v" ] && [ -f /etc/default/zramswap ]; then
+                v="$(sed -n 's/^[[:space:]]*PERCENT=["'\'']\{0,1\}\([0-9]\{1,\}\).*/\1/p' /etc/default/zramswap | tail -n 1)"
+            fi
             [ -n "$v" ] || return 1
             REPLY_EXPORT="$v" ;;
+        ZRAM_ALGO)
+            v=""
+            if [ -f /etc/systemd/zram-generator.conf ]; then
+                v="$(sed -n 's/^[[:space:]]*compression-algorithm[[:space:]]*=[[:space:]]*\([a-z0-9]\{1,\}\).*/\1/p' /etc/systemd/zram-generator.conf | tail -n 1)"
+            fi
+            if [ -z "$v" ] && [ -f /etc/default/zramswap ]; then
+                v="$(sed -n 's/^[[:space:]]*ALGO=["'\'']\{0,1\}\([a-z0-9]\{1,\}\).*/\1/p' /etc/default/zramswap | tail -n 1)"
+            fi
+            case "$v" in lz4|zstd) REPLY_EXPORT="$v" ;; *) return 1 ;; esac ;;
         SYSCTL)
             [ -f /etc/sysctl.d/99-zram.conf ] && REPLY_EXPORT=Y || REPLY_EXPORT=N ;;
         NGINX_AUTOSTART|DOCKER_AUTOSTART)
             v=nginx; [ "$1" = DOCKER_AUTOSTART ] && v=docker
             command -v "$v" >/dev/null 2>&1 || return 1
-            systemctl is-enabled "$v" >/dev/null 2>&1 && REPLY_EXPORT=Y || REPLY_EXPORT=N ;;
+            if [ "$v" = docker ]; then
+                if service_is_up docker || systemctl is-enabled docker.service >/dev/null 2>&1 \
+                   || systemctl is-enabled docker.socket >/dev/null 2>&1; then
+                    REPLY_EXPORT=Y
+                else
+                    REPLY_EXPORT=N
+                fi
+            else
+                systemctl is-enabled "$v" >/dev/null 2>&1 && REPLY_EXPORT=Y || REPLY_EXPORT=N
+            fi ;;
         CERTBOT_CF)
             pkg_installed certbot || return 1
             pkg_installed python3-certbot-dns-cloudflare && REPLY_EXPORT=Y || REPLY_EXPORT=N ;;
@@ -100,15 +123,27 @@ export_answer() {
                 v="$(apt-config dump Unattended-Upgrade::Automatic-Reboot-WithUsers 2>/dev/null)"
                 [[ "$v" == *'"true"'* ]] && REPLY_EXPORT=Y || REPLY_EXPORT=N
             fi ;;
-        TG_CHAT|NOTIFY_EVENTS)
-            # chat_id не секрет (без токена им не воспользоваться); токен не читаем вовсе
+        TG_CHAT|NOTIFY_EVENTS|NOTIFY_IGNORE)
+            # chat_id и ignore-список не секреты; токен не читаем вовсе
             f=/etc/usfc/notify.conf
             [ -r "$f" ] || return 1
-            if [ "$1" = TG_CHAT ]; then k=TG_CHAT; else k=EVENTS; fi
+            case "$1" in
+                TG_CHAT)       k=TG_CHAT ;;
+                NOTIFY_EVENTS) k=EVENTS ;;
+                NOTIFY_IGNORE) k=IGNORE_IPS ;;
+            esac
             v="$(sed -n "s/^${k}=//p" "$f" | tail -n 1)"
             v="${v//[\"\']/}"
             [ -n "$v" ] || return 1
             REPLY_EXPORT="$v" ;;
+        CLI_ICONS)
+            f="${TARGET_HOME}/.bashrc"
+            grep -qF "# >>> vps-setup:cli >>>" "$f" 2>/dev/null || return 1
+            if grep -qF "# usfc:cli-block v4 no-icons" "$f" 2>/dev/null; then
+                REPLY_EXPORT=N
+            else
+                REPLY_EXPORT=Y
+            fi ;;
         LAZYDOCKER)
             command -v docker >/dev/null 2>&1 || return 1
             command -v lazydocker >/dev/null 2>&1 && REPLY_EXPORT=Y || REPLY_EXPORT=N ;;
@@ -190,7 +225,7 @@ export_cmd() {
         [ -n "$fl" ] || continue
         case "$ty" in
             yn) if [ "$REPLY_EXPORT" = Y ]; then cmd="${cmd} ${fl}"; else cmd="${cmd} --no-${fl#--}"; fi ;;
-            ports) cmd="${cmd} ${fl} ${REPLY_EXPORT// /,}" ;;
+            ports|iplist) cmd="${cmd} ${fl} ${REPLY_EXPORT// /,}" ;;
             *) cmd="${cmd} ${fl} ${REPLY_EXPORT}" ;;
         esac
     done

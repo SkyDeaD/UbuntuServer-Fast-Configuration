@@ -7,6 +7,7 @@ usfc_item docker сервисы "Docker + Compose" \
     "Docker + Compose" \
     "Docker CE + Compose from the official repository"
 usfc_item_toggle docker
+usfc_item_reconf docker
 
 usfc_item_full docker "Docker CE + Compose plugin из официального репозитория Docker, а не пакет
 docker.io из репозиториев Ubuntu — тот заметно старее.

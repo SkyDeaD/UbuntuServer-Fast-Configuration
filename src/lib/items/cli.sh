@@ -213,30 +213,40 @@ cli_write_aliases() {
     # сессии. То же случалось бы на Ubuntu, если бы один пакет поставился,
     # а другой нет.
     local BASHRC="${TARGET_HOME}/.bashrc"
+    local want_mark="$CLI_BLOCK_MARK" icons_flag=" --icons"
+    if [ "${CLI_ICONS_BULK:-}" = N ]        || { [ -z "${CLI_ICONS_BULK:-}" ] && grep -qxF "${CLI_BLOCK_MARK} no-icons" "$BASHRC" 2>/dev/null; }; then
+        want_mark="${CLI_BLOCK_MARK} no-icons"
+        icons_flag=""
+    fi
     # Версия блока, а не «блок вообще есть». Прежняя проверка выходила по факту
     # наличия маркера, и добавленный позже алиас не доезжал НИ ДО ОДНОЙ уже
     # настроенной машины — молча, потому что пункт при этом рапортовал успех.
     # Тот же приём уже применён для блока обёртки в lib/wrapper.sh.
     # Поднимать номер при каждом изменении содержимого блока.
     if grep -qF "# >>> vps-setup:cli >>>" "$BASHRC" 2>/dev/null; then
-        if grep -qF "$CLI_BLOCK_MARK" "$BASHRC" 2>/dev/null; then
+        if grep -qxF "$want_mark" "$BASHRC" 2>/dev/null; then
             log_info_t "Алиасы CLI-утилит в .bashrc уже есть" \
 "CLI aliases are already in .bashrc"
             return
         fi
-        log_info_t "Блок алиасов в .bashrc устарел — переписываю" \
+        if grep -qF "$CLI_BLOCK_MARK" "$BASHRC" 2>/dev/null; then
+            log_info_t "Обновляю блок алиасов в .bashrc" \
+"Updating the alias block in .bashrc"
+        else
+            log_info_t "Блок алиасов в .bashrc устарел — переписываю" \
 "The alias block in .bashrc is outdated — rewriting it"
+        fi
         remove_block "$BASHRC" vps-setup:cli || return 1
     fi
     {
         echo ""
         echo "# >>> vps-setup:cli >>>"
-        echo "$CLI_BLOCK_MARK"
+        echo "$want_mark"
         if command -v eza &>/dev/null; then
-            echo "alias ls='eza --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'"
-            echo "alias ll='eza -lah --icons --group-directories-first'"
-            echo "alias la='eza -a --icons --group-directories-first -1 --long --no-permissions --no-user --no-time'"
-            echo "alias lt='eza --tree --icons --level=2 --group-directories-first'"
+            echo "alias ls='eza${icons_flag} --group-directories-first -1 --long --no-permissions --no-user --no-time'"
+            echo "alias ll='eza -lah${icons_flag} --group-directories-first'"
+            echo "alias la='eza -a${icons_flag} --group-directories-first -1 --long --no-permissions --no-user --no-time'"
+            echo "alias lt='eza --tree${icons_flag} --level=2 --group-directories-first'"
         fi
         if command -v batcat &>/dev/null; then
             echo "alias cat='batcat --paging=never'"

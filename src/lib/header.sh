@@ -90,26 +90,51 @@ REPLY_PROGRESS=''
 build_progress() {
     REPLY_PROGRESS=''
     [ "${#STATUS_RC[@]}" -eq 0 ] && return 0
-    local id done=0 total="${#ITEM_IDS[@]}" cells filled i bar='' ch_full ch_empty
+    local id done=0 total="${#ITEM_IDS[@]}"
     for id in "${ITEM_IDS[@]}"; do
         [ "${STATUS_RC[$id]:-1}" -eq 0 ] && done=$((done + 1))
     done
     [ "$total" -le 0 ] && return 0
-    # ровно 2 ячейки на пункт: деление точное, ошибок округления нет по построению
-    cells=$(( total * 2 ))
-    filled=$(( done * 2 ))
+
+    local w_done w_of text_plain text_colored avail cells=0 filled=0
+    t "применено" "applied"; w_done="$REPLY_T"
+    t "из" "of";             w_of="$REPLY_T"
+    text_plain="${w_done} ${done} ${w_of} ${total}"
+    text_colored="${DIM}${w_done}${NC} ${BOLD}${done}${NC}${DIM} ${w_of} ${total}${NC}"
+    visible_len "$text_plain"
+    # Бюджет ширины бара: TERM_W минус 2 пробела отступа, 32 колонки версии слева,
+    # 2 пробела, видимая длина текста прогресса и 2 пробела перед баром — строка
+    # никогда не превышает TERM_W контента после 2 пробелов отступа
+    avail=$(( ${TERM_W:-78} - 2 - 32 - 2 - REPLY_LEN - 2 ))
+    if [ "$avail" -ge $(( total * 2 )) ]; then
+        # ровно 2 ячейки на пункт: деление точное, ошибок округления нет по построению
+        cells=$(( total * 2 ))
+        filled=$(( done * 2 ))
+    elif [ "$avail" -ge "$total" ]; then
+        # 1 ячейка на пункт: на 80-колоночном терминале бар помещается целиком
+        cells="$total"
+        filled="$done"
+    elif [ "$avail" -ge 8 ]; then
+        # пропорциональный бар на тесных экранах
+        cells="$avail"
+        filled=$(( done * avail / total ))
+    fi
+
+    if [ "$cells" -le 0 ]; then
+        REPLY_PROGRESS="$text_colored"
+        return 0
+    fi
+
     # ASCII-фолбэк при небитом locale — "#" и ".", но НЕ "=" и "-": шрифты
     # с лигатурами (FiraCode, JetBrains Mono) склеивают их в стрелки и полосы
+    local ch_full ch_empty bar_full='' bar_empty='' i
     if [ "$CHARLEN_NATIVE" = true ]; then ch_full='█'; ch_empty='░'
     else                                  ch_full='#'; ch_empty='.'
     fi
     for ((i = 0; i < cells; i++)); do
-        if [ "$i" -lt "$filled" ]; then bar+="$ch_full"; else bar+="$ch_empty"; fi
+        if [ "$i" -lt "$filled" ]; then bar_full+="$ch_full"; else bar_empty+="$ch_empty"; fi
     done
-    local w_done w_of
-    t "применено" "applied"; w_done="$REPLY_T"
-    t "из" "of";             w_of="$REPLY_T"
-    REPLY_PROGRESS="${DIM}${w_done}${NC} ${BOLD}${done}${NC}${DIM} ${w_of} ${total}${NC}  ${GREEN}${bar:0:filled}${NC}${DIM}${bar:filled}${NC}"
+    REPLY_PROGRESS="${text_colored}  ${GREEN}${bar_full}${NC}${DIM}${bar_empty}${NC}"
 }
 
 show_header() {
@@ -128,12 +153,24 @@ show_header() {
         build_header_info
     fi
 
+    # Бейдж сухого прогона ставим в 6-ю (свободную) строку рядом с логотипом:
+    # 34 + 3 + 14 = 51 <= 58, поэтому влезает на любой ширине, не крадёт высоту
+    # экрана и не ломает выравнивание строки с версией и прогресс-баром
+    local dry_badge=''
+    if [ "${USFC_DRY_RUN:-false}" = true ]; then
+        t "[СУХОЙ ПРОГОН]" "[DRY-RUN]"
+        dry_badge="${YELLOW}${BOLD}${REPLY_T}${NC}"
+    fi
+
     echo ""
     local i line info
     for i in "${!LOGO_LINES[@]}"; do
         line="${LOGO_COLORS[$i]}${LOGO_LINES[$i]}${NC}"
         info=""
         [ "$with_info" = true ] && info="${HEADER_INFO[$i]:-}"
+        if [ "$i" -eq 5 ] && [ -n "$dry_badge" ]; then
+            info="$dry_badge"
+        fi
         if [ -n "$info" ]; then
             pad_title "${LOGO_LINES[$i]}" "$LOGO_W"
             printf "  %b%s%b   %b\n" "${LOGO_COLORS[$i]}" "$REPLY_PAD" "$NC" "$info"
@@ -156,6 +193,6 @@ pause() {
     echo ""
     t "Enter — продолжить..." "Enter to continue..."
     echo -en "  ${DIM}${REPLY_T}${NC}"
-    read -r _ </dev/tty
+    read -r _ </dev/tty || true
 }
 

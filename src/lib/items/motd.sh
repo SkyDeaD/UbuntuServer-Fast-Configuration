@@ -366,7 +366,14 @@ if command -v docker >/dev/null 2>&1 || [ -x /usr/bin/docker ]; then
             [[ ${r%/} =~ [0-9a-f]{64}(\.scope)?$ ]] && n=$((n + 1))
         done
         if [ "$n" -eq 0 ] && command -v timeout >/dev/null 2>&1; then
-            if mapfile -t ids < <(timeout 2 docker ps -q 2>/dev/null); then n=${#ids[@]}; fi
+            # Проверяем, что dockerd реально запущен: иначе docker ps разбудит
+            # docker.socket на каждом SSH-логине, когда контейнеров 0
+            dpid=''
+            if { [ -r /run/docker.pid ] && read -r dpid < /run/docker.pid 2>/dev/null \
+                 && [[ $dpid =~ ^[0-9]+$ ]] && kill -0 "$dpid" 2>/dev/null; } \
+               || pgrep -x dockerd >/dev/null 2>&1; then
+                if mapfile -t ids < <(timeout 2 docker ps -q 2>/dev/null); then n=${#ids[@]}; fi
+            fi
         fi
         DK="$L_DRUN: $n"
     else

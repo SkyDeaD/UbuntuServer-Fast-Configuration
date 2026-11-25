@@ -120,9 +120,11 @@ uninstall_self() {
         return 0
     fi
 
+    USFC_SKIP_BACKUP=true
     for p in "${USFC_RM_BASHRC[@]}"; do
         remove_block "$p" vps-setup:self
     done
+    USFC_SKIP_BACKUP=false
     [ "$drop_backups" = true ] && rm -rf "$USFC_BACKUP_ROOT"
     for p in "${USFC_RM_PATHS[@]}"; do
         rm -rf "$p"
@@ -156,7 +158,7 @@ uninstall_self() {
 # формы не работают, а печатают готовую новую строку: скрипт из cloud-init
 # упадёт громко, а не сделает что-то не то.
 
-USFC_COMMANDS="apply firewall audit export list backups restore help version"
+USFC_COMMANDS="apply firewall audit status export list backups restore update help version"
 
 # Что делать вместо меню. Пусто — обычный интерактивный запуск.
 USFC_CMD=""
@@ -252,9 +254,16 @@ parse_args() {
                     ru|en) USFC_LANG="$REPLY_CLI_VAL"; USFC_LANG_EXPLICIT=true ;;
                     *) _cli_die "--lang: ru или en, а не «${REPLY_CLI_VAL}»" "--lang: ru or en, not \"${REPLY_CLI_VAL}\"" ;;
                 esac ;;
-            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1; used+=("--dry-run:apply firewall") ;;
-            -y|--yes)     USFC_ASSUME_YES=true; used+=("--yes:apply restore firewall") ;;
-            --json)       USFC_AUDIT_JSON=true; used+=("--json:audit") ;;
+            --dry-run)    USFC_DRY_RUN=true; USFC_NO_UPDATE=1; used+=("--dry-run:apply firewall backups") ;;
+            -y|--yes)     USFC_ASSUME_YES=true; used+=("--yes:apply restore firewall backups update") ;;
+            --json)       USFC_AUDIT_JSON=true; used+=("--json:audit status") ;;
+            --only-problems) USFC_AUDIT_ONLY_PROBLEMS=true; used+=("--only-problems:audit") ;;
+            --diff)       USFC_RESTORE_DIFF=true; used+=("--diff:restore") ;;
+            --check)      USFC_UPDATE_CHECK_ONLY=true; used+=("--check:update") ;;
+            --keep|--keep=*)
+                _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
+                [[ "$REPLY_CLI_VAL" =~ ^[0-9]+$ ]] || _cli_die "--keep: ожидается целое число ≥ 0" "--keep: expected a whole number ≥ 0"
+                USFC_BACKUPS_KEEP=$((10#$REPLY_CLI_VAL)); used+=("--keep:backups") ;;
             --config|--config=*)
                 _cli_value "$@"; shift $((REPLY_CLI_SHIFT - 1))
                 USFC_CONFIG_FILE="$REPLY_CLI_VAL"; used+=("--config:apply firewall") ;;
@@ -310,6 +319,8 @@ parse_args() {
                                  USFC_RESTORE_STAMP="$a" ;;
                         help)    [ -z "$USFC_HELP_TOPIC" ] || _cli_die "help: лишний аргумент «${a}»" "help: unexpected argument \"${a}\""
                                  USFC_HELP_TOPIC="$a" ;;
+                        backups) [ -z "$USFC_BACKUPS_ACTION" ] && [ "$a" = prune ] || _cli_die "backups: ожидается prune, а не «${a}»" "backups: expected prune, not \"${a}\""
+                                 USFC_BACKUPS_ACTION=prune ;;
                         firewall)
                             # usfc firewall ping off · usfc firewall docker on
                             if [ -z "$FW_CMD_ACTION" ]; then
@@ -356,6 +367,15 @@ parse_args() {
         firewall)
             [ -z "$FW_CMD_ACTION" ] || [ -n "$FW_CMD_VALUE" ] \
                 || _cli_die "firewall ${FW_CMD_ACTION}: on или off?" "firewall ${FW_CMD_ACTION}: on or off?" ;;
+        backups)
+            if [ "$USFC_BACKUPS_ACTION" != prune ]; then
+                for u in "${used[@]+"${used[@]}"}"; do
+                    case "${u%%:*}" in
+                        --keep|--yes|--dry-run)
+                            _cli_die "backups: ${u%%:*} работает только с подкомандой prune (usfc backups prune)" "backups: ${u%%:*} only works with prune (usfc backups prune)" ;;
+                    esac
+                done
+            fi ;;
         restore)
             # без метки откат спрашивает её с терминала — в скрипте спросить некого
             if [ -z "$USFC_RESTORE_STAMP" ] && ! usfc_interactive; then
@@ -431,6 +451,9 @@ _usage_answer_flags() {
             time)  if [ "$USFC_LANG" = en ]; then name="${fl} <HH:MM|off>"; else name="${fl} <ЧЧ:ММ|off>"; fi ;;   # i18n-ok: пара на той же строке
             chat)  name="${fl} <chat_id|@channel>" ;;
             events) name="${fl} <ssh,ban,reboot>" ;;
+            algo)   name="${fl} <lz4|zstd>" ;;
+            iplist) name="${fl} <IP,...>" ;;
+            sshkey) if [ "$USFC_LANG" = en ]; then name="${fl} <key|gh:user>"; else name="${fl} <ключ|gh:user>"; fi ;;   # i18n-ok: пара на той же строке
             *)   name="${fl} <N>" ;;
         esac
         if [ "$USFC_LANG" = en ]; then desc="$en"; else desc="$ru"; fi
@@ -450,7 +473,7 @@ _usage_answer_keys() {
 show_usage() {
     local topic="${1:-}"
     case "$topic" in
-        ''|apply|firewall|audit|export|list|backups|restore|version) ;;
+        ''|apply|firewall|audit|status|export|list|backups|restore|update|version) ;;
         *) _cli_die "нет справки по «${topic}». Команды: ${USFC_COMMANDS}" "no help for \"${topic}\". Commands: ${USFC_COMMANDS}" ;;
     esac
     if [ "$USFC_LANG" = en ]; then show_usage_en "$topic"; else show_usage_ru "$topic"; fi
@@ -495,20 +518,37 @@ EOF
             ;;
         audit)
             cat <<'EOF'
-usfc audit [--json] — проверить сервер, ничего не меняя
+usfc audit [--json] [--only-problems] — проверить сервер, ничего не меняя
 
-  --json   машинно-читаемый отчёт (id проверки, уровень, текст)
+  --json           машинно-читаемый отчёт (id проверки, уровень, subject, текст)
+  --only-problems  скрыть строки в норме (✓), оставить только замечания и ошибки
 
 Коды возврата: 0 — важных проблем нет; 1 — есть важные (crit).
 EOF
             ;;
+        status)
+            cat <<'EOF'
+usfc status [--json] — таблица статусов всех пунктов без входа в меню (только чтение)
+
+  --json   машинно-читаемый отчёт (сводка и массив пунктов)
+EOF
+            ;;
         restore)
             cat <<'EOF'
-usfc restore [метка] [--yes] — вернуть конфиги из снимка
+usfc restore [метка|latest] [--diff] [--yes] — вернуть конфиги из снимка
 
 Снимок делается перед каждой правкой системного файла. Список меток —
-usfc backups. Без метки спросит её (нужен терминал); --yes — не спрашивать
-подтверждения.
+usfc backups; latest выбирает самый свежий снимок.
+  --diff   показать отличия (diff -u) от текущих файлов, ничего не меняя
+  --yes    не спрашивать подтверждения
+EOF
+            ;;
+        update)
+            cat <<'EOF'
+usfc update [--check] [--yes] — проверить или установить обновление usfc
+
+  --check  только проверить наличие новой версии и показать изменения
+  --yes    обновить без вопроса
 EOF
             ;;
         firewall)
@@ -540,7 +580,7 @@ EOF
             ;;
         export)  echo "usfc export > node.conf — файл ответов по этому серверу (без секретов) и та же настройка одной командой" ;;   # i18n-ok: пара — show_usage_en
         list)    echo "usfc list — профили и id пунктов для usfc apply" ;;   # i18n-ok: пара — show_usage_en
-        backups) echo "usfc backups — снимки конфигов, свежие снизу; откат — usfc restore <метка>" ;;   # i18n-ok: пара — show_usage_en
+        backups) echo "usfc backups [prune [--keep N] [--dry-run] [--yes]] — снимки конфигов и очистка старых (по умолчанию остаются 10); откат — usfc restore <метка|latest>" ;;   # i18n-ok: пара — show_usage_en
         version) echo "usfc version — версия (то же: -V, --version)" ;;   # i18n-ok: пара — show_usage_en
         *)
             cat <<EOF
@@ -553,10 +593,12 @@ usfc ${VERSION} — UbuntuServer Fast Configuration
   apply <что>        применить пункты без вопросов по ходу
   firewall           файрвол: порты, ping, Docker
   audit              проверить сервер (только чтение)
+  status             статусы всех пунктов (только чтение)
   export             файл ответов по этому серверу
   list               профили и id пунктов
-  backups            снимки конфигов
-  restore [метка]    вернуть конфиги из снимка
+  backups [prune]    снимки конфигов и очистка старых
+  restore [метка]    вернуть конфиги из снимка (поддерживает latest и --diff)
+  update [--check]   проверить и установить обновление usfc
   help [команда]     справка; по команде — подробнее
   version            версия
 
@@ -625,20 +667,37 @@ EOF
             ;;
         audit)
             cat <<'EOF'
-usfc audit [--json] — check the server without changing anything
+usfc audit [--json] [--only-problems] — check the server without changing anything
 
-  --json   machine-readable report (check id, level, text)
+  --json           machine-readable report (check id, level, subject, text)
+  --only-problems  hide healthy (✓) rows, show only warnings and critical issues
 
 Exit codes: 0 — no critical problems; 1 — there are critical ones (crit).
 EOF
             ;;
+        status)
+            cat <<'EOF'
+usfc status [--json] — show all item statuses without opening the menu (read-only)
+
+  --json   machine-readable report (summary and item array)
+EOF
+            ;;
         restore)
             cat <<'EOF'
-usfc restore [stamp] [--yes] — bring configs back from a snapshot
+usfc restore [stamp|latest] [--diff] [--yes] — bring configs back from a snapshot
 
 A snapshot is taken before every change to a system file. List the stamps
-with usfc backups. Without a stamp it asks for one (needs a terminal);
---yes skips the confirmation.
+with usfc backups; latest selects the most recent snapshot.
+  --diff   show unified diff against current files without changing anything
+  --yes    skip the confirmation
+EOF
+            ;;
+        update)
+            cat <<'EOF'
+usfc update [--check] [--yes] — check for or install a usfc update
+
+  --check  only check for a new version and display changelog highlights
+  --yes    install without prompting
 EOF
             ;;
         firewall)
@@ -670,7 +729,7 @@ EOF
             ;;
         export)  echo "usfc export > node.conf — an answers file from this server (no secrets) and the same setup as one command" ;;
         list)    echo "usfc list — profiles and item ids for usfc apply" ;;
-        backups) echo "usfc backups — config snapshots, newest last; undo with usfc restore <stamp>" ;;
+        backups) echo "usfc backups [prune [--keep N] [--dry-run] [--yes]] — config snapshots and pruning old ones (keeps 10 by default); undo with usfc restore <stamp|latest>" ;;
         version) echo "usfc version — the version (same as -V, --version)" ;;
         *)
             cat <<EOF
@@ -683,10 +742,12 @@ Commands:
   apply <what>       apply items without questions along the way
   firewall           the firewall: ports, ping, Docker
   audit              check the server (read-only)
+  status             statuses of all items (read-only)
   export             an answers file from this server
   list               profiles and item ids
-  backups            config snapshots
-  restore [stamp]    bring configs back from a snapshot
+  backups [prune]    config snapshots and pruning old ones
+  restore [stamp]    bring configs back from a snapshot (supports latest and --diff)
+  update [--check]   check for and install usfc updates
   help [command]     help; per command — in detail
   version            the version
 

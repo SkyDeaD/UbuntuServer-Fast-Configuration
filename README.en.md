@@ -61,9 +61,9 @@ On the very first run it asks a single question — "what is this server for?" �
 
 </div>
 
-Inside the menu: a number (`5`), several at once (`1 3 5` or `1,3,5`), a range (`1-5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped and why. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`) — per-item help and rollback, `H` — alias reference, `D` — audit, `U` — remove `usfc` itself.
+Inside the menu: a number (`5`), several at once (`1 3 5` or `1,3,5`), a range (`1-5`), a whole section (`C`/`B`/`S`/`P`), everything (`A`), or a combination (`B,S`). For a batch, every question is asked up front in one block with explanations. Then the items run without stopping, and it finishes with a summary of what got installed, what failed, and what was skipped and why. `V 5` — preview: shows what an item would do, changing nothing. `I` (or `?`) — per-item help and rollback (press `A` to apply or `V` to preview right from the detail card), `H` — alias reference, `D` — audit (press `F` to fix found issues directly), `U` — remove `usfc` itself.
 
-Items marked with `⇄` switch off by picking them again: the script sees the setting is applied and offers the opposite action. For items with settings, `unattended` and `notify`, picking them again first asks "set it up again?", and only "no" turns the item off. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
+Items marked with `⇄` switch off by picking them again: the script sees the setting is applied and offers the opposite action. For configurable items (`docker`, `journald`, `unattended`, `notify`, and `ufw`), picking them again first offers reconfiguration (`ufw` opens an interactive firewall manager for ports, ping, and Docker) and turns the item off only if you decline. The rest are rolled back by hand — the commands sit on the `I` screen under each item.
 
 ### One command, no menu
 
@@ -82,7 +82,7 @@ Every command, flag, answers-file key and exit code is in the [CLI reference](do
 
 Plenty of hosts hand you a VPS with nothing but `root`. The script notices and **offers to create a regular sudo user first** (defaults to yes): working as root is unsafe, SSH hardening doesn't work at all without a separate user, and aliases, fastfetch and tmux would land in `/root`.
 
-It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, and offers to **copy the keys from `/root/.ssh/authorized_keys`** — without that the new user simply can't log in if you reach the server by key. Passwords shorter than 8 characters are rejected: the server faces the internet, and brute-forcing runs around the clock. An empty password is allowed — the account is then key-only.
+It asks for a name and a password (hidden input, typed twice), adds the user to the `sudo` group, offers to **copy the keys from `/root/.ssh/authorized_keys`**, and lets you paste a key or import keys from GitHub/GitLab (`gh:<user>`, `gl:<user>`) with `ssh-keygen` validation — without keys the new user cannot log in if you reach the server by key. Passwords shorter than 8 characters are rejected: the server faces the internet, and brute-forcing runs around the clock. An empty password is allowed — the account is then key-only.
 
 The script then switches to the new user inside the running session, so aliases, fastfetch and tmux land in their home rather than `/root`. On exit it reminds you to reconnect as that user.
 
@@ -183,7 +183,7 @@ Access
 
 It checks disk space and inodes (they run out before space does and look like "no space left" with gigabytes free), memory and swap, failed systemd units, public ports against UFW rules, Docker ports past the firewall, password and root login, foreign sshd configs that override hardening, pending security updates, whether a reboot is needed, and certificate expiry.
 
-`usfc audit --json` gives the same in machine-readable form — for monitoring. With critical findings the command exits with code `1`.
+`usfc audit --only-problems` hides healthy checks and leaves only warnings and errors; `usfc audit --json` outputs machine-readable JSON for monitoring (exits with code `1` on critical findings). Run `sudo usfc status [--json]` to inspect all 19 item statuses without opening the menu.
 
 The audit **only reads**. That is not a promise but a checked property: CI has a test that compares a snapshot of `/etc`, dpkg, `passwd/group` and swap before and after the run.
 
@@ -193,10 +193,10 @@ Before overwriting any system file, the script copies it into `/var/backups/usfc
 
 ```bash
 sudo usfc backups                       # what is there
-sudo usfc restore 20261023-040000-3691  # put it back
+sudo usfc restore latest --diff         # diff against the newest snapshot
+sudo usfc restore latest                # restore the newest snapshot (or pass a label)
+sudo usfc backups prune --keep 5        # keep the 5 newest snapshots
 ```
-
-Replace `20261023-040000-3691` with a label from the list.
 
 Snapshots are taken automatically, and only for the files the script itself edits: `sshd_config.d/00-usfc-hardening.conf`, `fstab`, `daemon.json`, `before.rules`, `.bashrc` and the rest. Files that did not exist before usfc are removed on rollback. Restoring takes another snapshot first — undoing the undo has to be possible too.
 
@@ -254,7 +254,7 @@ The English variant is optional: until it exists, the Russian text is shown.
 <details>
 <summary>Icons/fonts in the terminal look like boxes or garbled characters</summary>
 
-That's your local terminal's (the client's) font, not the server's — the Nerd Font that renders `eza`/`fastfetch` icons is installed and configured in whatever app you SSH from; the script has no way to affect that. The starship prompt in any of usfc's three presets needs no Nerd Font — this only concerns `eza` icons.
+That's your local terminal's (the client's) font, not the server's — the Nerd Font that renders `eza`/`fastfetch` icons is installed and configured in whatever app you SSH from; the script has no way to affect that. The starship prompt in any of usfc's three presets needs no Nerd Font; you can also disable `eza` icons with `sudo usfc apply cli --no-cli-icons`.
 
 </details>
 

@@ -8,7 +8,7 @@ usfc_item fail2ban защита "fail2ban" \
     "bans SSH password guessing"
 usfc_item_toggle fail2ban
 
-FAIL2BAN_DROPIN=/etc/fail2ban/jail.d/usfc-sshd.local
+FAIL2BAN_DROPIN="${FAIL2BAN_DROPIN:-/etc/fail2ban/jail.d/usfc-sshd.local}"
 
 usfc_item_full fail2ban "Банит IP после нескольких неудачных попыток входа по SSH — защита от перебора
 паролей.
@@ -30,9 +30,38 @@ usfc_item_rollback fail2ban "sudo apt purge fail2ban
      # banned IPs are lost together with the database in /var/lib/fail2ban"
 
 status_fail2ban() {
-    systemctl is-active fail2ban &>/dev/null \
-        && { st "$GREEN" "✓ запущен" "✓ running"; return 0; } \
-        || { st "$DIM" "○ не запущен" "○ not running"; return 1; }
+    if ! systemctl is-active fail2ban &>/dev/null; then
+        st "$DIM" "○ не запущен" "○ not running"; return 1
+    fi
+    # Сверяем порт нашего jail [sshd] с текущим SSH-портом: если порт сменили
+    # в обход usfc, fail2ban молча продолжил бы сторожить старый
+    if [ -f "$FAIL2BAN_DROPIN" ]; then
+        local f2b_port='' port_ok=false p
+        f2b_port="$(awk '
+            /^[[:space:]]*\[/ { insec = ($0 ~ /^[[:space:]]*\[sshd\]/); next }
+            insec && /^[[:space:]]*port[[:space:]]*=/ {
+                sub(/^[^=]*=[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); p = $0
+            }
+            END { print p }' "$FAIL2BAN_DROPIN" 2>/dev/null)"
+        if [ -n "$f2b_port" ]; then
+            for p in ${f2b_port//,/ }; do
+                if [ "$p" = "$SSH_PORT" ] || [[ " ${SSHD_PORTS:-} " == *" ${p} "* ]]; then
+                    port_ok=true; break
+                fi
+            done
+            if [ "$port_ok" = false ]; then
+                st "$YELLOW" "! запущен (порт ${f2b_port} ≠ SSH ${SSH_PORT})" \
+                             "! running (port ${f2b_port} ≠ SSH ${SSH_PORT})"; return 1
+            fi
+        fi
+    fi
+    if command -v fail2ban-client >/dev/null 2>&1 \
+       && fail2ban-client status >/dev/null 2>&1 \
+       && ! fail2ban-client status sshd >/dev/null 2>&1; then
+        st "$YELLOW" "! запущен (jail sshd не активен)" \
+                     "! running (sshd jail inactive)"; return 1
+    fi
+    st "$GREEN" "✓ запущен" "✓ running"; return 0
 }
 
 apply_fail2ban() {
@@ -58,6 +87,7 @@ journalmatch = _SYSTEMD_UNIT=ssh.service + _SYSTEMD_UNIT=sshd.service + _COMM=ss
 maxretry = 5
 findtime = 10m
 bantime = 1h
+bantime.increment = true
 EOF
     if [ "$USFC_DRY_RUN" != true ] && ! fail2ban-client -t >/dev/null 2>&1; then
         remove_file "$FAIL2BAN_DROPIN"
@@ -81,3 +111,4 @@ disable_fail2ban() {
     ask_yn_t "Остановить и выключить fail2ban?" "Stop and disable fail2ban?" N && { systemctl disable --now fail2ban &>/dev/null; log_success_t "fail2ban выключен" \
 "fail2ban disabled"; }
 }
+

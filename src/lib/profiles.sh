@@ -25,7 +25,7 @@ profile_list() {
     log_info_t "Готовые профили:" \
 "Available profiles:"
     for name in minimal web dockerhost secure; do
-        printf '    %b%-8s%b %s\n' "$BOLD" "$name" "$NC" "${USFC_PROFILES[$name]}"
+        printf '    %b%-11s%b %s\n' "$BOLD" "$name" "$NC" "${USFC_PROFILES[$name]}"
     done
     echo ""
     log_info_t "Пункты можно перечислить и вручную: ${BOLD}usfc apply docker,nginx,ufw${NC}" \
@@ -64,6 +64,7 @@ resolve_items() {
     for tok in "${expanded[@]}"; do
         [ -z "$tok" ] && continue
         if [[ "$tok" =~ ^[0-9]+$ ]]; then
+            tok=$((10#$tok))
             if [ "$tok" -lt 1 ] || [ "$tok" -gt "${#ITEM_IDS[@]}" ]; then
                 log_error_t "Нет пункта с номером ${tok} (всего ${#ITEM_IDS[@]})" \
 "No item number ${tok} (there are ${#ITEM_IDS[@]})"
@@ -126,6 +127,7 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "SWAP_MB|SWAP_BULK_MB|int|--swap|zram|размер резервного swap-файла, МБ|backup swap file size, MB"
     "ZRAM_PERCENT|ZRAM_BULK_PERCENT|pct|--zram|zram|размер zram, % от RAM|zram size, % of RAM"
     "ZRAM_RECONF|ZRAM_RECONF_BULK|yn|--zram-reconfigure|zram|перенастроить zram, настроенный вручную|reconfigure a hand-tuned zram"
+    "ZRAM_ALGO|ZRAM_ALGO_BULK|algo|--zram-algo|zram|алгоритм сжатия zram: lz4 или zstd|zram compression algorithm: lz4 or zstd"
     "SYSCTL|SYSCTL_BULK|yn|--sysctl|zram|swappiness=80, vfs_cache_pressure=50|swappiness=80, vfs_cache_pressure=50"
     "NGINX_AUTOSTART|NGINX_AUTOSTART|yn|--nginx-autostart|nginx|запустить nginx и включить автозапуск|start nginx and enable autostart"
     "DOCKER_AUTOSTART|DOCKER_AUTOSTART|yn|--docker-autostart|docker|запустить Docker и включить автозапуск|start Docker and enable autostart"
@@ -144,6 +146,7 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "MOTD_CLEAN|MOTD_CLEAN_BULK|yn|--motd-clean|motd|убрать стандартное приветствие и скрипты провайдера|remove the stock login greeting and provider scripts"
     "STARSHIP_PRESET|STARSHIP_PRESET_BULK|starship|--starship|cli|вид промпта: minimal, git, powerline|prompt style: minimal, git, powerline"
     "STARSHIP_PROD|STARSHIP_PROD_BULK|yn|--starship-prod|cli|боевой сервер: имя хоста в промпте красным|production server: hostname in red in the prompt"
+    "CLI_ICONS|CLI_ICONS_BULK|yn|--cli-icons|cli|иконки Nerd Font в алиасах eza (--no-cli-icons — без них)|Nerd Font icons in eza aliases (--no-cli-icons — without them)"
     "LAZYDOCKER|LAZYDOCKER_BULK|yn|--lazydocker|docker|поставить lazydocker (TUI для Docker)|install lazydocker (a Docker TUI)"
     "SSH_PORT_NEW|SSH_PORT_NEW_BULK|port|--ssh-port|sshhardening|перенести SSH на этот порт (1024..65535 или 22)|move SSH to this port (1024..65535 or 22)"
     "REBOOT_TIME|REBOOT_TIME_BULK|time|--reboot-time|unattended|перезагрузка после обновлений в ЧЧ:ММ (off — никогда)|reboot after updates at HH:MM (off — never)"
@@ -151,6 +154,8 @@ USFC_ANSWER_KEYS=(   # i18n-ok: английская пара — последн
     "TG_TOKEN|TG_TOKEN_BULK|secret||notify|токен Telegram-бота от @BotFather|Telegram bot token from @BotFather"
     "TG_CHAT|TG_CHAT_BULK|chat|--tg-chat|notify|кому слать: chat_id (123456, -100…) или @канал|where to send: chat_id (123456, -100…) or @channel"
     "NOTIFY_EVENTS|NOTIFY_EVENTS_BULK|events|--notify|notify|о чём слать: ssh,ban,reboot|what to report: ssh,ban,reboot"
+    "NOTIFY_IGNORE|NOTIFY_IGNORE_BULK|iplist|--notify-ignore|notify|IP/префиксы, не вызывающие SSH-уведомления|IPs/prefixes ignored for SSH login alerts"
+    "SSH_KEYS|SSH_KEYS_BULK|sshkey|--ssh-key|newuser|публичный ключ или gh:<user> / gl:<user> для нового пользователя|public key or gh:<user> / gl:<user> for the new user"
 )
 
 # _answer_row <поле> <значение> — найти строку таблицы → REPLY_ANS_ROW
@@ -224,8 +229,23 @@ answer_normalize() {
                 n|no|false|off|0|нет|н) REPLY_ANS=N ;;  # i18n-ok: принимаемые ответы, не текст
                 *) return 1 ;;
             esac ;;
-        int) [[ "$v" =~ ^[0-9]+$ ]] || return 1; REPLY_ANS="$v" ;;
-        pct) [[ "$v" =~ ^[0-9]+$ ]] && [ "$v" -ge 1 ] && [ "$v" -le 400 ] || return 1; REPLY_ANS="$v" ;;
+        int) [[ "$v" =~ ^[0-9]+$ ]] || return 1; REPLY_ANS="$((10#$v))" ;;
+        pct) [[ "$v" =~ ^[0-9]+$ ]] && [ "$((10#$v))" -ge 1 ] && [ "$((10#$v))" -le 400 ] || return 1; REPLY_ANS="$((10#$v))" ;;
+        algo) case "${v,,}" in lz4|zstd) REPLY_ANS="${v,,}" ;; *) return 1 ;; esac ;;
+        iplist)
+            local _norm="${v//,/ }"
+            _norm="${_norm#"${_norm%%[![:space:]]*}"}"
+            _norm="${_norm%"${_norm##*[![:space:]]}"}"
+            [ -n "$_norm" ] && [[ "$_norm" =~ ^[0-9A-Fa-f.:[:space:]]+$ ]] || return 1
+            REPLY_ANS="$_norm" ;;
+        sshkey)
+            if [[ "$v" =~ ^(gh|gl):[A-Za-z0-9][A-Za-z0-9._-]{0,38}$ ]] && [[ "$v" != *..* ]]; then
+                REPLY_ANS="$v"
+            elif [[ "$v" =~ (^|[[:space:]])(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9]+|sk-(ssh|ecdsa)-[^[:space:]]+)[[:space:]]+[A-Za-z0-9+/] ]]; then
+                REPLY_ANS="$v"
+            else
+                return 1
+            fi ;;
         ports) fw_parse_ports "$v" && [ -n "$REPLY_FW_PORTS" ] || return 1; REPLY_ANS="$REPLY_FW_PORTS" ;;
         addr)  fw_valid_from "$v" || return 1; REPLY_ANS="$v" ;;
         host)  valid_hostname "$v" || return 1; REPLY_ANS="${v,,}" ;;
@@ -266,6 +286,9 @@ answer_set() {
             time) t "${key}: ожидается время ЧЧ:ММ (04:00) или off, а не «${val}»" "${key}: expected a time HH:MM (04:00) or off, not \"${val}\"" ;;
             chat) t "${key}: ожидается chat_id (123456, -100…) или @канал, а не «${val}»" "${key}: expected a chat_id (123456, -100…) or @channel, not \"${val}\"" ;;
             events) t "${key}: ожидается список из ssh, ban, reboot, а не «${val}»" "${key}: expected a list of ssh, ban, reboot, not \"${val}\"" ;;
+            algo)   t "${key}: ожидается lz4 или zstd, а не «${val}»" "${key}: expected lz4 or zstd, not \"${val}\"" ;;
+            iplist) t "${key}: ожидается список IP или префиксов (1.2.3.4, 10.0.0.), а не «${val}»" "${key}: expected a list of IPs or prefixes (1.2.3.4, 10.0.0.), not \"${val}\"" ;;
+            sshkey) t "${key}: ожидается публичный SSH-ключ или gh:<user> / gl:<user>" "${key}: expected an SSH public key or gh:<user> / gl:<user>" ;;
             *)   t "${key}: пустое значение" "${key}: empty value" ;;
         esac
         log_error "$REPLY_T"
@@ -288,9 +311,28 @@ load_config() {
 "Cannot read the answers file: ${file}"
         return 1
     fi
+    # Убрать # и хвост только ВНЕ кавычек — иначе значения с '#' внутри "..." ломаются
+    _strip_cfg_comment() {
+        local s="$1" out="" ch q="" i
+        for ((i = 0; i < ${#s}; i++)); do
+            ch="${s:i:1}"
+            if [ -n "$q" ]; then
+                [ "$ch" = "$q" ] && q=""
+                out+="$ch"
+            elif [ "$ch" = '"' ] || [ "$ch" = "'" ]; then
+                q="$ch"; out+="$ch"
+            elif [ "$ch" = '#' ]; then
+                break
+            else
+                out+="$ch"
+            fi
+        done
+        REPLY_CFG_LINE="$out"
+    }
+    local REPLY_CFG_LINE=''
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
-        line="${line%%#*}"
+        _strip_cfg_comment "$line"; line="$REPLY_CFG_LINE"
         line="${line#"${line%%[![:space:]]*}"}"
         line="${line%"${line##*[![:space:]]}"}"
         [ -z "$line" ] && continue
@@ -331,7 +373,9 @@ fetch_config() {
     tmp="$(mktemp)" || return 1
     USFC_CONFIG_TMP="$tmp"
     chmod 600 "$tmp"
-    if ! curl -fsSL --proto '=https' --max-time 20 --retry 2 "$url" -o "$tmp" 2>/dev/null; then
+    # URL с возможным токеном передаём через stdin (-K -), чтобы не светить его в ps
+    if [[ "$url" == *'"'* || "$url" == *'\'* || "$url" == *$'\n'* || "$url" == *$'\r'* ]] \
+       || ! printf 'url = "%s"\n' "$url" | curl -fsSL --proto '=https' --max-time 20 --retry 2 -K - -o "$tmp" 2>/dev/null; then
         cleanup_config_tmp
         log_error_t "Не удалось скачать файл ответов (нужен https и доступный адрес)" \
 "Could not download the answers file (it must be https and reachable)"
@@ -373,13 +417,17 @@ _item_has_new_answers() {
         ufw)          fw_has_answers ;;
         unattended)   [ -n "${REBOOT_TIME_BULK}${REBOOT_WITH_USERS_BULK}" ] ;;
         sshhardening) [ -n "$SSH_PORT_NEW_BULK" ] ;;
+        newuser)      [ -n "$SSH_KEYS_BULK" ] ;;
         hostname)     [ -n "${HOSTNAME_BULK}${TIMEZONE_BULK}" ] ;;
         journald)     [ -n "$JOURNAL_MAX_BULK" ] ;;
-        cli)          [ -n "${STARSHIP_PRESET_BULK}${STARSHIP_PROD_BULK}" ] ;;
-        notify)       [ -n "${TG_TOKEN_BULK}${TG_CHAT_BULK}${NOTIFY_EVENTS_BULK}" ] ;;
+        cli)          [ -n "${STARSHIP_PRESET_BULK}${STARSHIP_PROD_BULK}${CLI_ICONS_BULK}" ] ;;
+        notify)       [ -n "${TG_TOKEN_BULK}${TG_CHAT_BULK}${NOTIFY_EVENTS_BULK}${NOTIFY_IGNORE_BULK}" ] ;;
         motd)         [ -n "$MOTD_CLEAN_BULK" ] ;;
-        docker)       [ "$LAZYDOCKER_BULK" = Y ] ;;
-        zram)         [ "$ZRAM_RECONF_BULK" = Y ] || [ -n "$SWAP_BULK_MB" ] ;;
+        nginx)        [ -n "$NGINX_AUTOSTART" ] ;;
+        docker)       [ "$LAZYDOCKER_BULK" = Y ] || [ -n "$DOCKER_AUTOSTART" ] ;;
+        dockerlog)    [ -n "$DOCKER_RESTART_BULK" ] ;;
+        certbot)      [ -n "${CERTBOT_CF_BULK}${CF_TOKEN_BULK}${CERTBOT_TLS_BULK}" ] ;;
+        zram)         [ "$ZRAM_RECONF_BULK" = Y ] || [ -n "${SWAP_BULK_MB}${ZRAM_BULK_PERCENT}${ZRAM_ALGO_BULK}${SYSCTL_BULK}" ] ;;
         *)            return 1 ;;
     esac
 }

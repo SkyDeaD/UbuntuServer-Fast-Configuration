@@ -29,9 +29,9 @@ ask_yn() {
     fi
     if [ "$default" = "Y" ]; then prompt="Y/n"; else prompt="y/N"; fi
     ui_prompt "$question" "$prompt"
-    read -r reply </dev/tty
+    read -r reply </dev/tty || reply="$default"
     reply="${reply:-$default}"
-    [[ "$reply" =~ ^[Yy] ]]
+    [[ "$reply" =~ ^[YyДд] ]]   # i18n-ok: разбор ввода
 }
 
 # ask_bulk_yn <переменная> <ru> <en> [дефолт] — вопрос, на который в пакетном
@@ -72,9 +72,11 @@ ask_value() {
         return
     fi
     ui_prompt "$question" "$default" >&2
-    read -r reply </dev/tty
+    read -r reply </dev/tty || reply="$default"
     reply="${reply:-$default}"
-    if ! [[ "$reply" =~ ^[0-9]+$ ]]; then
+    if [[ "$reply" =~ ^[0-9]+$ ]]; then
+        reply=$((10#$reply))
+    else
         log_warn_t "Не похоже на число — использую значение по умолчанию (${default})" \
 "Does not look like a number — using the default (${default})"
         reply="$default"

@@ -267,6 +267,58 @@ after_trap="$(
     trap -p INT
 )"
 [[ "$after_trap" == *"echo outer"* ]] && ok "после выхода прежний trap INT на месте" || bad "trap INT после выхода: ${after_trap:-пусто}"
+# ── 10. отказ комментировать конфликты после добавления Include откатывает sshd_config ─
+echo ""
+echo "hardening: отказ комментировать конфликты откатывает добавленный Include"
+rm -f "$D"/*.conf "$USFC_SSHD_DROPIN"
+printf 'Port 22\nUsePAM yes\n' > "$SSHCFG"
+before_cfg="$(cat "$SSHCFG")"
+printf 'PasswordAuthentication yes\n' > "$D/00-provider.conf"
+ask_yn_t() {
+    case "$1" in
+        "Настроить SSH hardening"*|"Добавить 'Include "*) return 0 ;;
+        "Закомментировать"*) return 1 ;;
+        *) return 1 ;;
+    esac
+}
+apply_sshhardening >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "отказ комментировать конфликты — код 1" || bad "код $rc вместо 1"
+if [ "$(cat "$SSHCFG")" = "$before_cfg" ] && ! grep -F 'Include' "$SSHCFG" >/dev/null; then
+    ok "sshd_config восстановлен, добавленная строка Include убрана"
+else
+    bad "sshd_config после отказа: $(tr '\n' '|' < "$SSHCFG")"
+fi
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "drop-in не создан" || bad "drop-in появился после отказа"
+[ -z "$SSH_PORT_SNAP" ] && ok "каталог снимков убран" || bad "каталог снимков остался: $SSH_PORT_SNAP"
+rm -f "$D/00-provider.conf"
+
+# ── 11. сбой sshd -t: печатает вывод ошибки и откатывает правки ──────────────
+echo ""
+echo "hardening: ошибка sshd -t печатается перед откатом"
+rm -f "$D"/*.conf "$USFC_SSHD_DROPIN"
+printf 'PasswordAuthentication yes\nInclude %s/*.conf\n' "$D" > "$SSHCFG"
+before_cfg="$(cat "$SSHCFG")"
+printf '%s\n' "$REAL" > "$TMP/ak9"
+ask_yn_t() { case "$1" in "Настроить SSH hardening"*|"Закомментировать"*) return 0 ;; *) return 1 ;; esac; }
+ssh_selftest() { return 0; }
+sshd() {
+    if [ "${1:-}" = -t ]; then
+        printf 'line 1: Bad configuration option: BogusOpt\nline 2: terminating, 1 bad configuration options\n' >&2
+        return 255
+    fi
+    return 0
+}
+out="$(apply_sshhardening 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && ok "сбой sshd -t — код 1" || bad "sshd -t: код $rc вместо 1"
+[[ "$out" == *"Bad configuration option: BogusOpt"* ]] \
+    && ok "вывод ошибки sshd -t показан пользователю" \
+    || bad "вывода sshd -t нет: ${out//$'\n'/ | }"
+[ ! -e "$USFC_SSHD_DROPIN" ] && ok "наш drop-in откачен" || bad "drop-in остался после сбоя sshd -t"
+[ "$(cat "$SSHCFG")" = "$before_cfg" ] \
+    && ok "sshd_config возвращён к исходному виду" \
+    || bad "sshd_config после сбоя sshd -t: $(tr '\n' '|' < "$SSHCFG")"
+[ -z "$SSH_PORT_SNAP" ] && ok "каталог снимков убран" || bad "каталог снимков остался: $SSH_PORT_SNAP"
+
 unset -f ask_yn_t ensure_ssh_dir _ssh_key_users ssh_selftest_begin ssh_selftest ssh_selftest_end sshd
 
 echo ""

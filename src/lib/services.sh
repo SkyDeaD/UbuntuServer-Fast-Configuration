@@ -20,9 +20,15 @@ drop_policy_rc_d() {
 }
 
 with_no_service_start() {
-    # чужой policy-rc.d не трогаем вообще: он не наш и, возможно, кому-то нужен
+    if [ "$USFC_DRY_RUN" = true ]; then
+        "$@"
+        return $?
+    fi
+    # чужой policy-rc.d не трогаем вообще: он не наш и, возможно, кому-то нужен.
+    # Пишем напрямую, минуя write_file/backup_file: файл живёт только на время
+    # apt install и не должен попадать в .usfc-created снимка
     if [ ! -e "$POLICY_RC_D" ]; then
-        printf '#!/bin/sh\nexit 101\n' | write_file "$POLICY_RC_D"
+        printf '#!/bin/sh\nexit 101\n' > "$POLICY_RC_D"
         chmod +x "$POLICY_RC_D"
         POLICY_RC_D_OURS=true
     fi
@@ -37,7 +43,7 @@ with_no_service_start() {
 #
 # INT и TERM — отдельно и с exit: ловушка на сигнал без exit гасит сам
 # сигнал, и после Ctrl+C посреди apt install прогон шёл к следующему пункту
-trap 'cleanup_spinner; drop_policy_rc_d; cleanup_config_tmp' EXIT
+trap 'cleanup_spinner; drop_policy_rc_d; cleanup_config_tmp; cleanup_update_check' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 

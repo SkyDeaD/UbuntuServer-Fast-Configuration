@@ -22,9 +22,25 @@ AUDIT_CRIT=0
 # неизвестны итоговые счётчики, а они идут в шапке документа.
 # Присваивание =() обязательно: без него set -u роняет первое же ${#x[@]}
 USFC_AUDIT_JSON=false
+USFC_AUDIT_ONLY_PROBLEMS=false
 AUDIT_J_ID=(); AUDIT_J_SECTION=(); AUDIT_J_LEVEL=()
-AUDIT_J_TEXT=(); AUDIT_J_HINT=(); AUDIT_J_VALUE=(); AUDIT_J_UNIT=()
+AUDIT_J_TEXT=(); AUDIT_J_HINT=(); AUDIT_J_VALUE=(); AUDIT_J_UNIT=(); AUDIT_J_SUBJECT=()
+AUDIT_FIX_ITEMS=()
 AUDIT_SECTION=""
+AUDIT_SECTION_TITLE=""
+AUDIT_SECTION_PRINTED=false
+AUDIT_PRINTED_ANY=false
+
+# audit_fix_item <id> — запомнить уникальный id пункта usfc, который поможет
+# исправить найденную warn/crit проблему (порядок обнаружения сохраняется)
+audit_fix_item() {
+    local id="$1" x
+    [ -n "$id" ] || return 0
+    for x in "${AUDIT_FIX_ITEMS[@]+"${AUDIT_FIX_ITEMS[@]}"}"; do
+        [ "$x" = "$id" ] && return 0
+    done
+    AUDIT_FIX_ITEMS+=("$id")
+}
 
 # _audit_line <id> <уровень> <текст> [подсказка]
 #
@@ -34,20 +50,28 @@ AUDIT_SECTION=""
 # JSON получил бы чужой ключ, ничего не заметив.
 _audit_line() {
     local id="$1" lvl="$2" text="$3" hint="${4:-}"
+    local val="${REPLY_AUDIT_VALUE:-}" unit="${REPLY_AUDIT_UNIT:-}" subj="${REPLY_AUDIT_SUBJECT:-}"
+    REPLY_AUDIT_VALUE=''; REPLY_AUDIT_UNIT=''; REPLY_AUDIT_SUBJECT=''
     case "$lvl" in
         ok)   AUDIT_OK=$((AUDIT_OK + 1)) ;;
         warn) AUDIT_WARN=$((AUDIT_WARN + 1)) ;;
         crit) AUDIT_CRIT=$((AUDIT_CRIT + 1)) ;;
     esac
+    if [ "$USFC_AUDIT_ONLY_PROBLEMS" = true ] && [ "$lvl" = ok ]; then
+        return 0
+    fi
     if [ "$USFC_AUDIT_JSON" = true ]; then
         AUDIT_J_ID+=("$id");        AUDIT_J_SECTION+=("$AUDIT_SECTION")
         AUDIT_J_LEVEL+=("$lvl");    AUDIT_J_TEXT+=("$text")
-        AUDIT_J_HINT+=("$hint");    AUDIT_J_VALUE+=("${REPLY_AUDIT_VALUE:-}")
-        AUDIT_J_UNIT+=("${REPLY_AUDIT_UNIT:-}")
-        REPLY_AUDIT_VALUE=''; REPLY_AUDIT_UNIT=''
+        AUDIT_J_HINT+=("$hint");    AUDIT_J_VALUE+=("$val")
+        AUDIT_J_UNIT+=("$unit");    AUDIT_J_SUBJECT+=("$subj")
         return 0
     fi
-    REPLY_AUDIT_VALUE=''; REPLY_AUDIT_UNIT=''
+    if [ "$AUDIT_SECTION_PRINTED" != true ] && [ -n "$AUDIT_SECTION_TITLE" ]; then
+        _audit_section "$AUDIT_SECTION_TITLE"
+        AUDIT_SECTION_PRINTED=true
+    fi
+    AUDIT_PRINTED_ANY=true
     case "$lvl" in
         ok)   printf '  %b✓%b %s\n' "$GREEN" "$NC" "$text" ;;
         warn) printf '  %b!%b %s\n' "$YELLOW" "$NC" "$text" ;;
@@ -57,11 +81,13 @@ _audit_line() {
     return 0
 }
 
-# Числовое значение находки — необязательное. Ставится ПЕРЕД вызовом и
-# потребляется первым же _audit_line, чтобы не протечь в следующую находку
+# Числовое значение и субъект находки — необязательные. Ставятся ПЕРЕД вызовом
+# и потребляются первым же _audit_line, чтобы не протечь в следующую находку
 REPLY_AUDIT_VALUE=''
 REPLY_AUDIT_UNIT=''
 audit_value() { REPLY_AUDIT_VALUE="$1"; REPLY_AUDIT_UNIT="$2"; }
+REPLY_AUDIT_SUBJECT=''
+audit_subject() { REPLY_AUDIT_SUBJECT="$1"; }
 
 # _audit_t <id> <уровень> <ru> <en> [подсказка-ru] [подсказка-en]
 # Обёртка над _audit_line: аудит — самый «текстовый» экран, и без неё каждая
@@ -76,11 +102,15 @@ _audit_t() {
 
 _audit_section() { echo ""; echo -e "  ${BOLD}${1}${NC}"; }
 # _audit_section_t <машинный ключ> <ru> <en>. Ключ нужен машинному выводу:
-# отображаемое имя там было бы бесполезно, оно меняется вместе с языком
+# отображаемое имя там было бы бесполезно, оно меняется вместе с языком.
+# В текстовом режиме заголовок печатается лениво — перед первой выведенной
+# строкой раздела, чтобы при --only-problems пустые разделы не засоряли экран
 _audit_section_t() {
     AUDIT_SECTION="$1"
+    AUDIT_SECTION_PRINTED=false
+    AUDIT_SECTION_TITLE=""
     [ "$USFC_AUDIT_JSON" = true ] && return 0
-    t "$2" "$3"; _audit_section "$REPLY_T"
+    t "$2" "$3"; AUDIT_SECTION_TITLE="$REPLY_T"
 }
 
 # ── Место на диске и inode ────────────────────────────────────────────────────
@@ -92,17 +122,50 @@ audit_disk() {
     [[ "$inodes" =~ ^[0-9]+$ ]] || inodes=0
 
     audit_value "$use" percent
-    if   [ "$use" -ge 90 ]; then _audit_t disk.usage crit "Диск / занят на ${use}%" "Disk / is ${use}% full" "Кончится место — встанут и apt, и логи, и базы" "When it fills up, apt, logs and databases all stop"
-    elif [ "$use" -ge 75 ]; then audit_value "$use" percent; _audit_t disk.usage warn "Диск / занят на ${use}%" "Disk / is ${use}% full" "Посмотреть, что съело: ncdu /" "See what ate it: ncdu /"
-    else                          audit_value "$use" percent; _audit_t disk.usage ok "Диск / занят на ${use}%" "Disk / is ${use}% full"
+    if   [ "$use" -ge 90 ]; then
+        [ -f "${JOURNALD_DROPIN:-/etc/systemd/journald.conf.d/usfc.conf}" ] || audit_fix_item journald
+        _audit_t disk.usage crit "Диск / занят на ${use}%" "Disk / is ${use}% full" "Кончится место — встанут и apt, и логи, и базы" "When it fills up, apt, logs and databases all stop"
+    elif [ "$use" -ge 75 ]; then
+        [ -f "${JOURNALD_DROPIN:-/etc/systemd/journald.conf.d/usfc.conf}" ] || audit_fix_item journald
+        _audit_t disk.usage warn "Диск / занят на ${use}%" "Disk / is ${use}% full" "Посмотреть, что съело: ncdu /" "See what ate it: ncdu /"
+    else
+        _audit_t disk.usage ok "Диск / занят на ${use}%" "Disk / is ${use}% full"
     fi
 
     # inode кончаются раньше места там, где много мелких файлов, и ошибка
     # при этом выглядит как «нет места» при свободных гигабайтах
     audit_value "$inodes" percent
     if   [ "$inodes" -ge 90 ]; then _audit_t disk.inodes crit "Inode на / израсходованы на ${inodes}%" "Inodes on / are ${inodes}% used" "Место может быть, а файл не создастся" "There may be free space, yet no new file can be created"
-    elif [ "$inodes" -ge 75 ]; then audit_value "$inodes" percent; _audit_t disk.inodes warn "Inode на / израсходованы на ${inodes}%" "Inodes on / are ${inodes}% used"
-    else                             audit_value "$inodes" percent; _audit_t disk.inodes ok "Inode на / израсходованы на ${inodes}%" "Inodes on / are ${inodes}% used"
+    elif [ "$inodes" -ge 75 ]; then _audit_t disk.inodes warn "Inode на / израсходованы на ${inodes}%" "Inodes on / are ${inodes}% used"
+    else                             _audit_t disk.inodes ok "Inode на / израсходованы на ${inodes}%" "Inodes on / are ${inodes}% used"
+    fi
+
+    # Логи Docker без лимита — частая причина забитого диска. Читаем только
+    # daemon.json и НЕ вызываем docker CLI, чтобы не будить docker.socket
+    if command -v docker >/dev/null 2>&1; then
+        local dj="${DOCKER_DAEMON_JSON:-/etc/docker/daemon.json}" capped=false
+        if [ -f "$dj" ]; then
+            if command -v python3 >/dev/null 2>&1; then
+                python3 -c '
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    drv = d.get("log-driver")
+    ok = (drv not in (None, "json-file", "local")) or bool((d.get("log-opts") or {}).get("max-size"))
+    sys.exit(0 if ok else 1)
+except Exception:
+    sys.exit(1)
+' "$dj" 2>/dev/null && capped=true
+            elif grep -E '"max-size"[[:space:]]*:' "$dj" >/dev/null 2>&1; then
+                capped=true
+            fi
+        fi
+        if [ "$capped" = true ]; then
+            _audit_t docker.logs ok "Логи Docker ограничены" "Docker logs are capped"
+        else
+            audit_fix_item dockerlog
+            _audit_t docker.logs warn "Логи Docker не ограничены" "Docker logs are not capped" "Один разговорчивый контейнер способен забить диск. Пункт $(item_number dockerlog)" "One chatty container can fill the disk. Item $(item_number dockerlog)"
+        fi
     fi
 }
 
@@ -131,6 +194,7 @@ audit_memory() {
         [ "$ZRAM_ACTIVE" = true ] && kind=" (zram)"
         _audit_t swap.present ok "Подкачка есть${kind}" "Swap is present${kind}"
     else
+        audit_fix_item zram
         _audit_t swap.present warn "Подкачки нет совсем" "No swap at all" "Пик нагрузки убьёт процесс вместо того, чтобы притормозить. Пункт $(item_number zram)" "A load spike kills a process instead of slowing down. Item $(item_number zram)"
     fi
 
@@ -165,6 +229,7 @@ audit_zram() {
                           "Каталога модулей для $(uname -r) больше нет — нужна перезагрузка" \
                           "The module directory for $(uname -r) is gone — a reboot is needed" ;;
         absent)
+            audit_fix_item zram
             _audit_t zram.running warn "zram включён, но не работает: модуля ядра нет" \
                           "zram is enabled but not running: the kernel module is missing" \
                           "Служба падает при каждой загрузке. Пункт $(item_number zram) доставит недостающий пакет" \
@@ -191,6 +256,7 @@ audit_sysctl() {
         _audit_t vm.tunables ok "sysctl под zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
                     "sysctl for zram: swappiness=${sw}, vfs_cache_pressure=${vfs}"
     else
+        audit_fix_item zram
         _audit_t vm.tunables warn "sysctl не под zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
                       "sysctl not tuned for zram: swappiness=${sw}, vfs_cache_pressure=${vfs}" \
                       "Рекомендуется 80 и 50 — своп в памяти быстрый. Пункт $(item_number zram)" \
@@ -234,6 +300,7 @@ audit_ports() {
     fi
 
     if ! ufw_active; then
+        audit_fix_item ufw
         _audit_t ports.public warn "Порты наружу: ${open}" "Public ports: ${open}" "Файрвол выключен — доступны все. Пункт $(item_number ufw)" "The firewall is off, so all of them are reachable. Item $(item_number ufw)"
         return 0
     fi
@@ -263,6 +330,7 @@ audit_ports() {
 
     fw_docker_published
     if [ -n "$REPLY_FW_DOCKER" ] && ! fw_docker_on; then
+        audit_fix_item ufw
         _audit_t ports.docker warn "Порты Docker-контейнеров открыты мимо UFW" "Docker container ports bypass UFW" "Закрыть: sudo usfc firewall docker on" "To close them: sudo usfc firewall docker on"
     fi
 }
@@ -274,14 +342,18 @@ audit_ssh() {
     pa="$(printf '%s' "$out"  | awk '/^passwordauthentication /{print $2}')"
     rl="$(printf '%s' "$out"  | awk '/^permitrootlogin /{print $2}')"
 
-    [ "$pa" = "no" ] \
-        && _audit_t ssh.password_auth ok "Вход по паролю выключен" "Password login is disabled" \
-        || _audit_t ssh.password_auth warn "Вход по паролю разрешён" "Password login is allowed" "Перебор по SSH идёт круглосуточно. Пункт $(item_number sshhardening)" "SSH brute-forcing runs around the clock. Item $(item_number sshhardening)"
+    if [ "$pa" = "no" ]; then
+        _audit_t ssh.password_auth ok "Вход по паролю выключен" "Password login is disabled"
+    else
+        audit_fix_item sshhardening
+        _audit_t ssh.password_auth warn "Вход по паролю разрешён" "Password login is allowed" "Перебор по SSH идёт круглосуточно. Пункт $(item_number sshhardening)" "SSH brute-forcing runs around the clock. Item $(item_number sshhardening)"
+    fi
 
     case "$rl" in
         no|prohibit-password|forced-commands-only)
             _audit_t ssh.root_login ok "Root-логин: ${rl}" "Root login: ${rl}" ;;
         *)
+            audit_fix_item sshhardening
             _audit_t ssh.root_login warn "Root-логин разрешён (${rl:-?})" "Root login is allowed (${rl:-?})" "Пункт $(item_number sshhardening)" "Item $(item_number sshhardening)" ;;
     esac
 
@@ -291,6 +363,7 @@ audit_ssh() {
     kbd="$(printf '%s' "$out" | awk '/^kbdinteractiveauthentication /{print $2}')"
     pam="$(printf '%s' "$out" | awk '/^usepam /{print $2}')"
     if [ "$pa" = "no" ] && [ "$kbd" = "yes" ] && [ "$pam" = "yes" ]; then
+        audit_fix_item sshhardening
         _audit_t ssh.kbd_interactive warn "Пароль принимается через keyboard-interactive" "Passwords are accepted via keyboard-interactive" "KbdInteractiveAuthentication no. Пункт $(item_number sshhardening)" "KbdInteractiveAuthentication no. Item $(item_number sshhardening)"
     fi
 
@@ -301,12 +374,25 @@ audit_ssh() {
     if [ "$REPLY_SSHD_INCLUDED" = true ] && [ "${#REPLY_SSHD_CONFLICTS[@]}" -gt 0 ]; then
         local first="${REPLY_SSHD_CONFLICTS[0]}" f n k v
         IFS=$'\t' read -r f n k v <<< "$first"
+        audit_fix_item sshhardening
         _audit_t ssh.dropin_order warn "Чужой конфиг перебивает hardening: ${f}:${n} (${k} ${v})" "A foreign config overrides hardening: ${f}:${n} (${k} ${v})" "Пункт $(item_number sshhardening) найдёт и закомментирует" "Item $(item_number sshhardening) finds and comments it out"
     fi
 
     if systemctl is-active fail2ban >/dev/null 2>&1; then
-        _audit_t ssh.fail2ban ok "fail2ban работает" "fail2ban is running"
+        # Проверяем именно jail sshd, только если fail2ban-client реально отвечает
+        # (в контейнере или без доступа к сокету status вернёт ошибку, и ложный warn не нужен)
+        if command -v fail2ban-client >/dev/null 2>&1 \
+           && fail2ban-client status >/dev/null 2>&1 \
+           && ! fail2ban-client status sshd >/dev/null 2>&1; then
+            audit_fix_item fail2ban
+            _audit_t ssh.fail2ban warn "fail2ban запущен, но jail sshd не активен" \
+"fail2ban is running, but the sshd jail is not active" \
+"Пункт $(item_number fail2ban)" "Item $(item_number fail2ban)"
+        else
+            _audit_t ssh.fail2ban ok "fail2ban работает" "fail2ban is running"
+        fi
     else
+        audit_fix_item fail2ban
         _audit_t ssh.fail2ban warn "fail2ban не работает" "fail2ban is not running" "Пункт $(item_number fail2ban)" "Item $(item_number fail2ban)"
     fi
 }
@@ -314,18 +400,25 @@ audit_ssh() {
 # ── Обновления и перезагрузка ─────────────────────────────────────────────────
 audit_updates() {
     local sec
-    # apt-get -s: имитация, ничего не ставит — аудиту менять систему нельзя
-    sec="$(apt-get -s upgrade 2>/dev/null | grep -ci '^Inst .*security' || true)"
-    [[ "$sec" =~ ^[0-9]+$ ]] || sec=0
-    if [ "$sec" -gt 0 ]; then
-        _audit_t updates.security warn "Не установлено security-обновлений: ${sec}" "Pending security updates: ${sec}" "sudo apt update && sudo apt upgrade" "sudo apt update && sudo apt upgrade"
+    # Без списков apt имитация upgrade всегда выдаёт ноль — не показываем фальшивый ✓
+    if compgen -G '/var/lib/apt/lists/*_Packages*' >/dev/null || compgen -G '/var/lib/apt/lists/*_InRelease' >/dev/null; then
+        # apt-get -s: имитация, ничего не ставит — аудиту менять систему нельзя
+        sec="$(apt-get -s upgrade 2>/dev/null | grep -ci '^Inst .*security' || true)"
+        [[ "$sec" =~ ^[0-9]+$ ]] || sec=0
+        audit_value "$sec" count
+        if [ "$sec" -gt 0 ]; then
+            _audit_t updates.security warn "Не установлено security-обновлений: ${sec}" "Pending security updates: ${sec}" "sudo apt update && sudo apt upgrade" "sudo apt update && sudo apt upgrade"
+        else
+            _audit_t updates.security ok "Security-обновления установлены" "Security updates are up to date"
+        fi
     else
-        _audit_t updates.security ok "Security-обновления установлены" "Security updates are up to date"
+        _audit_t updates.security warn "Списки apt пусты — число обновлений неизвестно" "apt lists are empty — pending updates unknown" "sudo apt update" "sudo apt update"
     fi
 
-    if systemctl is-enabled unattended-upgrades >/dev/null 2>&1; then
+    if _ua_enabled; then
         _audit_t updates.unattended ok "unattended-upgrades включён" "unattended-upgrades is enabled"
     else
+        audit_fix_item unattended
         _audit_t updates.unattended warn "unattended-upgrades выключен" "unattended-upgrades is disabled" "Пункт $(item_number unattended)" "Item $(item_number unattended)"
     fi
 
@@ -338,7 +431,7 @@ audit_updates() {
 
 # ── Сертификаты ───────────────────────────────────────────────────────────────
 audit_certs() {
-    local live=/etc/letsencrypt/live d cert name days end
+    local live=/etc/letsencrypt/live d cert name days end found_cert=false
     [ -d "$live" ] || return 0
     for d in "$live"/*/; do
         [ -d "$d" ] || continue
@@ -347,13 +440,25 @@ audit_certs() {
         name="$(basename "$d")"
         end="$(openssl x509 -enddate -noout -in "$cert" 2>/dev/null | cut -d= -f2)"
         [ -n "$end" ] || continue
+        found_cert=true
         days=$(( ( $(date -d "$end" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+        audit_subject "$name"
+        audit_value "$days" days
         if   [ "$days" -lt 0 ];  then _audit_t cert.expiry crit "Сертификат ${name} просрочен" "Certificate ${name} has expired"
         elif [ "$days" -lt 14 ]; then _audit_t cert.expiry crit "Сертификат ${name}: осталось ${days} дн." "Certificate ${name}: ${days} days left" "Автопродление, похоже, не работает: systemctl status certbot.timer" "Auto-renewal looks broken: systemctl status certbot.timer"
         elif [ "$days" -lt 30 ]; then _audit_t cert.expiry warn "Сертификат ${name}: осталось ${days} дн." "Certificate ${name}: ${days} days left"
         else                          _audit_t cert.expiry ok "Сертификат ${name}: осталось ${days} дн." "Certificate ${name}: ${days} days left"
         fi
     done
+    if [ "$found_cert" = true ] && [ -d /run/systemd/system ]; then
+        if systemctl is-active certbot.timer >/dev/null 2>&1 && systemctl is-enabled certbot.timer >/dev/null 2>&1; then
+            _audit_t cert.timer ok "Таймер certbot.timer включён и активен" "certbot.timer is enabled and active"
+        else
+            _audit_t cert.timer warn "Таймер автопродления certbot.timer не активен или выключен" \
+"Auto-renewal timer certbot.timer is not active or disabled" \
+"Включить: sudo systemctl enable --now certbot.timer" "Enable it: sudo systemctl enable --now certbot.timer"
+        fi
+    fi
 }
 
 # Список проверок — в одном месте. Человеческий экран и машинный вывод зовут
@@ -361,7 +466,10 @@ audit_certs() {
 run_audit_checks() {
     AUDIT_OK=0; AUDIT_WARN=0; AUDIT_CRIT=0
     AUDIT_J_ID=(); AUDIT_J_SECTION=(); AUDIT_J_LEVEL=()
-    AUDIT_J_TEXT=(); AUDIT_J_HINT=(); AUDIT_J_VALUE=(); AUDIT_J_UNIT=()
+    AUDIT_J_TEXT=(); AUDIT_J_HINT=(); AUDIT_J_VALUE=(); AUDIT_J_UNIT=(); AUDIT_J_SUBJECT=()
+    AUDIT_FIX_ITEMS=()
+    REPLY_AUDIT_VALUE=''; REPLY_AUDIT_UNIT=''; REPLY_AUDIT_SUBJECT=''
+    AUDIT_SECTION=''; AUDIT_SECTION_TITLE=''; AUDIT_SECTION_PRINTED=false; AUDIT_PRINTED_ANY=false
 
     _audit_section_t resources "Ресурсы" "Resources";        audit_disk; audit_memory
     _audit_section_t services  "Сервисы" "Services";         audit_units
@@ -380,6 +488,11 @@ show_audit() {
     t "— только чтение, ничего не меняется" "— read-only, nothing is changed"
     echo -e "  ${BOLD}${_title}${NC} ${DIM}${REPLY_T}${NC}"
     run_audit_checks
+    if [ "$USFC_AUDIT_ONLY_PROBLEMS" = true ] && [ "$AUDIT_PRINTED_ANY" != true ]; then
+        echo ""
+        t "Замечаний нет" "No issues found"
+        printf '  %b✓%b %s\n' "$GREEN" "$NC" "$REPLY_T"
+    fi
 
     echo ""
     hr
@@ -422,8 +535,10 @@ _json_esc() {
 # читает человек, открывший файл. Поэтому набор (id, level) обязан совпадать
 # на обоих языках — это проверяется тестом.
 audit_emit_json() {
+    local prev_json="$USFC_AUDIT_JSON"
     USFC_AUDIT_JSON=true
     run_audit_checks
+    USFC_AUDIT_JSON="$prev_json"
     local i n="${#AUDIT_J_ID[@]}" total=$((AUDIT_OK + AUDIT_WARN + AUDIT_CRIT))
 
     printf '{\n'
@@ -440,6 +555,9 @@ audit_emit_json() {
         _json_esc "${AUDIT_J_ID[$i]}";      printf '"id": "%s", '      "$REPLY_JSON"
         _json_esc "${AUDIT_J_SECTION[$i]}"; printf '"section": "%s", ' "$REPLY_JSON"
         _json_esc "${AUDIT_J_LEVEL[$i]}";   printf '"level": "%s", '   "$REPLY_JSON"
+        if [ -n "${AUDIT_J_SUBJECT[$i]}" ]; then
+            _json_esc "${AUDIT_J_SUBJECT[$i]}"; printf '"subject": "%s", ' "$REPLY_JSON"
+        fi
         _json_esc "${AUDIT_J_TEXT[$i]}";    printf '"text": "%s"'      "$REPLY_JSON"
         if [ -n "${AUDIT_J_HINT[$i]}" ]; then
             _json_esc "${AUDIT_J_HINT[$i]}"; printf ', "hint": "%s"' "$REPLY_JSON"

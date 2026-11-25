@@ -105,7 +105,7 @@ _hn_tz_matches() {
     if _hn_systemd && list="$(timedatectl list-timezones 2>/dev/null)" && [ -n "$list" ]; then
         :
     else
-        list="$(cd /usr/share/zoneinfo 2>/dev/null && find . -type f 2>/dev/null | sed 's|^\./||' | grep -E '^[A-Z]' | grep -vE '^(posix|right)/')"
+        list="$(cd /usr/share/zoneinfo 2>/dev/null && find . \( -type f -o -type l \) 2>/dev/null | sed 's|^\./||' | grep -E '^[A-Z]' | grep -vE '^(posix|right)/')"
     fi
     printf '%s\n' "$list" | grep -iF -- "$q" | head -n 10
 }

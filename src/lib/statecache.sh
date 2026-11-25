@@ -47,6 +47,8 @@ status_marker() {
     [ -z "$ch" ] && ch='?'
     if [ "${STATUS_RC[$id]:-1}" -eq 0 ]; then
         REPLY_MARKER="${GREEN}${ch}${NC}"
+    elif [ "$ch" = '!' ]; then
+        REPLY_MARKER="${YELLOW}${ch}${NC}"
     else
         REPLY_MARKER="${DIM}${ch}${NC}"
     fi

@@ -541,6 +541,7 @@ journalmatch = _SYSTEMD_UNIT=ssh.service + _SYSTEMD_UNIT=sshd.service + _COMM=ss
 maxretry = 5
 findtime = 10m
 bantime = 1h
+bantime.increment = true
 ```
 
 `backend = systemd` is needed on Debian 12: there is no `/var/log/auth.log`
@@ -583,7 +584,8 @@ usfc builds the rest from three events, each one optional:
   `session optional pam_exec.so quiet /usr/local/sbin/usfc-notify-ssh`.
   `optional` matters: a failed send does not block the login. The script has
   to go to the background and exit `0` at once, or the login waits for the
-  network;
+  network. Setting `IGNORE_IPS="1.2.3.4 10.0.0."` in `notify.conf` skips
+  alerts for matching IPs or prefixes;
 - **fail2ban ban** — a dedicated action in
   `/etc/fail2ban/action.d/usfc-telegram.conf`;
 - **reboot required** — a daily `usfc-notify-reboot.timer` that checks
@@ -639,7 +641,7 @@ sudo apt install -y zram-tools
 ```
 
 In `/etc/default/zramswap` change three keys (leave the rest alone; example —
-75%):
+75%; you can also use `zstd` instead of `lz4` for higher compression):
 
 ```text
 ALGO=lz4

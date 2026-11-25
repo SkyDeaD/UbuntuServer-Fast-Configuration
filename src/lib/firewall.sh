@@ -166,25 +166,29 @@ fw_ssh_ports() {
 # fw_deny <откуда|''> <порт/протокол…> — убрать разрешение. SSH-порт не
 # закрываем никогда: так отрезают себе доступ к серверу одной командой
 fw_deny() {
-    local from="$1" p rc=0 out; shift
+    local from="$1" p rc=0 item_rc out; shift
     for p in "$@"; do
+        item_rc=0
         if fw_is_ssh_port "$p"; then
             log_error_t "${p} — порт SSH, его не закрываю: оборвётся доступ к серверу" \
 "${p} is the SSH port, not closing it: it would cut off access to the server"
             rc=1; continue
         fi
         if [ -z "$from" ]; then
-            out="$(ufw delete allow "$p" 2>&1)" || rc=1
+            out="$(ufw delete allow "$p" 2>&1)" || item_rc=1
         else
-            out="$(ufw delete allow from "$from" to any port "${p%/*}" proto "${p#*/}" 2>&1)" || rc=1
+            out="$(ufw delete allow from "$from" to any port "${p%/*}" proto "${p#*/}" 2>&1)" || item_rc=1
         fi
+        [ "$item_rc" -ne 0 ] && rc=1
         # несуществующее правило ufw «удаляет» с кодом 0 — скажем прямо
         if [[ "$out" == *non-existent* ]]; then
             log_warn_t "${p}: такого разрешения не было" "${p}: there was no such rule"
         elif [ "$USFC_DRY_RUN" = true ]; then
             printf '%s\n' "$out"
-        elif [ "$rc" -eq 0 ]; then
+        elif [ "$item_rc" -eq 0 ]; then
             log_success_t "${p}: разрешение снято" "${p}: rule removed"
+        else
+            log_error "ufw delete allow ${p}: ${out##*$'\n'}"
         fi
         fw_docker_on && fw_docker_route delete "$from" "$p" >/dev/null 2>&1
     done
@@ -369,17 +373,27 @@ fw_docker_nftables() {
 }
 
 # fw_docker_published → REPLY_FW_DOCKER: строки «хост-порт/протокол
-# порт-контейнера имя» по запущенным контейнерам
+# порт-контейнера имя» по запущенным контейнерам, доступным снаружи.
+# Локальные привязки (127.*, [::1], localhost) снаружи недоступны и UFW не обходят
 REPLY_FW_DOCKER=''
 fw_docker_published() {
     REPLY_FW_DOCKER=''
     command -v docker >/dev/null 2>&1 || return 0
+    # Не будим остановленный демон через docker.socket (актуально для аудита):
+    # если systemd работает, а docker.service не активен — контейнеров нет
+    if [ "$(type -t docker 2>/dev/null)" != function ] && [ -d /run/systemd/system ] \
+       && ! systemctl is-active docker.service >/dev/null 2>&1; then
+        return 0
+    fi
     REPLY_FW_DOCKER="$(docker ps --format '{{.Names}} {{.Ports}}' 2>/dev/null | awk '
         { name = $1
           for (i = 2; i <= NF; i++) {
               s = $i; sub(/,$/, "", s)
               if (s !~ /->/) continue
-              split(s, a, "->"); hp = a[1]; sub(/.*:/, "", hp); cp = a[2]
+              split(s, a, "->")
+              host = a[1]; sub(/:[^:]*$/, "", host)
+              if (host ~ /^(127\.|\[::1\]$|::1$|\[::ffff:127\.|::ffff:127\.)/ || tolower(host) == "localhost") continue
+              hp = a[1]; sub(/.*:/, "", hp); cp = a[2]
               split(cp, b, "/"); key = hp "/" b[2] " " b[1] " " name
               if (!(key in seen)) { seen[key] = 1; print key }
           } }')"
@@ -399,13 +413,24 @@ fw_docker_ip() {
 # Цена схемы та же, что у ufw-docker: контейнер, пересозданный с другим
 # адресом, снаружи закрыт, пока порт не разрешат заново
 fw_docker_route() {
-    local act="$1" from="${2:-any}" p="$3" proto="${3#*/}" hp cp name ip rc=0 found=false
+    local act="$1" from="${2:-any}" p="$3" proto="${3#*/}" hp cp name ip from_v6 ip_v6 rc=0 found=false
     fw_docker_published
     while read -r hp cp name; do
         [ -n "$hp" ] && [ "$hp" = "$p" ] || continue
         fw_docker_ip "$name"
         for ip in $REPLY_FW_DOCKER_IP; do
             found=true
+            # Не смешиваем IPv4 и IPv6 в одном правиле ufw route (Mixed IP versions)
+            if [ "$from" != any ]; then
+                from_v6=0; ip_v6=0
+                [[ "$from" == *:* ]] && from_v6=1
+                [[ "$ip" == *:* ]] && ip_v6=1
+                if [ "$from_v6" -ne "$ip_v6" ]; then
+                    log_info_t "${p} (${name}, ${ip}): пропускаю маршрут Docker — версии IP не совпадают с ${from}" \
+"${p} (${name}, ${ip}): skipping Docker route — IP version does not match ${from}"
+                    continue
+                fi
+            fi
             if [ "$act" = delete ]; then
                 ufw route delete allow proto "$proto" from "$from" to "$ip" port "$cp" >/dev/null 2>&1
             else
@@ -508,6 +533,129 @@ fw_show_status() {
     fi
 }
 
+# fw_interactive_manage — интерактивное управление уже включённым UFW из меню:
+# открыть/закрыть порты, переключить ping и Docker, выключить UFW. После каждого
+# действия снова показывается актуальная сводка
+fw_interactive_manage() {
+    local choice has_docker ping_next ping_lbl docker_next docker_lbl
+    local opt_docker opt_disable from _p rc=0
+    local -a ports=()
+    while :; do
+        echo ""
+        fw_show_status
+        echo ""
+        has_docker=false
+        command -v docker >/dev/null 2>&1 && has_docker=true
+        fw_ping_state
+        if [ "$REPLY_FW_PING" = off ]; then
+            ping_next=on
+            t "Включить ответ на ping" "Enable ping replies"
+        else
+            ping_next=off
+            t "Выключить ответ на ping" "Disable ping replies"
+        fi
+        ping_lbl="$REPLY_T"
+
+        t "Открыть порт(ы)" "Open port(s)"
+        printf '    %b1%b) %s\n' "$CYAN$BOLD" "$NC" "$REPLY_T"
+        t "Закрыть порт(ы)" "Close port(s)"
+        printf '    %b2%b) %s\n' "$CYAN$BOLD" "$NC" "$REPLY_T"
+        printf '    %b3%b) %s\n' "$CYAN$BOLD" "$NC" "$ping_lbl"
+        if [ "$has_docker" = true ]; then
+            if fw_docker_on; then
+                docker_next=off
+                t "Снять связку Docker ↔ UFW" "Unbind Docker ↔ UFW"
+            else
+                docker_next=on
+                t "Подчинить Docker ↔ UFW" "Put Docker behind UFW"
+            fi
+            docker_lbl="$REPLY_T"
+            opt_docker=4
+            opt_disable=5
+            printf '    %b4%b) %s\n' "$CYAN$BOLD" "$NC" "$docker_lbl"
+            t "Выключить UFW" "Disable UFW"
+            printf '    %b5%b) %s\n' "$CYAN$BOLD" "$NC" "$REPLY_T"
+        else
+            opt_docker=''
+            opt_disable=4
+            t "Выключить UFW" "Disable UFW"
+            printf '    %b4%b) %s\n' "$CYAN$BOLD" "$NC" "$REPLY_T"
+        fi
+        echo ""
+        t "Действие" "Action"; _p="$REPLY_T"
+        t "Enter — назад" "Enter to go back"
+        ui_prompt "$_p" "$REPLY_T"
+        read -r choice </dev/tty || break
+        [ -z "$choice" ] && break
+
+        if [ "$choice" = 1 ]; then
+            ask_text_t "Какие порты открыть? (443, 51820/udp, 1000:2000/tcp)" \
+"Which ports to open? (443, 51820/udp, 1000:2000/tcp)"
+            [ -n "$REPLY_TEXT" ] || continue
+            if ! fw_parse_ports "$REPLY_TEXT"; then
+                log_warn "$REPLY_FW_ERR"; continue
+            fi
+            [ -n "$REPLY_FW_PORTS" ] || continue
+            ports=()
+            read -ra ports <<< "$REPLY_FW_PORTS"
+            ask_text_t "Только для IP/подсети? (Enter — для всех)" \
+"Only for IP/subnet? (Enter for anywhere)"
+            from="$REPLY_TEXT"
+            if [ -n "$from" ] && ! fw_valid_from "$from"; then
+                log_warn_t "Не похоже на IP или подсеть: «${from}» (примеры: 1.2.3.4, 10.0.0.0/8)" \
+"Not a valid IP or subnet: \"${from}\" (examples: 1.2.3.4, 10.0.0.0/8)"
+                continue
+            fi
+            rc=0
+            if fw_allow "$from" "${ports[@]}"; then
+                log_success_t "Открыты: ${ports[*]}${from:+ (← ${from})}" \
+"Opened: ${ports[*]}${from:+ (← ${from})}"
+            else
+                rc=1
+            fi
+        elif [ "$choice" = 2 ]; then
+            ask_text_t "Какие порты закрыть? (8080, 51820/udp)" \
+"Which ports to close? (8080, 51820/udp)"
+            [ -n "$REPLY_TEXT" ] || continue
+            if ! fw_parse_ports "$REPLY_TEXT"; then
+                log_warn "$REPLY_FW_ERR"; continue
+            fi
+            [ -n "$REPLY_FW_PORTS" ] || continue
+            ports=()
+            read -ra ports <<< "$REPLY_FW_PORTS"
+            ask_text_t "С какого IP/подсети? (Enter — правило для всех)" \
+"From which IP/subnet? (Enter for anywhere)"
+            from="$REPLY_TEXT"
+            if [ -n "$from" ] && ! fw_valid_from "$from"; then
+                log_warn_t "Не похоже на IP или подсеть: «${from}» (примеры: 1.2.3.4, 10.0.0.0/8)" \
+"Not a valid IP or subnet: \"${from}\" (examples: 1.2.3.4, 10.0.0.0/8)"
+                continue
+            fi
+            rc=0
+            fw_deny "$from" "${ports[@]}" || rc=1
+        elif [ "$choice" = 3 ]; then
+            rc=0
+            fw_ping_set "$ping_next" || rc=1
+        elif [ -n "$opt_docker" ] && [ "$choice" = "$opt_docker" ]; then
+            rc=0
+            fw_docker_set "$docker_next" || rc=1
+        elif [ "$choice" = "$opt_disable" ]; then
+            rc=0
+            if disable_ufw; then
+                if ! ufw_active; then
+                    ITEM_DONE=true
+                    break
+                fi
+            else
+                rc=1
+            fi
+        else
+            log_warn_t "Не понял выбор «${choice}»" "Unknown choice \"${choice}\""
+        fi
+    done
+    return "$rc"
+}
+
 # ── Команда `usfc firewall` ──────────────────────────────────────────────────
 # Без аргументов — сводка. Порты, ping и Docker — те же ключи ответов, что
 # у пункта ufw (UFW_ALLOW, UFW_FROM, UFW_PING, UFW_DOCKER): флаги у `apply`
@@ -517,6 +665,7 @@ FW_CMD_VALUE=''
 FW_CMD_DENY=''
 firewall_cmd() {
     apply_cli_answers || return 2
+    check_cli_answer_items ufw || return 2
     local from="${UFW_FROM_BULK:-}"
     if [ -z "$UFW_ALLOW_BULK$FW_CMD_DENY$UFW_PING_BULK$UFW_DOCKER_BULK$FW_CMD_ACTION" ]; then
         fw_show_status; return 0

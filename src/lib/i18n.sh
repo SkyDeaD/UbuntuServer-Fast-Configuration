@@ -107,9 +107,10 @@ usfc_ask_language() {
     _usfc_lang_options false
     local choice
     ui_prompt "Выбор / Choice" 1   # i18n-ok: двуязычный по замыслу
-    read -r choice </dev/tty
+    read -r choice </dev/tty || choice=""
     _usfc_lang_parse "$choice"
     USFC_LANG="${REPLY_LANG:-ru}"
+    usfc_registry_apply_lang
     usfc_lang_save "$USFC_LANG"
     echo ""
     t "Язык сохранён. Сменить потом — клавиша L в меню." \
@@ -135,30 +136,33 @@ usfc_switch_language() {
     local choice
     t "Enter — отмена" "Enter to cancel"
     ui_prompt "Выбор / Choice" "$REPLY_T"   # i18n-ok: двуязычный по замыслу
-    read -r choice </dev/tty
+    read -r choice </dev/tty || choice=""
 
     if [ -z "$choice" ]; then
         t "Отменено, язык не менялся" "Cancelled, language unchanged"
         log_info "$REPLY_T"
-        return 0
+        return 1
     fi
     _usfc_lang_parse "$choice"
     if [ -z "$REPLY_LANG" ]; then
         t "Не понял ответ «${choice}» — язык не менялся" \
           "Did not understand ${choice} — language unchanged"
         log_warn "$REPLY_T"
-        return 0
+        return 1
     fi
     if [ "$REPLY_LANG" = "$USFC_LANG" ]; then
         t "Этот язык уже выбран" "That language is already selected"
         log_info "$REPLY_T"
-        return 0
+        return 1
     fi
 
-    usfc_lang_save "$REPLY_LANG" || return 0
-    # --no-update: обновление уже проверялось на этом запуске, второй раз
-    # спрашивать про него при простой смене языка незачем
-    USFC_LANG="$REPLY_LANG" USFC_NO_UPDATE=1 exec "$SCRIPT_PATH"
+    usfc_lang_save "$REPLY_LANG" || return 1
+    # Переключаем язык на лету без exec: так сохраняются --dry-run и --verbose,
+    # а реестр пунктов и кэш статусов обновляются мгновенно
+    USFC_LANG="$REPLY_LANG"
+    usfc_registry_apply_lang
+    invalidate_statuses
+    return 0
 }
 
 REPLY_T=''

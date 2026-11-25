@@ -141,6 +141,42 @@ if builtin command -v ss >/dev/null 2>&1; then
         && ok "ports печатает заголовок" || bad "ports не отработала"
 fi
 
+# ── 3г. режим без иконок (--no-cli-icons / CLI_ICONS_BULK) ───────────────────
+echo ""
+echo "режим без иконок (CLI_ICONS_BULK)"
+# shellcheck disable=SC2034  # читается внутри cli_write_aliases
+CLI_ICONS_BULK=N
+cli_write_aliases >/dev/null 2>&1
+has   "маркер no-icons записан"               "# usfc:cli-block v4 no-icons"           "$TMP/.bashrc"
+hasnt "в алиасах eza нет --icons"             "--icons"                                "$TMP/.bashrc"
+has   "алиас ls без --icons на месте"         "alias ls='eza --group-directories-first" "$TMP/.bashrc"
+status_cli >/dev/null 2>&1 \
+    && ok "status_cli принимает блок no-icons как актуальный" \
+    || bad "status_cli отверг блок no-icons"
+n="$(count x "# >>> vps-setup:cli >>>" "$TMP/.bashrc")"
+[ "$n" -eq 1 ] && ok "после переключения на no-icons блок один" || bad "блоков стало $n"
+
+# shellcheck disable=SC2034
+CLI_ICONS_BULK=""
+cli_write_aliases >/dev/null 2>&1
+has   "повтор с CLI_ICONS_BULK=\"\" сохраняет no-icons" "# usfc:cli-block v4 no-icons" "$TMP/.bashrc"
+hasnt "после повтора --icons не появился"              "--icons"                       "$TMP/.bashrc"
+
+# shellcheck disable=SC2034
+CLI_ICONS_BULK=Y
+cli_write_aliases >/dev/null 2>&1
+hasnt "CLI_ICONS_BULK=Y убирает no-icons"              "no-icons"                      "$TMP/.bashrc"
+grep -qxF "$CLI_BLOCK_MARK" "$TMP/.bashrc" >/dev/null \
+    && ok "маркер вернулся к ${CLI_BLOCK_MARK}" || bad "маркер не вернулся к ${CLI_BLOCK_MARK}"
+has   "CLI_ICONS_BULK=Y возвращает --icons"            "alias ls='eza --icons"         "$TMP/.bashrc"
+status_cli >/dev/null 2>&1 \
+    && ok "status_cli принимает блок с --icons" \
+    || bad "status_cli отверг блок после возврата --icons"
+n="$(count x "# >>> vps-setup:cli >>>" "$TMP/.bashrc")"
+[ "$n" -eq 1 ] && ok "после возврата на --icons блок один" || bad "блоков стало $n"
+# shellcheck disable=SC2034
+CLI_ICONS_BULK=""
+
 # ── 4. .bashrc остаётся исполнимым ───────────────────────────────────────────
 echo ""
 bash -n "$TMP/.bashrc" && ok "получившийся .bashrc синтаксически цел" \

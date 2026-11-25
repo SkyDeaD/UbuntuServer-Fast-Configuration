@@ -136,24 +136,26 @@ cf_write_credentials() {
 "Empty token — no file created"; return 1; }
     install -d -m 700 "$(dirname "$CF_CREDENTIALS")" || { log_error_t "Не удалось создать каталог" \
 "Could not create the directory"; return 1; }
-    # Файл заводим ПУСТЫМ и сразу с нужными правами, а токен пишем уже в него.
-    # Раньше здесь стоял `umask 077` перед перенаправлением: он, во-первых,
-    # не восстанавливался и утекал на весь остаток прогона (все конфиги,
-    # которые пункты 9-14 писали после certbot, получали 600 вместо 644),
-    # во-вторых, оставлял окно между созданием файла и chmod.
-    # Существующий файл НЕ обнуляем: write_file снимает его копию, и
-    # `install /dev/null` поверх затирал старый токен до снимка — откат
-    # возвращал пустой файл. Права чиним отдельно, cat > их сохраняет
+    # Новый файл создаём в подоболочке с umask 077: umask не утекает в остаток
+    # прогона, файл сразу рождается с 600 без окна открытых прав, а backup_file
+    # видит, что файла раньше не было (usfc restore удалит его, а не оставит
+    # пустым). Существующий файл НЕ обнуляем до write_file — снимок сохранит
+    # прежний токен, а cat > сохранит права 600
     if [ -e "$CF_CREDENTIALS" ]; then
-        chmod 600 "$CF_CREDENTIALS" && chown root:root "$CF_CREDENTIALS"
-    else
-        install -m 600 -o root -g root /dev/null "$CF_CREDENTIALS"
-    fi || {
-        log_error_t "Не удалось создать ${CF_CREDENTIALS}" \
-"Could not create ${CF_CREDENTIALS}"; return 1; }
-    printf 'dns_cloudflare_api_token = %s\n' "$token" | write_file "$CF_CREDENTIALS" || {
-        log_error_t "Не удалось записать ${CF_CREDENTIALS}" \
+        if ! { chmod 600 "$CF_CREDENTIALS" && chown root:root "$CF_CREDENTIALS"; }; then
+            log_error_t "Не удалось выставить права на ${CF_CREDENTIALS}" \
+"Could not set permissions on ${CF_CREDENTIALS}"; return 1
+        fi
+        printf 'dns_cloudflare_api_token = %s\n' "$token" | write_file "$CF_CREDENTIALS" || {
+            log_error_t "Не удалось записать ${CF_CREDENTIALS}" \
 "Could not write ${CF_CREDENTIALS}"; return 1; }
+    else
+        if ! { ( umask 077; printf 'dns_cloudflare_api_token = %s\n' "$token" | write_file "$CF_CREDENTIALS" ) \
+            && chmod 600 "$CF_CREDENTIALS" && chown root:root "$CF_CREDENTIALS"; }; then
+            log_error_t "Не удалось создать ${CF_CREDENTIALS}" \
+"Could not create ${CF_CREDENTIALS}"; return 1
+        fi
+    fi
     log_success_t "Credentials-файл создан: ${CF_CREDENTIALS} ($(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root)" \
                   "Credentials file created: ${CF_CREDENTIALS} ($(stat -c %a "$CF_CREDENTIALS" 2>/dev/null), root:root)"
     cf_wildcard_hint
@@ -181,7 +183,7 @@ cf_wildcard_hint() {
 # сервер при старте. Оба файла уже лежат внутри пакета certbot: генерировать
 # dhparam через openssl не нужно, там та же стандартная группа ffdhe2048.
 apply_certbot_tls_assets() {
-    if ! pkg_installed nginx-full; then
+    if ! command -v nginx >/dev/null 2>&1 && ! pkg_installed nginx-full; then
         return
     fi
     local want=false name src dst
@@ -288,7 +290,7 @@ preask_certbot() {
         fi
     fi
     # TLS-заготовки нужны только рядом с nginx — стоящим или ставящимся сейчас
-    if pkg_installed nginx-full || [[ "$USFC_PREASK_IDS" == *" nginx "* ]]; then
+    if command -v nginx >/dev/null 2>&1 || pkg_installed nginx-full || [[ "$USFC_PREASK_IDS" == *" nginx "* ]]; then
         if [ ! -f /etc/letsencrypt/ssl-dhparams.pem ] || [ ! -f /etc/letsencrypt/options-ssl-nginx.conf ]; then
             echo ""
             log_info_t "Типовой конфиг nginx ссылается на ssl-dhparams.pem и options-ssl-nginx.conf; при выпуске через certonly их нет, и nginx не стартует" \
@@ -315,7 +317,7 @@ apply_certbot() {
     if pkg_installed python3-certbot-nginx; then
         log_success_t "Плагин nginx уже установлен" \
 "The nginx plugin is already installed"
-    elif ! pkg_installed nginx-full; then
+    elif ! command -v nginx >/dev/null 2>&1 && ! pkg_installed nginx-full; then
         log_info_t "nginx не установлен — плагин nginx пропускаю (поставь nginx и вернись сюда)" \
 "nginx is not installed — skipping its plugin (install nginx and come back)"
     elif ask_yn_t "Установить плагин nginx (HTTP-01, обычные сертификаты)?" "Install the nginx plugin (HTTP-01, ordinary certificates)?"; then

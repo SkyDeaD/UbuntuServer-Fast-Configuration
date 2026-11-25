@@ -27,11 +27,13 @@ for _a in "$@"; do
 done
 unset _a _prev
 
+_it() { if [ "$HELP_LANG" = en ]; then printf '%s' "$2"; else printf '%s' "$1"; fi; }
+
 REST=()
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -b|--branch)
-            [ -n "${2:-}" ] || { echo "--branch требует имя ветки" >&2; exit 2; }
+            [ -n "${2:-}" ] || { echo "$(_it "--branch требует имя ветки" "--branch requires a branch name")" >&2; exit 2; }
             BRANCH="$2"; shift 2 ;;
         --branch=*) BRANCH="${1#*=}"; shift ;;
         -h|--help)
@@ -67,14 +69,14 @@ done
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}/src"
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "Запустите от root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" >&2
+    echo "$(_it "Запустите от root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc" "Run as root: curl -fsSL .../install.sh | sudo bash && source ~/.bashrc")" >&2
     exit 1
 fi
 
 if ! command -v curl >/dev/null 2>&1; then
-    echo "  curl не найден, ставлю..."
+    echo "  $(_it "curl не найден, ставлю..." "curl not found, installing...")"
     apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq curl >/dev/null 2>&1
-    command -v curl >/dev/null 2>&1 || { echo "  Не удалось поставить curl" >&2; exit 1; }
+    command -v curl >/dev/null 2>&1 || { echo "  $(_it "Не удалось поставить curl" "Failed to install curl")" >&2; exit 1; }
 fi
 
 # ── Загрузка ─────────────────────────────────────────────────────────────────
@@ -136,14 +138,14 @@ fetch_many() {
 }
 
 echo ""
-echo "  usfc — установка"
+echo "  $(_it "usfc — установка" "usfc — install")"
 echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-[ "$BRANCH" != "main" ] && echo "  Ветка: ${BRANCH}"
+[ "$BRANCH" != "main" ] && echo "  $(_it "Ветка" "Branch"): ${BRANCH}"
 echo ""
 
 for f in setup.sh VERSION MODULES; do
     if ! fetch "$f" "${STAGE}/${f}"; then
-        echo "  Не удалось скачать ${f}. Проверьте сеть и доступность github.com" >&2
+        echo "  $(_it "Не удалось скачать ${f}. Проверьте сеть и доступность github.com" "Could not download ${f}. Check network access to github.com")" >&2
         exit 1
     fi
 done
@@ -158,24 +160,25 @@ while IFS= read -r line || [ -n "$line" ]; do
         *..*|*[!A-Za-z0-9_./-]*) ;;
         lib/*.sh) MODULES+=("$line"); continue ;;
     esac
-    echo "  В манифесте недопустимая строка «${line}» — установка прервана" >&2
+    echo "  $(_it "В манифесте недопустимая строка «${line}» — установка прервана" "Invalid line in manifest: \"${line}\" — install aborted")" >&2
     exit 1
 done < "${STAGE}/MODULES"
 
 if [ "${#MODULES[@]}" -eq 0 ]; then
-    echo "  Пустой список модулей — установка прервана" >&2
+    echo "  $(_it "Пустой список модулей — установка прервана" "Empty module list — install aborted")" >&2
     exit 1
 fi
 
-printf '  Скачивание модулей (%d)... ' "${#MODULES[@]}"
+printf '  %s (%d)... ' "$(_it "Скачивание модулей" "Downloading modules")" "${#MODULES[@]}"
 if fetch_many "$STAGE" "${MODULES[@]}"; then
     printf '✓\n'
 else
     printf '✗\n'
-    echo "  Не удалось скачать ${FETCH_FAILED}. Ничего не установлено." >&2
+    echo "  $(_it "Не удалось скачать ${FETCH_FAILED}. Ничего не установлено." "Could not download ${FETCH_FAILED}. Nothing was installed.")" >&2
     exit 1
 fi
-echo "  Все ${#MODULES[@]} на месте и проверены."
+echo "  $(_it "Все ${#MODULES[@]} на месте и проверены." "All ${#MODULES[@]} modules downloaded and verified.")"
+fetch "config.jsonc" "${STAGE}/config.jsonc" 2>/dev/null || rm -f "${STAGE}/config.jsonc"
 
 # ── Установка на место ───────────────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
@@ -212,13 +215,16 @@ fi
 # mktemp создаёт файлы 0600, поэтому права выставляются явно
 chmod 755 "${INSTALL_DIR}/setup.sh"
 chmod -R u=rwX,go=rX "${INSTALL_DIR}/lib"
+if [ -f "${STAGE}/config.jsonc" ]; then
+    mv "${STAGE}/config.jsonc" "${INSTALL_DIR}/config.jsonc" 2>/dev/null && chmod 644 "${INSTALL_DIR}/config.jsonc" 2>/dev/null || true
+fi
 chmod 644 "${INSTALL_DIR}/VERSION" "${INSTALL_DIR}/MODULES"
 [ -n "$OLD_LIB" ] && rm -rf "$OLD_LIB"
 rm -rf "$OLD_FILES"
 
 ln -sf "${INSTALL_DIR}/setup.sh" /usr/local/bin/usfc
 
-echo "  usfc $(cat "${INSTALL_DIR}/VERSION") установлен"
+echo "  usfc $(cat "${INSTALL_DIR}/VERSION") $(_it "установлен" "installed")"
 echo ""
 
 # Три ветки вместо одной.
@@ -250,7 +256,7 @@ echo ""
 # лучше тихого «терминала нет»). Значения берут --lang, --config, --set, --deny
 # и все не-yn флаги ответов: их список читаем из таблицы только что
 # установленной версии (lib/profiles.sh), чтобы не держать второй список здесь
-VALUE_OPTS=" --lang --config --set --deny "
+VALUE_OPTS=" --lang --config --set --deny --keep "
 if [ -f "${INSTALL_DIR}/lib/profiles.sh" ]; then
     while IFS='|' read -r _k _v _ty _fl _; do
         [ -n "$_fl" ] && [ "$_ty" != yn ] && VALUE_OPTS="${VALUE_OPTS}${_fl} "

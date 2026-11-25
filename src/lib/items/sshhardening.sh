@@ -91,7 +91,7 @@ usfc_item_rollback sshhardening "sudo usfc apply sshhardening --ssh-port 22   # 
      sudo rm -f ${USFC_SSHD_DROPIN}
      sudo systemctl daemon-reload && sudo systemctl restart ssh.socket   # Ubuntu с сокетной активацией
      sudo systemctl restart ssh
-     sudo rm -f /etc/sudoers.d/90-usfc-${TARGET_USER}
+     sudo rm -f /etc/sudoers.d/90-usfc-<user>
      sudo usfc restore       # вернуть чужие строки, которые были закомментированы (и Port тоже)
      # возвращает вход по паролю — убедись, что есть другой способ попасть на сервер" \
 "sudo usfc apply sshhardening --ssh-port 22   # port back to 22: run twice, the second run closes the old one
@@ -99,7 +99,7 @@ usfc_item_rollback sshhardening "sudo usfc apply sshhardening --ssh-port 22   # 
      sudo rm -f ${USFC_SSHD_DROPIN}
      sudo systemctl daemon-reload && sudo systemctl restart ssh.socket   # Ubuntu with socket activation
      sudo systemctl restart ssh
-     sudo rm -f /etc/sudoers.d/90-usfc-${TARGET_USER}
+     sudo rm -f /etc/sudoers.d/90-usfc-<user>
      sudo usfc restore       # bring back foreign lines that were commented out (Port too)
      # restores password login — make sure you have another way into the server"
 
@@ -1069,7 +1069,7 @@ _ssh_hardening_run() {
         if ! ask_yn_t "Закомментировать их (копия сохранится, вернуть — usfc restore)?" "Comment them out (a copy is kept, undo with usfc restore)?"; then
             log_info_t "Оставляю как есть — с ними hardening не подействует, поэтому не применяю" \
 "Leaving them alone — with them in place hardening would not take effect, so not applying"
-            _ssh_snap_drop
+            restore_touched
             return 1
         fi
         for file in "${!by_file[@]}"; do
@@ -1202,9 +1202,18 @@ _ssh_hardening_run() {
         restore_touched
     }
 
-    if ! sshd -t 2>/dev/null; then
+    local sshd_err sshd_line sshd_shown=0
+    if ! sshd_err="$(sshd -t 2>&1)"; then
         log_error_t "sshd -t не прошёл — откатываю" \
 "sshd -t failed — rolling back"
+        if [ -n "$sshd_err" ]; then
+            while IFS= read -r sshd_line || [ -n "$sshd_line" ]; do
+                [ -n "$sshd_line" ] || continue
+                log_error "$sshd_line"
+                sshd_shown=$((sshd_shown + 1))
+                [ "$sshd_shown" -ge 3 ] && break
+            done <<< "$sshd_err"
+        fi
         rollback_dropin
         ssh_selftest_end
         return 1

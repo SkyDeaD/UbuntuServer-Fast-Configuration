@@ -5,7 +5,7 @@
 show_aliases_help() {
     refresh_term_width
     show_header
-    t "Алиасы" "Aliases"; local _h="$REPLY_T"
+    t "Алиасы и функции" "Aliases and functions"; local _h="$REPLY_T"
     t "(usfc — сам при первом запуске; остальные — пункт «CLI-утилиты»)" \
       "(usfc is added on first run; the rest come from the CLI tools item)"
     echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
@@ -23,15 +23,19 @@ show_aliases_help() {
     # массива пришлось бы держать синхронными руками, и они разъехались бы —
     # ровно та беда, от которой в 4.0.0 уходили в реестре пунктов
     local rows=(   # i18n-ok: английская пара — четвёртое поле каждой строки
-        "ls|eza --icons --group-directories-first|список файлов с иконками (замена ls)|file list with icons (ls replacement)"
+        "ls|eza --icons -1 --long ...|список файлов с иконками и размером|file list with icons and sizes"
         "ll|eza -lah --icons --group-directories-first|подробный список, аналог ls -la|detailed list, like ls -la"
-        "la|eza -a --icons --group-directories-first|список вместе со скрытыми файлами|list including hidden files"
+        "la|eza -a --icons -1 --long ...|то же, вместе со скрытыми файлами|same, including hidden files"
         "lt|eza --tree --icons --level=2 ...|дерево каталогов, 2 уровня вглубь|directory tree, 2 levels deep"
         "cat|batcat --paging=never|вывод файла с подсветкой, без пейджера|file with syntax highlighting, no pager"
         "catp|batcat|то же, с пейджером (для длинных файлов)|the same, with a pager (for long files)"
         "scat|sudo batcat --paging=never|cat для файлов, читаемых только под root|cat for files only root can read"
         "fd|fdfind|быстрый поиск файлов, замена find|fast file search, a find replacement"
         "htop|btop|монитор процессов, наглядная замена htop|process monitor, a much nicer htop"
+        "ports|ss -tulpnH + awk|слушающие TCP/UDP-порты и процессы|listening TCP/UDP ports and processes"
+        "dps|docker ps --format table|компактный список контейнеров Docker|compact Docker container list"
+        "extract|tar / unzip / unxz / 7z ...|распаковка архива по расширению|unpack an archive by extension"
+        "myip|curl icanhazip.com + ip -br a|внешний и локальные IP-адреса|external and local IP addresses"
         "usfc|sudo usfc + auto-source ~/.bashrc|запуск меню, .bashrc подхватится само|opens the menu, .bashrc reloads itself"
     )
 
@@ -50,21 +54,22 @@ show_aliases_help() {
     printf "  ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s${NC} ${DIM}│${NC} ${BOLD}%s%*s${NC} ${DIM}│${NC}\n" \
         "$h1" "$h2" "$hdr3" "$hdr3_pad" ""
     box_line "$DIM" '├' '┼' '┤' "$col1" "$col2" "$col3"
-    local row alias cmd desc desc_en cmd_t desc_t cmd_pad desc_pad a_t
+    local row alias cmd desc desc_en cmd_t desc_t cmd_pad desc_pad a_t a_pad
     for row in "${rows[@]}"; do
         IFS='|' read -r alias cmd desc desc_en <<< "$row"
         [ "$USFC_LANG" = en ] && desc="$desc_en"
-        truncate_colored "$cmd" "$col2";  cmd_t="$REPLY_TRUNC"
-        truncate_colored "$desc" "$col3"; desc_t="$REPLY_TRUNC"
+        truncate_colored "$alias" "$col1"; a_t="$REPLY_TRUNC"
+        truncate_colored "$cmd" "$col2";   cmd_t="$REPLY_TRUNC"
+        truncate_colored "$desc" "$col3";  desc_t="$REPLY_TRUNC"
         # руками, не через pad_title(): та форсирует минимум 1 пробел паддинга,
         # а truncate_colored() при обрезке всегда возвращает СТРОКУ РОВНО В width
         # символов — pad был бы 0, форс поднял бы его до 1, и рамка бы поехала
         # (та же схема, что уже используется для status_line/легенды в show_menu())
+        visible_len "$a_t";    a_pad=$((col1 - REPLY_LEN));    [ "$a_pad" -lt 0 ] && a_pad=0
         visible_len "$cmd_t";  cmd_pad=$((col2 - REPLY_LEN));  [ "$cmd_pad" -lt 0 ] && cmd_pad=0
         visible_len "$desc_t"; desc_pad=$((col3 - REPLY_LEN)); [ "$desc_pad" -lt 0 ] && desc_pad=0
-        pad_title "$alias" "$col1"; a_t="$REPLY_PAD"
-        printf "  ${DIM}│${NC} ${CYAN}%s${NC} ${DIM}│${NC} %s%*s ${DIM}│${NC} %s%*s ${DIM}│${NC}\n" \
-            "$a_t" \
+        printf "  ${DIM}│${NC} ${CYAN}%s%*s${NC} ${DIM}│${NC} %s%*s ${DIM}│${NC} %s%*s ${DIM}│${NC}\n" \
+            "$a_t" "$a_pad" "" \
             "$cmd_t" "$cmd_pad" "" \
             "$desc_t" "$desc_pad" ""
     done
@@ -186,15 +191,18 @@ show_item_help() {
         t "Enter — назад" "Enter to go back"
         ui_prompt "$_q" "$REPLY_T"
         local choice
-        read -r choice </dev/tty
+        read -r choice </dev/tty || return 0
         [ -z "$choice" ] && return 0
-        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#ITEM_IDS[@]}" ]; then
-            show_item_detail "$choice"
-        else
-            log_error_t "Нет пункта «${choice}» — введи число от 1 до ${#ITEM_IDS[@]} или Enter для выхода" \
-                "No item ${choice} — enter a number from 1 to ${#ITEM_IDS[@]}, or Enter to go back"
-            sleep 1
+        if [[ "$choice" =~ ^[0-9]+$ ]]; then
+            choice=$((10#$choice))
+            if [ "$choice" -ge 1 ] && [ "$choice" -le "${#ITEM_IDS[@]}" ]; then
+                show_item_detail "$choice"
+                continue
+            fi
         fi
+        log_error_t "Нет пункта «${choice}» — введи число от 1 до ${#ITEM_IDS[@]} или Enter для выхода" \
+            "No item ${choice} — enter a number from 1 to ${#ITEM_IDS[@]}, or Enter to go back"
+        sleep 1
     done
 }
 
@@ -237,5 +245,25 @@ show_item_detail() {
         echo -e "  ${BOLD}${_h}${NC} ${DIM}${REPLY_T}${NC}"
         echo -e "     ${DIM}${ROLLBACK_NOTES[$i]}${NC}"
     fi
-    pause
+    echo ""
+    t "[A] Применить · [V] Предпросмотр · [Enter] Назад" \
+      "[A] Apply · [V] Preview · [Enter] Back"
+    echo -en "  ${CYAN}›${NC} ${DIM}${REPLY_T}:${NC} "
+    local act
+    read -r act </dev/tty || return 0
+    case "$act" in
+        '') return 0 ;;
+        [Vv])
+            preview_item "$idx"
+            pause
+            ;;
+        [Aa])
+            local t0 rc1
+            now_s; t0="$REPLY_NOW"
+            process_item "$idx"; rc1=$?
+            now_s
+            item_result_line "$idx" "$rc1" "$((REPLY_NOW - t0))"
+            pause
+            ;;
+    esac
 }

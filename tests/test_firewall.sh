@@ -317,5 +317,98 @@ unset -f ufw
 # shellcheck disable=SC2034
 SSHD_PORTS='22'
 
+echo "Docker: loopback-привязки пропускаются в fw_docker_published"
+docker() {
+    case "$1" in
+        ps)
+            printf 'local1 127.0.0.1:8080->80/tcp\n'
+            printf 'local6 [::1]:8443->443/tcp\n'
+            printf 'localh localhost:9000->9000/tcp\n'
+            printf 'pub4 0.0.0.0:8080->80/tcp\n'
+            printf 'pub6 :::443->443/tcp\n'
+            ;;
+    esac
+}
+fw_docker_published
+want_pub=$'8080/tcp 80 pub4\n443/tcp 443 pub6'
+if [ "$REPLY_FW_DOCKER" = "$want_pub" ]; then
+    ok "loopback пропущен, публичные 8080/tcp и 443/tcp сохранены"
+else
+    bad "fw_docker_published: «${REPLY_FW_DOCKER//$'\n'/ | }», ждали «${want_pub//$'\n'/ | }»"
+fi
+docker() { :; }
+
+echo "Docker: fw_docker_route не смешивает IPv4 и IPv6"
+docker() {
+    case "$1" in
+        ps)
+            printf 'app4 0.0.0.0:8080->80/tcp\n'
+            printf 'app6 :::8443->443/tcp\n'
+            printf 'dual 0.0.0.0:9090->80/tcp\n'
+            ;;
+        inspect)
+            case "${*: -1}" in
+                app4) echo "172.17.0.2 " ;;
+                app6) echo "fd00::2 " ;;
+                dual) echo "172.17.0.5 fd00::5 " ;;
+            esac
+            ;;
+    esac
+}
+saved_fw_ufw="$(declare -f _fw_ufw)"
+_fw_ufw() { printf '%s\n' "$*" >> "$ROUTES"; }
+: > "$ROUTES"
+fw_docker_route allow '2001:db8::1' 8080/tcp >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$ROUTES" ] \
+    && ok "IPv4-контейнер при --from IPv6 пропущен без вызова ufw route" \
+    || bad "IPv4+IPv6: rc=${rc} «$(tr '\n' '|' < "$ROUTES")»"
+: > "$ROUTES"
+fw_docker_route allow '10.0.0.5' 8443/tcp >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$ROUTES" ] \
+    && ok "IPv6-контейнер при --from IPv4 пропущен без вызова ufw route" \
+    || bad "IPv6+IPv4: rc=${rc} «$(tr '\n' '|' < "$ROUTES")»"
+: > "$ROUTES"
+fw_docker_route allow '2001:db8::1' 9090/tcp >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && [ "$(command cat "$ROUTES")" = "route allow proto tcp from 2001:db8::1 to fd00::5 port 80" ] \
+    && ok "dual-stack при --from IPv6: правило только для IPv6-адреса" \
+    || bad "dual+IPv6: rc=${rc} «$(tr '\n' '|' < "$ROUTES")»"
+: > "$ROUTES"
+fw_docker_route allow '10.0.0.5' 9090/tcp >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && [ "$(command cat "$ROUTES")" = "route allow proto tcp from 10.0.0.5 to 172.17.0.5 port 80" ] \
+    && ok "dual-stack при --from IPv4: правило только для IPv4-адреса" \
+    || bad "dual+IPv4: rc=${rc} «$(tr '\n' '|' < "$ROUTES")»"
+docker() { :; }
+eval "$saved_fw_ufw"
+
+echo "fw_deny: SSH первым, обычный порт вторым — независимый item_rc"
+# shellcheck disable=SC2034
+SSH_PORT=22
+# shellcheck disable=SC2034
+SSHD_PORTS='22'
+ufw() { printf '%s\n' "$*" >> "$UCALLS"; echo "Rule deleted"; return 0; }
+: > "$UCALLS"
+out="$(fw_deny "" "22/tcp" "8080/tcp" 2>&1)"; rc=$?
+calls="$(command cat "$UCALLS")"
+[ "$rc" -ne 0 ] && ok "общий код возврата ≠ 0 (SSH-порт отклонён)" || bad "fw_deny 22+8080: ждали rc≠0, получили 0"
+if [[ "$calls" != *"22/tcp"* && "$calls" == *"delete allow 8080/tcp"* ]]; then
+    ok "22/tcp не тронут, 8080/tcp удалён"
+else
+    bad "вызовы ufw: «${calls//$'\n'/ | }»"
+fi
+[[ "$out" == *"8080/tcp: разрешение снято"* ]] \
+    && ok "для 8080/tcp выведен успех несмотря на отказ по 22/tcp" \
+    || bad "нет сообщения об успехе для 8080/tcp: «${out//$'\n'/ | }»"
+unset -f ufw
+
+echo "firewall_cmd: чужой ключ --set"
+out="$(
+    parse_args firewall --set ZRAM_PERCENT=50 >/dev/null 2>&1 || exit $?
+    fw_show_status() { echo SHOWN; }
+    firewall_cmd 2>&1
+)"; rc=$?
+[ "$rc" -eq 2 ] && [[ "$out" != *SHOWN* ]] && [[ "$out" == *zram* ]] \
+    && ok "чужой --set ZRAM_PERCENT=50 → код 2 (check_cli_answer_items ufw)" \
+    || bad "firewall_cmd --set ZRAM_PERCENT=50: rc=${rc} «${out//$'\n'/ | }»"
+
 if [ "$fail" -eq 0 ]; then echo "OK"; else echo "ЕСТЬ ОШИБКИ"; fi
 exit "$fail"

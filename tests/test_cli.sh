@@ -339,5 +339,123 @@ done
 rm -rf "$fb"
 
 echo ""
+echo "команды и опции 5.3"
+# pa_53 <аргументы...> — разбор новых опций: CMD|STAMP|DRY|YES|JSON|ONLY_PROB|DIFF|CHECK|B_ACT|B_KEEP
+pa_53() {
+    OUT="$(
+        parse_args "$@" 2>&1
+        printf '\n@@%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n' \
+            "$USFC_CMD" "$USFC_RESTORE_STAMP" "$USFC_DRY_RUN" "$USFC_ASSUME_YES" \
+            "$USFC_AUDIT_JSON" "$USFC_AUDIT_ONLY_PROBLEMS" "$USFC_RESTORE_DIFF" \
+            "$USFC_UPDATE_CHECK_ONLY" "$USFC_BACKUPS_ACTION" "$USFC_BACKUPS_KEEP"
+    )"
+    RC=$?
+    STATE="$(printf '%s\n' "$OUT" | sed -n 's/^@@//p')"
+}
+expect_53() {
+    local name="$1" rc="$2" state="$3" text="$4"; shift 5
+    pa_53 "$@"
+    if [ "$RC" -ne "$rc" ]; then bad "$name: код $RC, ждали $rc — $(printf '%s' "$OUT" | head -2 | tr '\n' ' ')"; return; fi
+    if [ -n "$state" ] && [ "$STATE" != "$state" ]; then bad "$name: состояние «$STATE», ждали «$state»"; return; fi
+    if [ -n "$text" ] && [[ "$OUT" != *"$text"* ]]; then bad "$name: в выводе нет «$text»"; return; fi
+    ok "$name"
+}
+
+expect_53 "status"                             0 "status||false|false|false|false|false|false||10"      "" -- status
+expect_53 "status --json"                      0 "status||false|false|true|false|false|false||10"       "" -- status --json
+expect_53 "update"                             0 "update||false|false|false|false|false|false||10"      "" -- update
+expect_53 "update --check"                     0 "update||false|false|false|false|false|true||10"       "" -- update --check
+expect_53 "update --yes"                       0 "update||false|true|false|false|false|false||10"       "" -- update --yes
+expect_53 "backups prune"                      0 "backups||false|false|false|false|false|false|prune|10" "" -- backups prune
+expect_53 "backups prune --keep 5 --dry-run --yes" 0 "backups||true|true|false|false|false|false|prune|5" "" -- backups prune --keep 5 --dry-run --yes
+expect_53 "restore latest --diff"              0 "restore|latest|false|false|false|false|true|false||10" "" -- restore latest --diff
+expect_53 "audit --only-problems"              0 "audit||false|false|false|true|false|false||10"        "" -- audit --only-problems
+
+expect "backups --keep 5 без prune — код 2"    2 "" "только с подкомандой prune"  -- backups --keep 5
+expect "backups foo — код 2"                   2 "" "ожидается prune"             -- backups foo
+expect "status --only-problems — код 2"        2 "" "не относится к команде status" -- status --only-problems
+expect "update --dry-run — код 2"              2 "" "не относится к команде update" -- update --dry-run
+
+echo ""
+echo "resolve_items: ведущие нули без восьмеричной ошибки"
+r="$(resolve_items "05,08" 2>&1; echo "rc=$? nums=${REPLY_ITEM_NUMS[*]}")"
+[ "$r" = "rc=0 nums=5 8" ] && ok "resolve_items \"05,08\" → 5 8" || bad "resolve_items \"05,08\": $r"
+
+echo ""
+echo "load_config: '#' внутри кавычек сохраняется, хвост-комментарий режется"
+printf 'HOSTNAME="srv-1" # комментарий после значения\nSSH_KEYS="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey ops#prod" # хвост\nCF_TOKEN='\''tok#123'\'' # секрет\n' > "$cfg"
+r="$(
+    load_config "$cfg" 2>&1
+    printf 'rc=%d host=%s key=%s tok=%s' "$?" "$HOSTNAME_BULK" "$SSH_KEYS_BULK" "$CF_TOKEN_BULK"
+)"
+expected_cfg="rc=0 host=srv-1 key=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITestKey ops#prod tok=tok#123"
+[ "$r" = "$expected_cfg" ] && ok "load_config сохранил '#' внутри кавычек и снял комментарии снаружи" || bad "load_config: «$r»"
+
+echo ""
+echo "переключение языка реестра (--lang en ↔ ru)"
+r="$(
+    ru0="${ITEM_TITLES[0]}"
+    parse_args --lang en list >/dev/null 2>&1 || exit 1
+    usfc_registry_apply_lang
+    en0="${ITEM_TITLES[0]}"
+    [ "$USFC_LANG" = en ] && [ "$en0" = "${ITEM_TITLES_EN[0]}" ] && [ "$en0" != "$ru0" ] || { echo "en-fail:$USFC_LANG:$en0"; exit 1; }
+    USFC_CMD=""
+    parse_args --lang ru list >/dev/null 2>&1 || exit 1
+    usfc_registry_apply_lang
+    back0="${ITEM_TITLES[0]}"
+    [ "$USFC_LANG" = ru ] && [ "$back0" = "${ITEM_TITLES_RU[0]}" ] && [ "$back0" = "$ru0" ] || { echo "ru-fail:$USFC_LANG:$back0"; exit 1; }
+    echo ok
+)"
+[ "$r" = ok ] && ok "--lang en + usfc_registry_apply_lang переключает ITEM_TITLES на en и обратно на ru" || bad "смена языка реестра: $r"
+
+echo ""
+echo "новые флаги ответов и их валидация"
+expect "--zram-algo zstd"          0 "apply|zram||false|false|false|ZRAM_ALGO=zstd"                  "" -- apply zram --zram-algo zstd
+expect "--no-cli-icons"            0 "apply|cli||false|false|false|CLI_ICONS=N"                      "" -- apply cli --no-cli-icons
+expect "--cli-icons"               0 "apply|cli||false|false|false|CLI_ICONS=Y"                      "" -- apply cli --cli-icons
+expect "--notify-ignore список"    0 "apply|notify||false|false|false|NOTIFY_IGNORE=1.2.3.4,10.0.0." "" -- apply notify --notify-ignore "1.2.3.4,10.0.0."
+expect "--ssh-key gh:octocat"      0 "apply|newuser||false|false|false|SSH_KEYS=gh:octocat"          "" -- apply newuser --ssh-key gh:octocat
+
+r="$( parse_args apply zram --zram-algo zstd >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1; echo "rc=$? algo=${ZRAM_ALGO_BULK}" )"
+[ "$r" = "rc=0 algo=zstd" ] && ok "--zram-algo zstd проходит валидацию" || bad "--zram-algo zstd: $r"
+r="$( parse_args apply zram --zram-algo gzip >/dev/null 2>&1; apply_cli_answers 2>&1; echo "rc=$?" )"
+[[ "$r" == *rc=2* && "$r" == *zstd* ]] && ok "--zram-algo gzip отвергнут" || bad "--zram-algo gzip: $r"
+
+r="$( parse_args apply cli --no-cli-icons >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1; echo "rc=$? icons=${CLI_ICONS_BULK}" )"
+[ "$r" = "rc=0 icons=N" ] && ok "--no-cli-icons → CLI_ICONS_BULK=N" || bad "--no-cli-icons: $r"
+r="$( parse_args apply cli --cli-icons >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1; echo "rc=$? icons=${CLI_ICONS_BULK}" )"
+[ "$r" = "rc=0 icons=Y" ] && ok "--cli-icons → CLI_ICONS_BULK=Y" || bad "--cli-icons: $r"
+
+r="$( parse_args apply notify --notify-ignore "1.2.3.4,10.0.0." >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1; echo "rc=$? ign=${NOTIFY_IGNORE_BULK}" )"
+[ "$r" = "rc=0 ign=1.2.3.4 10.0.0." ] && ok "--notify-ignore нормализует список IP/префиксов" || bad "--notify-ignore: $r"
+r="$( parse_args apply notify --notify-ignore "bad;cmd" >/dev/null 2>&1; apply_cli_answers 2>&1; echo "rc=$?" )"
+[[ "$r" == *rc=2* ]] && ok "--notify-ignore с мусором отвергнут" || bad "--notify-ignore с мусором: $r"
+
+r="$( parse_args apply newuser --ssh-key gh:octocat >/dev/null 2>&1; apply_cli_answers >/dev/null 2>&1; echo "rc=$? key=${SSH_KEYS_BULK}" )"
+[ "$r" = "rc=0 key=gh:octocat" ] && ok "--ssh-key gh:octocat проходит валидацию" || bad "--ssh-key gh:octocat: $r"
+r="$( parse_args apply newuser --ssh-key "gh:bad..user" >/dev/null 2>&1; apply_cli_answers 2>&1; echo "rc=$?" )"
+[[ "$r" == *rc=2* ]] && ok "--ssh-key gh:bad..user отвергнут" || bad "--ssh-key gh:bad..user: $r"
+
+echo ""
+echo "справочные команды без прав root (version, help, list)"
+setup_abs="$(readlink -f "${1:-src/setup.sh}")"
+run_as_nonroot() {
+    if [ "$(id -u)" -eq 0 ]; then
+        su -s /bin/bash nobody -c 'env -u USFC_SOURCE_ONLY bash "$1" "$2"' _ "$setup_abs" "$1"
+    else
+        env -u USFC_SOURCE_ONLY bash "$setup_abs" "$1"
+    fi
+}
+want_ver="$(tr -d '[:space:]' < "$(dirname "$setup_abs")/VERSION")"
+out="$(run_as_nonroot version 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$out" = "$want_ver" ] && ok "usfc version работает без root" || bad "usfc version без root (rc=$rc): $out (ждали $want_ver)"
+out="$(run_as_nonroot help 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [[ "$out" == *"Команды:"* ]] && ok "usfc help работает без root" || bad "usfc help без root (rc=$rc): $(printf '%s' "$out" | head -2)"
+out="$(run_as_nonroot list 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] && [[ "$out" == *"minimal"* && "$out" == *"web"* ]] && ok "usfc list работает без root" || bad "usfc list без root (rc=$rc): $(printf '%s' "$out" | head -2)"
+out="$(run_as_nonroot status 2>&1)"; rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *"root"* ]] && ok "usfc status без root честно требует sudo" || bad "usfc status без root (rc=$rc): $out"
+
+echo ""
 [ "$fail" -eq 0 ] && echo "командная строка: все проверки пройдены" || echo "командная строка: ЕСТЬ ОШИБКИ"
 exit "$fail"
