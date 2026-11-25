@@ -3,7 +3,7 @@
 <p align="center"><a href="CLI.md">🇷🇺 Русский</a> · <b>🇬🇧 English</b></p>
 
 The one complete reference for the commands, flags, answers file, environment
-variables, and exit codes of usfc 5.0. For the short version, see `usfc help`
+variables, and exit codes of usfc 5.x. For the short version, see `usfc help`
 and `usfc help <command>`. The `tests/test_flags_doc.sh` test checks this page
 against the code: a flag missing here, or a flag described here that does not
 exist in the code, fails CI.
@@ -38,8 +38,10 @@ sudo usfc [command] [arguments] [options]
 - Write an option value after a space or after `=`: `--swap 2048` and
   `--swap=2048` are the same. A value that looks like an option is an error:
   `--lang --yes` will not set the language to "--yes".
-- usfc needs root because it changes system files. The `usfc()` function in
-  `.bashrc` adds `sudo` for you; in scripts, write `sudo usfc …`.
+- Commands that inspect protected configs or change the system require
+  root; read-only informational commands `usfc version`, `usfc help`, and
+  `usfc list` run without `sudo`. The `usfc()` function in `.bashrc` adds
+  `sudo` only when needed; in scripts, write `sudo usfc …`.
 
 ## Installer
 
@@ -79,15 +81,15 @@ terminal nothing runs. Global options also work before the command
 ## Common options
 
 These work with any command and with no command. The exception is
-`--dry-run`: only the menu, `apply`, and `firewall` have it; with another
-command it's an error with exit code `2`.
+`--dry-run`: only the menu, `apply`, `firewall`, and `backups prune` have it;
+with another command it's an error with exit code `2`.
 
 | Option | What it does |
 |---|---|
 | `--lang ru\|en` | language for this run. Not remembered: change the permanent language with the `L` key in the menu |
 | `--no-update` | don't check for a usfc update |
 | `--verbose` | show full command output instead of a spinner |
-| `--dry-run` | with no command, the menu in preview mode; with `apply` and `firewall`, see below |
+| `--dry-run` | with no command, the menu in preview mode; with `apply`, `firewall`, and `backups prune`, see below |
 | `-h`, `--help` | help; `usfc help <command>` for one command |
 | `-V`, `--version` | version |
 
@@ -129,15 +131,21 @@ Behavior worth knowing:
   | `ufw` | `--allow`, `--ping`/`--no-ping`, `--docker-firewall` |
   | `unattended` | `--reboot-time`, `--reboot-with-users` |
   | `sshhardening` | `--ssh-port` |
+  | `newuser` | `--ssh-key` |
   | `hostname` | `--hostname`, `--timezone` |
   | `journald` | `--journal-max` |
-  | `cli` | `--starship`, `--starship-prod` |
-  | `notify` | `--tg-chat`, `--notify`, `TG_TOKEN` in the answers file |
+  | `cli` | `--starship`, `--starship-prod`, `--cli-icons`/`--no-cli-icons` |
+  | `notify` | `--tg-chat`, `--notify`, `--notify-ignore`, `TG_TOKEN` in the answers file |
   | `motd` | `--motd-clean` |
-  | `docker` | `--lazydocker` |
-  | `zram` | `--zram-reconfigure`, `--swap` |
+  | `nginx` | `--nginx-autostart`/`--no-nginx-autostart` |
+  | `docker` | `--lazydocker`, `--docker-autostart`/`--no-docker-autostart` |
+  | `dockerlog` | `--docker-restart`/`--no-docker-restart` |
+  | `certbot` | `--certbot-cf`/`--no-certbot-cf`, `CF_TOKEN`, `--certbot-tls`/`--no-certbot-tls` |
+  | `zram` | `--zram-reconfigure`, `--swap`, `--zram`, `--zram-algo`, `--sysctl`/`--no-sysctl` |
 
-- **`newuser` is always skipped**: it needs a name and a password.
+- **`newuser` without `--ssh-key` is skipped**: creating a new user requires a
+  name and a password. When `--ssh-key` (or `SSH_KEYS`) is provided, the keys
+  are imported for the current target user.
 - **`sshhardening` without `--ssh-port` is skipped** with a message: locking
   yourself out of the server because of someone else's answers file is not a
   fair price for automation. With `--ssh-port`, the item only moves the port;
@@ -206,39 +214,56 @@ How it works:
 ### `usfc audit`
 
 ```text
-usfc audit [--json]
+usfc audit [--json] [--only-problems]
 ```
 
-Checks the server and changes nothing: disk space and inodes, memory and swap,
-failed systemd units, open ports against UFW rules (TCP and UDP, including
-Docker ports that bypass UFW), password login and root login, foreign sshd
-drop-ins, ping, security updates, whether a reboot is needed, and certificate
-expiry.
+Checks the server and changes nothing (does not even touch `/var/log/usfc.log`):
+disk space, inodes, and Docker log caps, memory and swap, failed systemd units,
+open ports against UFW rules (TCP and UDP, including public Docker ports that
+bypass UFW), password login and root login, foreign sshd drop-ins, fail2ban
+`sshd` jail status, ping, security updates (checking whether apt lists exist),
+whether a reboot is needed, certificate expiry, and `certbot.timer` status.
 
 | Option | What it does |
 |---|---|
 | `--json` | machine-readable report |
+| `--only-problems` | hide healthy (`✓`) rows and empty sections, leaving only `warn` and `crit` |
 
 JSON format:
 
 ```json
 {
-  "usfc": "5.0.0",
-  "generated_at": "2026-10-23T04:00:00+00:00",
+  "usfc": "5.3.0",
+  "generated_at": "2026-11-25T04:00:00+00:00",
   "host": "node-1",
   "os": "Ubuntu 24.04.3 LTS",
-  "lang": "ru",
+  "lang": "en",
   "summary": { "ok": 9, "warn": 3, "crit": 0, "total": 12 },
   "findings": [
-    {"id": "ssh.password_auth", "section": "...", "level": "warn", "text": "...", "hint": "..."}
+    {"id": "ssh.password_auth", "section": "access", "level": "warn", "text": "...", "hint": "..."},
+    {"id": "cert.expiry", "section": "certs", "level": "ok", "subject": "example.com", "text": "...", "value": 64, "unit": "days"}
   ]
 }
 ```
 
-`id` and `level` (`ok`, `warn`, `crit`) don't depend on the language, so build
-monitoring on them. `text` and `hint` are in the interface language. `hint`,
-`value`, and `unit` appear only on findings where they make sense. The values in
-the example above are illustrative.
+`id`, `level` (`ok`, `warn`, `crit`), and `subject` don't depend on the
+language, so build monitoring on them. `text` and `hint` are in the interface
+language. `subject`, `hint`, `value`, and `unit` appear only on findings where
+they make sense. The values in the example above are illustrative.
+
+### `usfc status`
+
+```text
+usfc status [--json]
+```
+
+Prints the status table for all 19 items (the same table shown in the menu)
+and the "Applied N of 19" summary without entering interactive mode. Read-only:
+does not touch the system or `/var/log/usfc.log`.
+
+| Option | What it does |
+|---|---|
+| `--json` | machine-readable report (`usfc`, `host`, `os`, `lang`, `summary`, and `items` array with `id`, `section`, `title`, `applied`, `status`) |
 
 ### `usfc export`
 
@@ -260,29 +285,59 @@ set up the next one with a single line.
 
 ### `usfc list`
 
-Prints the profiles and the ids of all items.
+Prints the profiles and the ids of all items. Works without `sudo`.
 
 ### `usfc backups`
 
-Prints the config snapshots from `/var/backups/usfc`, newest at the bottom. A
-snapshot is taken before every edit of a system file.
+```text
+usfc backups
+usfc backups prune [--keep <N>] [--dry-run] [--yes]
+```
+
+Without a subcommand, prints the config snapshots from `/var/backups/usfc`,
+newest at the bottom (read-only). A snapshot is taken before every edit of a
+system file.
+
+The `prune` subcommand removes the oldest snapshots beyond a keep limit:
+
+| Option | What it does |
+|---|---|
+| `--keep <N>` | how many newest snapshots to keep (whole number ≥ 0, default `10`). Works only with `prune` |
+| `--dry-run` | show which snapshots would be removed without deleting anything |
+| `-y`, `--yes` | skip the deletion confirmation |
 
 ### `usfc restore`
 
 ```text
-usfc restore [label] [--yes]
+usfc restore [label|latest] [--diff] [--yes]
 ```
 
 Restores configs from a snapshot. The label is the snapshot directory name in
-the form `YYYYMMDD-HHMMSS-PID`; the list is `usfc backups`.
+the form `YYYYMMDD-HHMMSS-PID` (list them with `usfc backups`) or `latest` for
+the most recent snapshot.
 
 | Option | What it does |
 |---|---|
-| `[label]` | which snapshot to restore. Without a label, it asks the terminal; without a terminal, it's an error with exit code `2` |
+| `[label\|latest]` | which snapshot to restore. Without a label, it prints the list and asks the terminal; without a terminal, it's an error with exit code `2` |
+| `--diff` | show a unified diff (`diff -u`) against current files without changing anything (read-only) |
 | `-y`, `--yes` | don't ask for confirmation |
 
 Before a restore, it takes one more snapshot so the restore itself can be
 undone. Files that did not exist before usfc are deleted on restore.
+
+### `usfc update`
+
+```text
+usfc update [--check] [--yes]
+```
+
+Checks for a new version of usfc, prints changelog highlights from
+`CHANGELOG.en.md`, and installs the update.
+
+| Option | What it does |
+|---|---|
+| `--check` | only check for a new version and print changelog highlights (read-only) |
+| `-y`, `--yes` | install the update without prompting |
 
 ### `usfc help`
 
@@ -291,11 +346,11 @@ usfc help [command]
 ```
 
 General help, or detailed help for one command: `usfc help apply`. Same as `-h`
-and `--help`. It takes one topic: `usfc help apply firewall` exits with code `2`.
+and `--help`. Works without `sudo`. It takes one topic: `usfc help apply firewall` exits with code `2`.
 
 ### `usfc version`
 
-Prints the version. Same as `-V` and `--version`.
+Prints the version. Same as `-V` and `--version`. Works without `sudo`.
 
 ## What to pass to apply
 
@@ -351,6 +406,7 @@ quiet "no".
 | `--swap` | `SWAP_MB` | zram | integer, MB, from 64 | size of the backup swap file |
 | `--zram` | `ZRAM_PERCENT` | zram | 1..400 | zram size, % of RAM |
 | `--zram-reconfigure`, `--no-zram-reconfigure` | `ZRAM_RECONF` | zram | yes/no | reconfigure a zram that was set up by hand |
+| `--zram-algo` | `ZRAM_ALGO` | zram | `lz4`, `zstd` | zram compression algorithm (default `lz4`) |
 | `--sysctl`, `--no-sysctl` | `SYSCTL` | zram | yes/no | `vm.swappiness=80`, `vm.vfs_cache_pressure=50` |
 | `--nginx-autostart`, `--no-nginx-autostart` | `NGINX_AUTOSTART` | nginx | yes/no | start nginx and enable autostart |
 | `--docker-autostart`, `--no-docker-autostart` | `DOCKER_AUTOSTART` | docker | yes/no | start Docker and enable autostart |
@@ -370,12 +426,15 @@ quiet "no".
 | `--motd-clean`, `--no-motd-clean` | `MOTD_CLEAN` | motd | yes/no | turn off the stock greeting and provider scripts |
 | `--starship` | `STARSHIP_PRESET` | cli | `minimal`, `git`, `powerline` | prompt style |
 | `--starship-prod`, `--no-starship-prod` | `STARSHIP_PROD` | cli | yes/no | production server: hostname in red in the prompt |
+| `--cli-icons`, `--no-cli-icons` | `CLI_ICONS` | cli | yes/no | Nerd Font icons in `eza` aliases (`--no-cli-icons` omits them) |
 | `--ssh-port` | `SSH_PORT_NEW` | sshhardening | `22` or `1024..65535` | move SSH to this port |
 | `--reboot-time` | `REBOOT_TIME` | unattended | `HH:MM` or `off` | reboot at this time after updates; `off` means never |
 | `--reboot-with-users`, `--no-reboot-with-users` | `REBOOT_WITH_USERS` | unattended | yes/no | reboot even if someone is logged in |
 | — | `TG_TOKEN` | notify | token | Telegram bot token from @BotFather. A secret: no flag |
 | `--tg-chat` | `TG_CHAT` | notify | chat_id or `@channel` | where to send: `123456`, `-100…`, `@channel`. A negative id works after a space: `--tg-chat -1001234567890` |
 | `--notify` | `NOTIFY_EVENTS` | notify | `ssh,ban,reboot` | which events to send, any subset |
+| `--notify-ignore` | `NOTIFY_IGNORE` | notify | IPs/prefixes | addresses or prefixes ignored for SSH login alerts (for example `1.2.3.4,10.0.0.`) |
+| `--ssh-key` | `SSH_KEYS` | newuser | key or `gh:<user>` / `gl:<user>` | SSH public key or GitHub/GitLab key import for the target user |
 
 Secrets (`CF_TOKEN`, `TG_TOKEN`) have no flags: any user can see the command
 line in `ps`. Pass them in an answers file with `600` permissions.
@@ -423,7 +482,7 @@ Parsing rules:
 
 - The file is read line by line and never executed: `--config` from an
   unverified place must not be able to run commands.
-- `#` starts a comment that runs to the end of the line, even inside a value.
+- `#` starts a comment that runs to the end of the line only outside quotes (`"…"` or `'…'`); `#` inside quotes is preserved.
 - Spaces around a value are dropped, and one pair of `"…"` or `'…'` quotes is
   stripped.
 - **An unknown key is an error** with exit code `2`: otherwise a typo like
@@ -431,8 +490,8 @@ Parsing rules:
   an error too.
 - `ITEMS` is used only if `<what>` is not given on the command line.
 - `--config https://…` downloads the file with a 20-second timeout. `http://`
-  is not accepted because files can hold tokens. The URL is not written to the
-  log.
+  is not accepted because files can hold tokens. The URL is neither written to
+  the log nor exposed in `ps` (passed to `curl` over stdin via `-K -`).
 
 For a ready-made file from a server that is already set up, use
 [`usfc export`](#usfc-export).
@@ -509,11 +568,23 @@ Audit into monitoring once a day via cron:
 sudo usfc audit --json > /var/lib/node_exporter/usfc.json
 ```
 
-Roll back configs:
+Inspect item statuses or show only audit problems:
 
 ```bash
-sudo usfc backups
-sudo usfc restore 20261023-040000-3691 --yes
+sudo usfc status --json
+sudo usfc audit --only-problems
 ```
 
-Replace `20261023-040000-3691` with the label from the `usfc backups` output.
+Diff the newest snapshot, roll it back, and prune older snapshots:
+
+```bash
+sudo usfc restore latest --diff
+sudo usfc restore latest --yes
+sudo usfc backups prune --keep 5 --yes
+```
+
+Check for a usfc update without installing it:
+
+```bash
+sudo usfc update --check
+```

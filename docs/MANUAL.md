@@ -538,6 +538,7 @@ journalmatch = _SYSTEMD_UNIT=ssh.service + _SYSTEMD_UNIT=sshd.service + _COMM=ss
 maxretry = 5
 findtime = 10m
 bantime = 1h
+bantime.increment = true
 ```
 
 `backend = systemd` нужен на Debian 12: там нет `/var/log/auth.log`, и jail
@@ -577,7 +578,9 @@ sudo bash -c '. /etc/usfc/notify.conf
 - **вход по SSH** — строка в `/etc/pam.d/sshd`:
   `session optional pam_exec.so quiet /usr/local/sbin/usfc-notify-ssh`.
   `optional` важно: сбой отправки не мешает входу. Скрипт должен уходить в
-  фон и сразу выходить с кодом `0`, иначе вход будет ждать сети;
+  фон и сразу выходить с кодом `0`, иначе вход будет ждать сети. В `notify.conf`
+  можно задать `IGNORE_IPS="1.2.3.4 10.0.0."` — входы с этих IP и префиксов
+  не вызывают уведомлений;
 - **бан fail2ban** — свой action в `/etc/fail2ban/action.d/usfc-telegram.conf`;
 - **нужна перезагрузка** — ежедневный таймер `usfc-notify-reboot.timer`,
   который проверяет `/var/run/reboot-required`.
@@ -632,7 +635,7 @@ sudo apt install -y zram-tools
 ```
 
 В `/etc/default/zramswap` поменяй три ключа (остальное не трогай; пример —
-75%):
+75%, вместо `lz4` можно указать `zstd` для более сильного сжатия):
 
 ```text
 ALGO=lz4

@@ -9,6 +9,113 @@ and the project follows [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [5.3.0] — 2026-11-25
+
+New `usfc status`, `usfc update`, `backups prune`, `restore latest --diff`, and
+`audit --only-problems` commands, interactive UFW/Docker/journald management,
+GitHub/GitLab SSH key import, live language switching without restart,
+root-free `version`/`help`/`list`, and a batch of security and reliability
+fixes. Compatible with all 5.x scripts.
+
+### Added
+
+- **`usfc status [--json]` command** — read-only table of all 19 item statuses
+  without opening the interactive menu, plus machine-readable JSON output.
+- **`usfc update [--check] [--yes]` command** — explicit CLI update check and
+  install with a short changelog summary from `CHANGELOG.en.md`.
+- **Snapshot management: `restore latest`, `restore --diff`, and `backups prune`.**
+  `usfc restore latest` selects the newest snapshot, `--diff` prints a unified
+  diff against current files without changing anything, and
+  `usfc backups prune [--keep N] [--dry-run] [--yes]` removes snapshots older
+  than the keep limit (10 by default).
+- **Audit problem filter (`usfc audit --only-problems`) and in-menu fix (`F`).**
+  The flag hides healthy (`✓`) rows and empty sections; after viewing audit
+  (`D`) in the menu, pressing `F` offers to apply the items that resolve the
+  reported issues.
+- **Interactive management for UFW, Docker, and journald in the menu.**
+  Re-selecting `ufw` opens an interactive firewall manager (open/close ports,
+  toggle ping and Docker binding, or disable UFW). Re-selecting `docker` or
+  `journald` offers reconfiguration first (install lazydocker, adjust the
+  journal cap) before disabling.
+- **Direct actions from item help (`I`).** The item detail screen now lets you
+  press `A` to apply/configure or `V` to preview without returning to the menu.
+- **GitHub/GitLab SSH key import and validation.** Passing `gh:<user>` or
+  `gl:<user>` (in `newuser` or with `--ssh-key`) fetches keys over HTTPS and
+  validates each line with `ssh-keygen -lf -`, displaying the fingerprint.
+- **New item options:** zram compression algorithm (`--zram-algo lz4|zstd`),
+  turning off Nerd Font icons in `eza` aliases (`--no-cli-icons`), ignored
+  IPs/prefixes for SSH Telegram alerts (`--notify-ignore` / `IGNORE_IPS`), and
+  progressive fail2ban bans (`bantime.increment = true`).
+- **New audit and status checks:** Docker container log caps (`docker.logs`),
+  active fail2ban `sshd` jail and SSH port mismatch detection, `certbot.timer`
+  status, and a warning when `/var/lib/apt/lists` is empty instead of a false
+  "up to date". Audit JSON now includes `subject` (certificate domain on
+  `cert.expiry`) and numeric `value`/`unit` fields for certificate days and
+  pending security updates.
+
+### Changed
+
+- **`usfc version`, `usfc help`, and `usfc list` run without `sudo`.** The root
+  check and `sshd -T` call now run only for commands that require superuser
+  privileges.
+- **`usfc()` wrapper v2 in `~/.bashrc`:** preserves `NO_COLOR`, `USFC_LANG`,
+  `USFC_NO_UPDATE`, `USFC_VERBOSE`, and `USFC_REPO_RAW_BASE` across `sudo`,
+  skips `sudo` for `version`/`help`/`list`, and avoids polluting `stdout` on
+  `audit`, `export`, `status`, and `backups` when sourcing `~/.bashrc`.
+- **Live language switching (`L` and `--lang en`).** The item registry keeps
+  both languages in memory and switches in place without `exec`, preserving
+  `--dry-run` and `--verbose` and rendering fully translated screens right away.
+- **Read-only commands and `--dry-run` no longer touch `/var/log/usfc.log`** or
+  change installation file permissions. The menu header displays a `[DRY-RUN]`
+  badge during dry runs.
+- **Adaptive header progress bar and rendering polish:** the progress bar fits
+  80-column terminals cleanly; the `!` marker renders in yellow; the alias help
+  screen (`H`) lists `ports`, `dps`, `extract`, and `myip`; `ask_yn` accepts
+  Russian `д`/`Д`.
+- **Atomic tag-pinned updates and local `fastfetch` config:** updates from
+  `main` prefer the immutable `v<version>` git tag to avoid CDN cache mixing,
+  preserve launch arguments on restart, and bundle `config.jsonc` locally; on
+  Debian `fastfetch` uses `debian_small`.
+
+### Fixed
+
+- **Dry run no longer deletes an existing `/swapfile`:** `create_swapfile`
+  skips `rm -f` under `--dry-run` and never copies gigabyte swap files into
+  snapshots.
+- **`sshd_config` rollback when declining conflict edits:** answering "no" to
+  commenting out foreign drop-ins now restores the added `Include` line along
+  with any other touched files, and `sshd -t` failures print the error output.
+- **Removing disabled events when reconfiguring `notify`:** unchecking `ssh`,
+  `ban`, or `reboot` now removes the previously installed PAM, fail2ban, and
+  systemd timer hooks.
+- **Clean `policy-rc.d` handling and `cloudflare.ini` rollback:** temporary
+  `/usr/sbin/policy-rc.d` is no longer recorded in `.usfc-created`, and a newly
+  created `cloudflare.ini` is written with `umask 077` through `write_file` so
+  `restore` removes it instead of leaving an empty file.
+- **TOCTOU and secret exposure hardening:** snapshot directories are created
+  atomically with mode `0700`, `sudoers.d` drop-ins are created with mode `0440`
+  without a `0644` window, and `--config` URLs are passed to `curl` over stdin
+  (`-K -`) so tokens in URLs do not appear in `ps`.
+- **Octal parsing and quoted `#` in answers files:** leading-zero item numbers
+  such as `05` or `08` no longer break or get dropped in the menu,
+  `resolve_items`, or numeric prompts; `#` inside quoted values in an answers
+  file is no longer stripped as a comment.
+- **`zramswap` autostart, explicit `--swap`, and `zram-generator.conf` newline:**
+  `zramswap` is re-enabled after a prior disable, explicit `--swap <MB>` is
+  honored even when close to the recommendation, and a new `[zram0]` section is
+  always separated by a newline.
+- **Firewall and Docker:** `fw_docker_published` ignores loopback bindings
+  (`127.0.0.1`, `[::1]`, `localhost`) and does not wake a stopped
+  `docker.socket` (nor does the `motd` card); `fw_docker_route` skips IPv4/IPv6
+  mismatches; `fw_deny` reports per-port status accurately; `usfc firewall`
+  rejects foreign `--set` keys with exit code 2.
+- **Item and TUI fixes:** `dockerlog` avoids forking `python3`, detects any
+  `max-size` as well as `journald`/`local`, and preserves unrelated `log-opts`
+  on disable; `certbot` detects any `nginx` in `PATH`; `hostname` matches
+  symlinked timezones; `newuser` handles option-prefixed SSH keys; fixed `+1`
+  frame misalignment in summary and table headers, spinner color stripping, and
+  menu EOF loops.
+
 ## [5.2.1] — 2026-11-16
 
 ### Fixed
@@ -700,6 +807,7 @@ into a configured server in one pass.
 - UFW that detects ports already in use (Docker/nginx do not get cut off)
 - Self-update on every run (`sudo usfc`)
 
+[5.3.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.2.1...v5.3.0
 [5.2.1]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.2.0...v5.2.1
 [5.2.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.1.0...v5.2.0
 [5.1.0]: https://github.com/SkyDeaD/UbuntuServer-Fast-Configuration/compare/v5.0.0...v5.1.0
