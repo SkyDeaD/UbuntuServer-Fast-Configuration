@@ -9,6 +9,12 @@
 # Запускать только в одноразовом контейнере: прогон идёт от root.
 set -uo pipefail
 
+created_swapfile=false
+cleanup() {
+    [ "$created_swapfile" = true ] && rm -f /swapfile
+}
+trap cleanup EXIT
+
 snapshot() {
     {
         find /etc -type f -printf '%p %s %T@\n' 2>/dev/null | sort
@@ -26,6 +32,24 @@ snapshot() {
         find /root /home -maxdepth 3 -type f -printf '%p %s\n' 2>/dev/null | sort
     } | sha256sum | cut -d' ' -f1
 }
+
+log_state() {
+    if [ ! -e /var/log/usfc.log ]; then
+        printf 'absent'
+    else
+        stat -c '%s %Y' /var/log/usfc.log 2>/dev/null
+        sha256sum /var/log/usfc.log 2>/dev/null | cut -d' ' -f1
+    fi
+}
+
+# Создаём заранее 1 МБ /swapfile до слепка: раньше create_swapfile делал голый
+# `rm -f "$path"`, а rm в сухом прогоне не подменяется — --dry-run удалял файл
+if [ ! -e /swapfile ]; then
+    dd if=/dev/zero of=/swapfile bs=1M count=1 status=none 2>/dev/null
+    created_swapfile=true
+fi
+swapfile_before="$(sha256sum /swapfile | cut -d' ' -f1)"
+log_before="$(log_state)"
 
 before="$(snapshot)"
 usfc apply all --dry-run >/tmp/dryrun.log 2>&1
@@ -47,6 +71,60 @@ fi
 # и он должен был что-то показать, а не молча выйти
 if ! grep -q 'сухой прогон' /tmp/dryrun.log; then
     echo "FAIL: в выводе нет ни одной строки сухого прогона" >&2
+    fail=1
+fi
+if [ "$(log_state)" != "$log_before" ]; then
+    echo "FAIL: apply all --dry-run создал или изменил /var/log/usfc.log" >&2
+    fail=1
+fi
+if [ ! -f /swapfile ] || [ "$(sha256sum /swapfile | cut -d' ' -f1)" != "$swapfile_before" ]; then
+    echo "FAIL: apply all --dry-run удалил или изменил /swapfile" >&2
+    fail=1
+fi
+
+# ── регрессия 5.3: /swapfile и /var/log/usfc.log при сухом прогоне zram ──────
+# Проверяем и команду `usfc apply zram --dry-run`, и саму create_swapfile под
+# USFC_DRY_RUN=true: в контейнере с активным свопом хоста apply_zram может не
+# дойти до ветки создания /swapfile, а прямой вызов покрывает обе ветки rm -f
+usfc apply zram --dry-run >/tmp/dryrun-zram.log 2>&1
+zram_rc=$?
+if [ "$zram_rc" -ne 0 ]; then
+    echo "FAIL: apply zram --dry-run вернул ${zram_rc}" >&2
+    tail -15 /tmp/dryrun-zram.log >&2
+    fail=1
+fi
+if [ ! -f /swapfile ] || [ "$(sha256sum /swapfile | cut -d' ' -f1)" != "$swapfile_before" ]; then
+    echo "FAIL: apply zram --dry-run удалил или изменил /swapfile" >&2
+    fail=1
+fi
+if [ "$(log_state)" != "$log_before" ]; then
+    echo "FAIL: apply zram --dry-run создал или изменил /var/log/usfc.log" >&2
+    fail=1
+fi
+
+USFC_SOURCE_ONLY=1 bash -c '
+    # shellcheck disable=SC1091
+    source /opt/vps-setup/setup.sh
+    USFC_DRY_RUN=true
+    dry_run_enable >/dev/null 2>&1
+    create_swapfile /swapfile 64 || exit 1
+    # Вторая ветка rm -f: отказ mkswap и пересоздание через dd
+    mkswap() { return 1; }
+    create_swapfile /swapfile 64 && exit 1
+    exit 0
+' >/tmp/dryrun-swapfile.log 2>&1
+sf_rc=$?
+if [ "$sf_rc" -ne 0 ]; then
+    echo "FAIL: проверка create_swapfile под USFC_DRY_RUN вернула ${sf_rc}" >&2
+    tail -15 /tmp/dryrun-swapfile.log >&2
+    fail=1
+fi
+if [ ! -f /swapfile ] || [ "$(sha256sum /swapfile | cut -d' ' -f1)" != "$swapfile_before" ]; then
+    echo "FAIL: create_swapfile под USFC_DRY_RUN удалил или изменил /swapfile" >&2
+    fail=1
+fi
+if ! grep -F 'rm -f /swapfile' /tmp/dryrun-swapfile.log >/dev/null 2>&1; then
+    echo "FAIL: create_swapfile под USFC_DRY_RUN не показал перехваченный rm -f /swapfile" >&2
     fail=1
 fi
 
@@ -123,6 +201,10 @@ fi
 if [ "$prev_rc" -ne 0 ]; then
     echo "FAIL: предпросмотр вернул ${prev_rc}" >&2
     tail -12 /tmp/preview.log >&2
+    fail=1
+fi
+if [ "$(log_state)" != "$log_before" ]; then
+    echo "FAIL: предпросмотр создал или изменил /var/log/usfc.log" >&2
     fail=1
 fi
 

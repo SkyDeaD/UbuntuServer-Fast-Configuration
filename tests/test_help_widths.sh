@@ -43,6 +43,7 @@ LANGS="${USFC_TEST_LANGS:-ru en}"
 
 # ── 1. ширина рамки ───────────────────────────────────────────────────────────
 for USFC_LANG in $LANGS; do
+usfc_registry_apply_lang
 for screen in menu help aliases; do
     for tw in 58 78 98 118; do
         # shellcheck disable=SC2034  # читается внутри функций отрисовки
@@ -82,6 +83,7 @@ uniq_count() {
 }
 
 for USFC_LANG in $LANGS; do
+usfc_registry_apply_lang
 for screen in menu help; do
     for tw in 58 78 98 118; do
         # shellcheck disable=SC2034
@@ -128,5 +130,116 @@ for screen in menu help; do
     done
 done
 done
+
+# ── 3. прогресс-бар в шапке (build_progress) ──────────────────────────────────
+# На всех ширинах и обоих языках строка версии + прогресс-бара не должна
+# вылезать за TERM_W (проверяем с done=10 из всех пунктов)
+for USFC_LANG in $LANGS; do
+    usfc_registry_apply_lang
+    for i in "${!ITEM_IDS[@]}"; do
+        id="${ITEM_IDS[$i]}"
+        if [ "$i" -lt 10 ]; then STATUS_RC[$id]=0; else STATUS_RC[$id]=1; fi
+    done
+    for tw in 58 78 98 118; do
+        # shellcheck disable=SC2034
+        TERM_W=$tw
+        build_progress
+        pad_title "USFC v${VERSION} by SkyDeaD" 32
+        full_line="  ${REPLY_PAD}  ${REPLY_PROGRESS}"
+        visible_len "$full_line"; full_w="$REPLY_LEN"
+        visible_len "$REPLY_PROGRESS"; prog_w="$REPLY_LEN"; prog_plain="$REPLY_PLAIN"
+        if [ -n "$REPLY_PROGRESS" ] && [[ "$prog_plain" == *"10"*"${#ITEM_IDS[@]}"* ]] \
+           && [ "$prog_w" -le "$tw" ] && [ "$full_w" -le "$tw" ]; then
+            printf '%-2s prog  TERM_W=%-4s ширина %s/%s <= %s\n' "$USFC_LANG" "$tw" "$prog_w" "$full_w" "$tw"
+        else
+            printf '%-2s prog  TERM_W=%-4s ПЕРЕПОЛНЕНИЕ или пустой вывод: prog=%s full=%s (> %s): %s\n' \
+                "$USFC_LANG" "$tw" "$prog_w" "$full_w" "$tw" "$prog_plain"
+            fail=1
+        fi
+    done
+done
+
+# ── 4. рамка итогов прогона (show_summary) при заголовке 26+ символов ─────────
+# Регрессия на pad_title +1: при длине названия ровно name_w (26) и больше
+# pad_title добавлял лишний пробел и сдвигал правую рамку на 1 символ.
+for USFC_LANG in $LANGS; do
+    usfc_registry_apply_lang
+    summary_reset
+    # shellcheck disable=SC2034  # читаются внутри show_summary
+    SUMMARY_TITLES=(
+        "Короткий пункт"
+        "Ровно двадцать шесть симв!"
+        "Очень длинное название пункта длиннее двадцати шести символов"
+    )
+    # shellcheck disable=SC2034
+    SUMMARY_RESULTS=("✓ готово" "— пропущено" "✗ ошибка")
+    # shellcheck disable=SC2034
+    SUMMARY_TIMES=("1s" "0s" "12s")
+    # shellcheck disable=SC2034
+    SUMMARY_WHY=("" "требует подтверждения отдельно" "")
+    for tw in 58 78 98 118; do
+        # shellcheck disable=SC2034
+        TERM_W=$tw
+        widths='' frame_rows=0 max_w=0
+        while IFS= read -r line; do
+            case "$line" in
+                *'│'*|*'╭'*|*'╰'*|*'├'*)
+                    s="${line#  }"
+                    visible_len "$s"
+                    widths="${widths} ${REPLY_LEN}"
+                    [ "$REPLY_LEN" -gt "$max_w" ] && max_w="$REPLY_LEN"
+                    frame_rows=$((frame_rows + 1))
+                    ;;
+            esac
+        done < <(show_summary 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+        n_w="$(uniq_count "$widths")"
+        if [ "$frame_rows" -eq 5 ] && [ "$n_w" -eq 1 ] && [ "$max_w" -le "$tw" ]; then
+            printf '%-2s summ  TERM_W=%-4s рамка ровная (%s симв.)\n' "$USFC_LANG" "$tw" "$max_w"
+        else
+            printf '%-2s summ  TERM_W=%-4s КРИВАЯ РАМКА (строк=%s, ширин=%s:%s)\n' \
+                "$USFC_LANG" "$tw" "$frame_rows" "$n_w" "$widths"
+            fail=1
+        fi
+    done
+done
+summary_reset
+
+# ── 5. цвет маркера «!» в status_marker ───────────────────────────────────────
+# При STATUS_RC=1 и тексте, начинающемся с «!», маркер обязан краситься
+# в $YELLOW, а не в тусклый $DIM (как «○»). В подоболочке включаем реальные
+# ANSI-коды: без терминала core.sh обнуляет цвета, и проверка стала бы пустой.
+marker_out="$(
+    # shellcheck disable=SC2034  # читаются в status_marker
+    YELLOW='\033[0;33m'; GREEN='\033[0;32m'; DIM='\033[2m'; NC='\033[0m'
+    # shellcheck disable=SC2034
+    STATUS_DIRTY=false
+    id="${ITEM_IDS[0]}"
+    STATUS_RC[$id]=1
+    STATUS_TEXT[$id]="${YELLOW}! настроено частично${NC}"
+    status_marker "$id"
+    [ "$REPLY_MARKER" = "${YELLOW}!${NC}" ] || { printf 'warn-colored=%q\n' "$REPLY_MARKER"; exit 1; }
+
+    STATUS_TEXT[$id]="! требует внимания"
+    status_marker "$id"
+    [ "$REPLY_MARKER" = "${YELLOW}!${NC}" ] || { printf 'warn-plain=%q\n' "$REPLY_MARKER"; exit 1; }
+
+    STATUS_TEXT[$id]="○ не настроено"
+    status_marker "$id"
+    [ "$REPLY_MARKER" = "${DIM}○${NC}" ] || { printf 'unapplied=%q\n' "$REPLY_MARKER"; exit 1; }
+
+    # shellcheck disable=SC2034
+    STATUS_RC[$id]=0
+    # shellcheck disable=SC2034
+    STATUS_TEXT[$id]="${GREEN}✓ настроено${NC}"
+    status_marker "$id"
+    [ "$REPLY_MARKER" = "${GREEN}✓${NC}" ] || { printf 'applied=%q\n' "$REPLY_MARKER"; exit 1; }
+    echo ok
+)"
+if [ "$marker_out" = ok ]; then
+    printf 'status_marker: ! → YELLOW, ○ → DIM, ✓ → GREEN\n'
+else
+    printf 'status_marker: ОШИБКА (%s)\n' "$marker_out"
+    fail=1
+fi
 
 exit "$fail"

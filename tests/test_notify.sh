@@ -303,5 +303,107 @@ ensure_pkg() { :; }
 grep -F "$TOKEN" "$TMP/o" >/dev/null && bad "токен в выводе dry-run" || ok "токена нет в выводе dry-run"
 
 echo ""
+echo "перенастройка: снятие хуков отключённых событий (ssh,ban,reboot → ssh)"
+R="$TMP/reconf"
+NOTIFY_BIN="$R/usfc-notify"; NOTIFY_SSH_BIN="$R/usfc-notify-ssh"; NOTIFY_REBOOT_BIN="$R/usfc-notify-reboot"
+NOTIFY_CONF="$R/notify.conf"; NOTIFY_PAM="$R/pam-sshd"; NOTIFY_ACTION="$R/action.conf"; NOTIFY_JAIL="$R/jail.local"
+NOTIFY_UNIT_DIR="$R/units"
+mkdir -p "$R" "$NOTIFY_UNIT_DIR"
+_notify_write_conf "$TOKEN" "$CHAT" "ssh,ban,reboot"
+printf '%s\n%s\n%s\n' '# PAM sshd' "$NOTIFY_PAM_MARK" "$(notify_pam_line "$NOTIFY_SSH_BIN")" > "$NOTIFY_PAM"
+: > "$NOTIFY_SSH_BIN"; chmod +x "$NOTIFY_SSH_BIN"
+: > "$NOTIFY_ACTION"; : > "$NOTIFY_JAIL"
+: > "$NOTIFY_REBOOT_BIN"; chmod +x "$NOTIFY_REBOOT_BIN"
+: > "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}"
+: > "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}"
+reset_fake; reply '{"ok":true,"result":{"message_id":1}}'
+(
+    PATH="$FAKE:$PATH"
+    # shellcheck disable=SC2034  # читает apply_notify
+    USFC_DRY_RUN=false
+    # shellcheck disable=SC2034
+    BULK_MODE=true
+    # shellcheck disable=SC2034
+    TG_TOKEN_BULK=''
+    # shellcheck disable=SC2034
+    TG_CHAT_BULK=''
+    # shellcheck disable=SC2034
+    NOTIFY_EVENTS_BULK='ssh'
+    # shellcheck disable=SC2034
+    NOTIFY_IGNORE_BULK=''
+    systemctl() { printf '%s\n' "$*" >> "$R/sc.log"; return 0; }
+    apply_notify
+) >"$TMP/o" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "перенастройка ssh,ban,reboot → ssh: rc 0" || { bad "перенастройка: rc $rc"; sed 's/^/      /' "$TMP/o"; }
+{ [ ! -e "$NOTIFY_ACTION" ] && [ ! -e "$NOTIFY_JAIL" ]; } \
+    && ok "хуки ban (action и jail) удалены" || bad "хуки ban остались"
+{ [ ! -e "$NOTIFY_REBOOT_BIN" ] && [ ! -e "${NOTIFY_UNIT_DIR}/${NOTIFY_TIMER_NAME}" ] && [ ! -e "${NOTIFY_UNIT_DIR}/${NOTIFY_SERVICE_NAME}" ]; } \
+    && ok "хуки reboot (скрипт, timer и service) удалены" || bad "хуки reboot остались"
+{ [ -x "$NOTIFY_SSH_BIN" ] && _notify_part_ok ssh; } \
+    && ok "SSH-уведомление осталось активным" || bad "SSH-уведомление сломано"
+_notify_read_conf "$NOTIFY_CONF"
+[ "$REPLY_NF_EVENTS" = ssh ] && ok "EVENTS в конфиге обновлён на ssh" || bad "EVENTS: «$REPLY_NF_EVENTS»"
+{ grep -Fx 'restart fail2ban' "$R/sc.log" >/dev/null \
+  && grep -Fx "disable --now ${NOTIFY_TIMER_NAME}" "$R/sc.log" >/dev/null \
+  && grep -Fx 'daemon-reload' "$R/sc.log" >/dev/null; } \
+    && ok "systemctl: restart fail2ban, disable таймера и daemon-reload вызваны" \
+    || bad "вызовы systemctl: $(tr '\n' '|' < "$R/sc.log")"
+status_notify >"$TMP/o"; rc=$?
+{ [ "$rc" -eq 0 ] && grep -F '✓ Telegram · ssh' "$TMP/o" >/dev/null; } \
+    && ok "статус после перенастройки → ✓ Telegram · ssh" || bad "статус: rc=$rc $(cat "$TMP/o")"
+
+echo ""
+echo "IGNORE_IPS в notify.conf и PAM-обёртке"
+IG="$TMP/ig"; mkdir -p "$IG"
+NOTIFY_CONF="$IG/notify.conf"
+_notify_write_conf "$TOKEN" "$CHAT" "ssh" "1.2.3.4 10.0.0."
+grep -Fx 'IGNORE_IPS="1.2.3.4 10.0.0."' "$NOTIFY_CONF" >/dev/null \
+    && ok "IGNORE_IPS записан в notify.conf" || bad "notify.conf: $(cat "$NOTIFY_CONF")"
+_notify_read_conf "$NOTIFY_CONF"
+[ "$REPLY_NF_IGNORE" = "1.2.3.4 10.0.0." ] \
+    && ok "_notify_read_conf читает IGNORE_IPS" || bad "REPLY_NF_IGNORE: «$REPLY_NF_IGNORE»"
+cat > "$IG/fake-notify-bin" <<'EOS'
+#!/bin/bash
+printf '%s\n' "$*" >> "$(dirname "$0")/called"
+EOS
+chmod +x "$IG/fake-notify-bin"
+notify_ssh_script "$IG/fake-notify-bin" "$NOTIFY_CONF" > "$IG/usfc-notify-ssh"
+chmod +x "$IG/usfc-notify-ssh"
+bash -n "$IG/usfc-notify-ssh" && ok "bash -n usfc-notify-ssh с IGNORE_IPS" || bad "синтаксис usfc-notify-ssh"
+PAM_TYPE=open_session PAM_USER=alice PAM_RHOST=1.2.3.4 "$IG/usfc-notify-ssh"; rc=$?
+{ [ "$rc" -eq 0 ] && [ ! -e "$IG/called" ]; } \
+    && ok "PAM_RHOST=1.2.3.4 (точное совпадение) — NOTIFY_BIN не вызван" \
+    || bad "1.2.3.4: rc=$rc, called=$(cat "$IG/called" 2>/dev/null)"
+PAM_TYPE=open_session PAM_USER=alice PAM_RHOST=10.0.0.42 "$IG/usfc-notify-ssh"; rc=$?
+{ [ "$rc" -eq 0 ] && [ ! -e "$IG/called" ]; } \
+    && ok "PAM_RHOST=10.0.0.42 (префикс 10.0.0.) — NOTIFY_BIN не вызван" \
+    || bad "10.0.0.42: rc=$rc, called=$(cat "$IG/called" 2>/dev/null)"
+PAM_TYPE=open_session PAM_USER=alice PAM_RHOST=8.8.8.8 "$IG/usfc-notify-ssh"; rc=$?
+{ [ "$rc" -eq 0 ] && [ -s "$IG/called" ] && grep -F '8.8.8.8' "$IG/called" >/dev/null; } \
+    && ok "PAM_RHOST=8.8.8.8 — NOTIFY_BIN вызван" \
+    || bad "8.8.8.8: rc=$rc, called=$(cat "$IG/called" 2>/dev/null)"
+
+echo ""
+export_out="$(
+    item_applied() { [ "$1" = notify ]; }
+    refresh_statuses() { :; }
+    export_answer() {
+        # shellcheck disable=SC2034  # читается внутри export_cmd
+        case "$1" in
+            TG_CHAT)       REPLY_EXPORT="$CHAT"; return 0 ;;
+            NOTIFY_EVENTS) REPLY_EXPORT="ssh"; return 0 ;;
+            NOTIFY_IGNORE) REPLY_EXPORT="1.2.3.4 10.0.0."; return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+    export_cmd
+)"
+printf '%s\n' "$export_out" | grep -Fx 'NOTIFY_IGNORE="1.2.3.4 10.0.0."' >/dev/null \
+    && ok "usfc export: NOTIFY_IGNORE в кавычках в файле ответов" \
+    || bad "usfc export NOTIFY_IGNORE в конфиге: $export_out"
+printf '%s\n' "$export_out" | grep -F -- '--notify-ignore 1.2.3.4,10.0.0.' >/dev/null \
+    && ok "usfc export: --notify-ignore через запятую в однострочнике" \
+    || bad "usfc export --notify-ignore в однострочнике: $export_out"
+
 [ "$fail" -eq 0 ] && echo "уведомления Telegram: все проверки пройдены" || echo "уведомления Telegram: ЕСТЬ ОШИБКИ"
 exit "$fail"
